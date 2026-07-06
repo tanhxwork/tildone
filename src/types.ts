@@ -62,19 +62,21 @@ export const PRIORITY_LABELS: Record<number, string> = {
   3: "High",
 };
 
+// Priority and project/tag colors come from the Notion design system's brand
+// palette (docs/design/notion-DESIGN.md).
 export const PRIORITY_COLORS: Record<number, string> = {
-  1: "#3b82f6",
-  2: "#f59e0b",
-  3: "#ef4444",
+  1: "#0075de",
+  2: "#dd5b00",
+  3: "#e03131",
 };
 
 export const COLOR_CHOICES = [
-  "#6366f1",
-  "#0ea5e9",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#ec4899",
-  "#8b5cf6",
-  "#64748b",
+  "#5645d4",
+  "#0075de",
+  "#2a9d99",
+  "#1aae39",
+  "#dd5b00",
+  "#e03131",
+  "#ff64c8",
+  "#787671",
 ];

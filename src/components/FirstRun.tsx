@@ -23,7 +23,7 @@ const TEMPLATES: Template[] = [
     emoji: "🛠️",
     title: "Physical build",
     blurb: "phases · materials · checkpoints",
-    project: { name: "Build project", color: "#f59e0b" },
+    project: { name: "Build project", color: "#dd5b00" },
     tasks: [
       { title: "Sketch the plan & measure up", due: "today" },
       { title: "List materials & get quotes", tag: "shopping" },
@@ -38,7 +38,7 @@ const TEMPLATES: Template[] = [
     emoji: "💻",
     title: "Software project",
     blurb: "milestones · reviews · releases",
-    project: { name: "Software project", color: "#6366f1" },
+    project: { name: "Software project", color: "#5645d4" },
     tasks: [
       { title: "Write the one-page spec", due: "today" },
       { title: "Set up repo & CI", tag: "code" },
@@ -52,7 +52,7 @@ const TEMPLATES: Template[] = [
     emoji: "🌱",
     title: "Personal",
     blurb: "inbox · today · weekly review",
-    project: { name: "Personal", color: "#10b981" },
+    project: { name: "Personal", color: "#1aae39" },
     tasks: [
       { title: "Brain-dump everything on your mind", due: "today" },
       { title: "Pick tomorrow's top 3", due: "today" },

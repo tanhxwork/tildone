@@ -1,45 +1,47 @@
+/* Theme tokens follow the Notion design system (docs/design/notion-DESIGN.md):
+   warm gray neutrals around charcoal ink #37352f, hairline borders, purple primary. */
 :root {
   color-scheme: light;
-  --bg-sidebar: #f4f4f5;
-  --bg-main: #fdfdfd;
+  --bg-sidebar: #f6f5f4;
+  --bg-main: #ffffff;
   --bg-card: #ffffff;
-  --bg-inset: #f4f4f5;
-  --bg-hover: rgba(0, 0, 0, 0.045);
-  --bg-active: rgba(99, 102, 241, 0.1);
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --text: #1c1c1f;
-  --text-muted: #6f6f78;
-  --text-faint: #a1a1aa;
-  --accent: #6366f1;
+  --bg-inset: #f6f5f4;
+  --bg-hover: rgba(55, 53, 47, 0.06);
+  --bg-active: rgba(86, 69, 212, 0.09);
+  --border: #e5e3df;
+  --border-strong: #c8c4be;
+  --text: #37352f;
+  --text-muted: #787671;
+  --text-faint: #a4a097;
+  --accent: #5645d4;
   --accent-contrast: #ffffff;
-  --danger: #dc2626;
-  --success: #16a34a;
-  --doing: #d97706;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.07), 0 1px 1px rgba(0, 0, 0, 0.04);
-  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.16);
+  --danger: #e03131;
+  --success: #1aae39;
+  --doing: #dd5b00;
+  --shadow-card: 0 1px 2px rgba(15, 15, 15, 0.06), 0 1px 1px rgba(15, 15, 15, 0.03);
+  --shadow-pop: 0 8px 30px rgba(15, 15, 15, 0.18);
   --radius: 8px;
   --radius-sm: 6px;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg-sidebar: #202024;
-  --bg-main: #17171a;
-  --bg-card: #232327;
-  --bg-inset: #1c1c20;
+  --bg-sidebar: #202020;
+  --bg-main: #191919;
+  --bg-card: #252525;
+  --bg-inset: #1f1f1f;
   --bg-hover: rgba(255, 255, 255, 0.055);
-  --bg-active: rgba(129, 140, 248, 0.16);
-  --border: #2e2e34;
-  --border-strong: #3d3d45;
-  --text: #ececee;
-  --text-muted: #a3a3ad;
-  --text-faint: #6b6b74;
-  --accent: #818cf8;
-  --accent-contrast: #17171a;
-  --danger: #f87171;
-  --success: #4ade80;
-  --doing: #fbbf24;
+  --bg-active: rgba(147, 134, 236, 0.16);
+  --border: #313131;
+  --border-strong: #454545;
+  --text: #e8e8e6;
+  --text-muted: #9b9a97;
+  --text-faint: #6f6e69;
+  --accent: #9386ec;
+  --accent-contrast: #191919;
+  --danger: #ff7369;
+  --success: #4dab5e;
+  --doing: #ffa344;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
 }
@@ -57,7 +59,9 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Notion Sans when installed, then its Inter base, then the system stack. */
+  font-family: "Notion Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    sans-serif;
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
@@ -256,7 +260,7 @@ textarea:focus-visible,
 }
 
 .tag-chip {
-  --tag-color: #64748b;
+  --tag-color: #787671;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -531,8 +535,8 @@ textarea:focus-visible,
 }
 
 .qa-chip.qa-priority {
-  border-color: color-mix(in srgb, #ef4444 45%, transparent);
-  color: #ef4444;
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
 }
 
 /* ---------- Task list ---------- */
