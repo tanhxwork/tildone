@@ -3,6 +3,7 @@ import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Task } from "../types";
 import { compareTasks, dueLabel, todayStr } from "../utils/dates";
+import { DailyPlan } from "./DailyPlan";
 import { TaskRow } from "./TaskRow";
 
 interface Group {
@@ -112,6 +113,7 @@ export function TaskList() {
 
   return (
     <div className="task-list">
+      {selection.type === "today" && <DailyPlan />}
       {groups.map((group) =>
         group.tasks.length === 0 ? null : (
           <section key={group.key} className="task-group">

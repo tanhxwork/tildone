@@ -15,12 +15,47 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub const ENGINE_PORT: u16 = 11500;
 
 const LLAMA_TAG: &str = "b9884";
-const MODEL_URL: &str =
-    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const MODEL_FILE: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+
+pub struct ModelSpec {
+    pub id: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+}
+
+/// Model tiers offered by the built-in engine (Qwen 2.5 Instruct, q4_k_m).
+/// The UI maps these ids to sizes and RAM recommendations.
+const MODELS: [ModelSpec; 3] = [
+    ModelSpec {
+        id: "small",
+        file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    },
+    ModelSpec {
+        id: "default",
+        file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    },
+    ModelSpec {
+        id: "better",
+        file: "qwen2.5-3b-instruct-q4_k_m.gguf",
+        url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+    },
+];
+
+fn model_spec(id: &str) -> Result<&'static ModelSpec, String> {
+    MODELS
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| format!("Unknown model tier: {id}"))
+}
+
+pub struct EngineChild {
+    pub child: Child,
+    pub model: String,
+}
 
 #[derive(Default)]
-pub struct EngineProcess(pub Mutex<Option<Child>>);
+pub struct EngineProcess(pub Mutex<Option<EngineChild>>);
 
 #[derive(Serialize)]
 pub struct DetectedServer {
@@ -191,8 +226,8 @@ fn server_bin(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(engine_dir(app)?.join("bin").join(name))
 }
 
-fn model_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(engine_dir(app)?.join("models").join(MODEL_FILE))
+fn model_path(app: &AppHandle, spec: &ModelSpec) -> Result<PathBuf, String> {
+    Ok(engine_dir(app)?.join("models").join(spec.file))
 }
 
 fn runtime_asset() -> Result<(String, bool), String> {
@@ -218,15 +253,23 @@ async fn health_ok() -> bool {
 }
 
 #[tauri::command]
-pub async fn engine_status(app: AppHandle) -> Result<EngineStatus, String> {
-    let installed = server_bin(&app)?.exists() && model_path(&app)?.exists();
+pub async fn engine_status(app: AppHandle, model: String) -> Result<EngineStatus, String> {
+    let spec = model_spec(&model)?;
+    let installed = server_bin(&app)?.exists() && model_path(&app, spec)?.exists();
     let running = health_ok().await;
     Ok(EngineStatus {
         installed,
         running,
         port: ENGINE_PORT,
-        model: MODEL_FILE.into(),
+        model: spec.file.into(),
     })
+}
+
+#[tauri::command]
+pub fn system_ram() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.total_memory()
 }
 
 async fn download(
@@ -328,7 +371,8 @@ fn make_executable(dir: &PathBuf) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn engine_install(app: AppHandle) -> Result<(), String> {
+pub async fn engine_install(app: AppHandle, model: String) -> Result<(), String> {
+    let spec = model_spec(&model)?;
     let dir = engine_dir(&app)?;
     let bin_dir = dir.join("bin");
     let model_dir = dir.join("models");
@@ -356,9 +400,9 @@ pub async fn engine_install(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    if !model_path(&app)?.exists() {
-        let dest = model_path(&app)?;
-        download(&app, &client, MODEL_URL, &dest, "model").await?;
+    if !model_path(&app, spec)?.exists() {
+        let dest = model_path(&app, spec)?;
+        download(&app, &client, spec.url, &dest, "model").await?;
     }
     Ok(())
 }
@@ -367,26 +411,47 @@ pub async fn engine_install(app: AppHandle) -> Result<(), String> {
 pub async fn engine_start(
     app: AppHandle,
     state: State<'_, EngineProcess>,
+    model: String,
 ) -> Result<(), String> {
-    if health_ok().await {
+    let spec = model_spec(&model)?;
+
+    // Already serving the requested tier (or an external server owns the
+    // port and we have no child to manage) → nothing to do.
+    let ours_wrong_tier = {
+        let mut guard = state.0.lock().unwrap();
+        match guard.as_mut() {
+            Some(ec) => {
+                let alive = ec.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+                alive && ec.model != model
+            }
+            None => false,
+        }
+    };
+    if !ours_wrong_tier && health_ok().await {
         return Ok(());
     }
+
     let bin = server_bin(&app)?;
-    let model = model_path(&app)?;
-    if !bin.exists() || !model.exists() {
-        return Err("The built-in engine is not installed yet".into());
+    let model_file = model_path(&app, spec)?;
+    if !bin.exists() || !model_file.exists() {
+        return Err("This model tier is not downloaded yet".into());
     }
 
     {
         let mut guard = state.0.lock().unwrap();
-        let alive = guard
-            .as_mut()
-            .map(|c| c.try_wait().map(|s| s.is_none()).unwrap_or(false))
-            .unwrap_or(false);
-        if !alive {
+        // Kill our child if it is dead or serving a different tier.
+        if let Some(ec) = guard.as_mut() {
+            let alive = ec.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+            if !alive || ec.model != model {
+                let _ = ec.child.kill();
+                let _ = ec.child.wait();
+                *guard = None;
+            }
+        }
+        if guard.is_none() {
             let mut cmd = Command::new(&bin);
             cmd.arg("-m")
-                .arg(&model)
+                .arg(&model_file)
                 .args([
                     "--host",
                     "127.0.0.1",
@@ -407,7 +472,10 @@ pub async fn engine_start(
             let child = cmd
                 .spawn()
                 .map_err(|e| format!("Failed to start engine: {e}"))?;
-            *guard = Some(child);
+            *guard = Some(EngineChild {
+                child,
+                model: model.clone(),
+            });
         }
     }
 
@@ -420,7 +488,7 @@ pub async fn engine_start(
         let exited = {
             let mut guard = state.0.lock().unwrap();
             match guard.as_mut() {
-                Some(c) => match c.try_wait() {
+                Some(ec) => match ec.child.try_wait() {
                     Ok(Some(_)) => {
                         *guard = None;
                         true
@@ -439,17 +507,17 @@ pub async fn engine_start(
 
 #[tauri::command]
 pub fn engine_stop(state: State<'_, EngineProcess>) {
-    if let Some(mut child) = state.0.lock().unwrap().take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(mut ec) = state.0.lock().unwrap().take() {
+        let _ = ec.child.kill();
+        let _ = ec.child.wait();
     }
 }
 
 pub fn kill_engine(app: &AppHandle) {
     if let Some(state) = app.try_state::<EngineProcess>() {
-        if let Some(mut child) = state.0.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut ec) = state.0.lock().unwrap().take() {
+            let _ = ec.child.kill();
+            let _ = ec.child.wait();
         }
     }
 }

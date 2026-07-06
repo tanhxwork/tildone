@@ -21,6 +21,14 @@ function App() {
   }, [init]);
 
   useEffect(() => {
+    // Warm the built-in engine on launch when the user opted in.
+    const ai = useAI.getState();
+    if (ai.config.mode === "builtin" && ai.config.autoStart) {
+      ai.startEngine().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === "k") {
