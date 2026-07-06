@@ -131,6 +131,28 @@ describe("#project", () => {
     expect(r.projectId).toBe(8);
     expect(r.title).toBe("thing");
   });
+
+  it("matches multi-word project names by unique prefix", () => {
+    const multi: Project[] = [
+      { id: 11, name: "Zeno Logistics", color: "#888", position: 0 },
+      { id: 12, name: "Zebra", color: "#888", position: 1 },
+    ];
+    expect(parse("audit trucks #zeno", { projects: multi }).projectId).toBe(11);
+    expect(parse("audit trucks #zeno", { projects: multi }).title).toBe("audit trucks");
+    // ambiguous prefix → no match, token stays in the title
+    const amb = parse("audit trucks #ze", { projects: multi });
+    expect(amb.projectId).toBeNull();
+    expect(amb.title).toBe("audit trucks #ze");
+  });
+
+  it("prefers an exact match over a longer prefix candidate", () => {
+    const overlapping: Project[] = [
+      { id: 21, name: "Home", color: "#888", position: 0 },
+      { id: 22, name: "Homework", color: "#888", position: 1 },
+    ];
+    expect(parse("tidy up #home", { projects: overlapping }).projectId).toBe(21);
+    expect(parse("essay #homew", { projects: overlapping }).projectId).toBe(22);
+  });
 });
 
 describe("@tag", () => {

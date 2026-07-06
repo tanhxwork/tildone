@@ -158,12 +158,16 @@ export function parseQuickAdd(
   const now = ctx.now ?? new Date();
   const spans: Span[] = [];
 
-  // #project — only recognized when it names an existing project.
+  // #project — only recognized when it names an existing project, either
+  // exactly or as a unique prefix (multi-word names like "Zeno Logistics"
+  // are otherwise unreachable, since a token ends at whitespace).
   let projectId: number | null = null;
   for (const m of input.matchAll(/(^|\s)#(\S+)/g)) {
-    const project = ctx.projects.find(
-      (p) => p.name.toLowerCase() === m[2].toLowerCase(),
-    );
+    const q = m[2].toLowerCase();
+    const prefixed = ctx.projects.filter((p) => p.name.toLowerCase().startsWith(q));
+    const project =
+      ctx.projects.find((p) => p.name.toLowerCase() === q) ??
+      (prefixed.length === 1 ? prefixed[0] : undefined);
     if (project && m.index !== undefined) {
       projectId = project.id; // last match wins
       const start = m.index + m[1].length;
