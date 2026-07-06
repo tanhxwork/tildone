@@ -875,6 +875,17 @@ impl ServerHandler for TildoneAgent {
 // ---------------------------------------------------------------------------
 // Lifecycle commands
 
+/// Loopback Host validation is rmcp's default (blocks DNS rebinding); on top
+/// of that, reject any browser-originated request outright: web pages always
+/// send an Origin header and can never legitimately talk to this server, while
+/// real MCP clients (CLIs, desktop apps) send none and pass.
+fn server_config() -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default().with_allowed_origins([
+        format!("http://127.0.0.1:{AGENT_PORT}"),
+        format!("http://localhost:{AGENT_PORT}"),
+    ])
+}
+
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     // Same resolution as tauri-plugin-sql: "sqlite:tildone.db" lives in the
     // app config dir.
@@ -911,7 +922,7 @@ pub async fn agent_server_start(
 
     let db: Db = Arc::new(Mutex::new(open_db(&app)?));
     let ct = CancellationToken::new();
-    let config = StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token());
+    let config = server_config().with_cancellation_token(ct.child_token());
     let emitter = app.clone();
     let on_change: Notify = Arc::new(move || {
         let _ = emitter.emit("agent-db-changed", ());
@@ -1165,8 +1176,9 @@ mod tests {
     async fn mcp_over_streamable_http() {
         let agent = test_agent();
         let ct = CancellationToken::new();
-        let config =
-            StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token());
+        // Same config as agent_server_start so origin/host validation is
+        // exercised too.
+        let config = server_config().with_cancellation_token(ct.child_token());
         let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(agent.clone()), Default::default(), config);
         let router = axum::Router::new().nest_service("/mcp", service);
@@ -1266,6 +1278,23 @@ mod tests {
         let task: Value = serde_json::from_str(text).unwrap();
         assert_eq!(task["title"], "From MCP");
         assert_eq!(task["priority"], 2);
+
+        // Drive-by hardening: browser-originated requests (Origin header set)
+        // must be rejected before reaching the protocol layer.
+        let evil = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Origin", "https://evil.example")
+            .body(r#"{"jsonrpc":"2.0","id":9,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"evil","version":"1.0"}}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            evil.status().is_client_error(),
+            "cross-origin request must be rejected, got {}",
+            evil.status()
+        );
 
         ct.cancel();
     }
