@@ -3,11 +3,38 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
 export type AIMode = "off" | "external" | "builtin";
+export type EngineModelId = "small" | "default" | "better";
+
+export interface ModelTier {
+  id: EngineModelId;
+  label: string;
+  detail: string;
+  sizeGB: number;
+  minRamGB: number;
+}
+
+export const MODEL_TIERS: ModelTier[] = [
+  { id: "small", label: "Small", detail: "Qwen 2.5 0.5B — fastest", sizeGB: 0.4, minRamGB: 0 },
+  { id: "default", label: "Default", detail: "Qwen 2.5 1.5B — balanced", sizeGB: 1.1, minRamGB: 8 },
+  { id: "better", label: "Better", detail: "Qwen 2.5 3B — best quality", sizeGB: 2.1, minRamGB: 16 },
+];
+
+/** Highest tier whose RAM floor this machine clears. */
+export function recommendedTier(ramBytes: number): EngineModelId {
+  const ramGB = ramBytes / 1024 ** 3;
+  let pick: EngineModelId = "small";
+  for (const t of MODEL_TIERS) {
+    if (ramGB >= t.minRamGB) pick = t.id;
+  }
+  return pick;
+}
 
 export interface AIConfig {
   mode: AIMode;
   baseUrl: string;
   model: string;
+  engineModel: EngineModelId;
+  autoStart: boolean;
 }
 
 export interface DetectedServer {
@@ -32,14 +59,22 @@ export interface EngineProgress {
 
 const CONFIG_KEY = "tildone-ai-config";
 
+const CONFIG_DEFAULTS: AIConfig = {
+  mode: "off",
+  baseUrl: "",
+  model: "",
+  engineModel: "default",
+  autoStart: false,
+};
+
 function loadConfig(): AIConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    if (raw) return { mode: "off", baseUrl: "", model: "", ...JSON.parse(raw) };
+    if (raw) return { ...CONFIG_DEFAULTS, ...JSON.parse(raw) };
   } catch {
     // fall through to defaults
   }
-  return { mode: "off", baseUrl: "", model: "" };
+  return { ...CONFIG_DEFAULTS };
 }
 
 export function aiReady(config: AIConfig): boolean {
@@ -52,6 +87,7 @@ interface AIStore {
   detected: DetectedServer[];
   probing: boolean;
   engine: EngineStatus | null;
+  ramBytes: number | null;
   installing: boolean;
   starting: boolean;
   progress: EngineProgress | null;
@@ -62,6 +98,7 @@ interface AIStore {
   setConfig: (patch: Partial<AIConfig>) => void;
   probe: () => Promise<void>;
   identify: (baseUrl: string) => Promise<DetectedServer>;
+  fetchRam: () => Promise<void>;
   refreshEngine: () => Promise<void>;
   installEngine: () => Promise<void>;
   startEngine: () => Promise<void>;
@@ -74,6 +111,7 @@ export const useAI = create<AIStore>()((set, get) => ({
   detected: [],
   probing: false,
   engine: null,
+  ramBytes: null,
   installing: false,
   starting: false,
   progress: null,
@@ -82,12 +120,18 @@ export const useAI = create<AIStore>()((set, get) => ({
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
 
-  setConfig: (patch) =>
+  setConfig: (patch) => {
+    const prevModel = get().config.engineModel;
     set((s) => {
       const config = { ...s.config, ...patch };
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return { config };
-    }),
+    });
+    // Installed/running state is per-tier; re-check when the tier changes.
+    if (patch.engineModel && patch.engineModel !== prevModel) {
+      void get().refreshEngine();
+    }
+  },
 
   probe: async () => {
     set({ probing: true });
@@ -108,9 +152,19 @@ export const useAI = create<AIStore>()((set, get) => ({
     return server;
   },
 
+  fetchRam: async () => {
+    if (get().ramBytes !== null) return;
+    try {
+      set({ ramBytes: await invoke<number>("system_ram") });
+    } catch {
+      // RAM badge is a nicety; the picker works without it
+    }
+  },
+
   refreshEngine: async () => {
     try {
-      set({ engine: await invoke<EngineStatus>("engine_status") });
+      const model = get().config.engineModel;
+      set({ engine: await invoke<EngineStatus>("engine_status", { model }) });
     } catch {
       // status probe failing is not fatal; leave last known state
     }
@@ -122,7 +176,7 @@ export const useAI = create<AIStore>()((set, get) => ({
       set({ progress: e.payload }),
     );
     try {
-      await invoke("engine_install");
+      await invoke("engine_install", { model: get().config.engineModel });
       await get().refreshEngine();
     } finally {
       unlisten();
@@ -133,7 +187,7 @@ export const useAI = create<AIStore>()((set, get) => ({
   startEngine: async () => {
     set({ starting: true });
     try {
-      await invoke("engine_start");
+      await invoke("engine_start", { model: get().config.engineModel });
       await get().refreshEngine();
     } finally {
       set({ starting: false });
