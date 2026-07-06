@@ -1,3 +1,4 @@
+mod agent;
 mod ai;
 
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -27,6 +28,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ai::EngineProcess::default())
+        .manage(agent::AgentServer::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -44,12 +46,16 @@ pub fn run() {
             ai::engine_start,
             ai::engine_stop,
             ai::system_ram,
+            agent::agent_server_start,
+            agent::agent_server_stop,
+            agent::agent_server_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 ai::kill_engine(app);
+                agent::shutdown(app);
             }
         });
 }

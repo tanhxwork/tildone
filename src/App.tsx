@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import { useAI } from "./ai";
@@ -53,6 +55,20 @@ function App() {
     if (ai.config.mode === "builtin" && ai.config.autoStart) {
       ai.startEngine().catch(() => {});
     }
+  }, []);
+
+  useEffect(() => {
+    // Agent access: start the MCP server if enabled, and refresh the store
+    // whenever an external agent writes to the database.
+    if (useSettings.getState().agentServer) {
+      invoke("agent_server_start").catch(() => {});
+    }
+    const unlisten = listen("agent-db-changed", () => {
+      void useStore.getState().reload();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, []);
 
   useEffect(() => {
