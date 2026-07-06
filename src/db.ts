@@ -5,7 +5,7 @@ let db: Database | null = null;
 
 async function getDb(): Promise<Database> {
   if (!db) {
-    db = await Database.load("sqlite:taskflow.db");
+    db = await Database.load("sqlite:tildone.db");
   }
   return db;
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TaskFlow",
+  "productName": "Tildone",
   "version": "0.1.0",
-  "identifier": "com.hongxuan.taskflow",
+  "identifier": "com.tildone.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "TaskFlow",
+        "title": "Tildone",
         "width": 1140,
         "height": 760,
         "minWidth": 860,

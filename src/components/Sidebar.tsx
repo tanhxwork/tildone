@@ -71,7 +71,7 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-titlebar" data-tauri-drag-region />
       <div className="sidebar-brand" data-tauri-drag-region>
-        TaskFlow
+        Tildone
       </div>
 
       <nav className="sidebar-section">

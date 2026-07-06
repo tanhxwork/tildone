@@ -1,4 +1,4 @@
-# TaskFlow
+# Tildone
 
 A lightweight desktop app for project and task management, built with Tauri 2, React 19, TypeScript, and a local SQLite database. Fully offline — all data stays on your machine.
 
@@ -32,7 +32,7 @@ npm run tauri build   # produce a distributable .app / .dmg
 
 ## Architecture
 
-- `src-tauri/` — Rust shell. Registers `tauri-plugin-sql` with the schema migration in `src-tauri/migrations/`. The SQLite file lives in the app's data directory (`~/Library/Application Support/com.hongxuan.taskflow/taskflow.db` on macOS).
+- `src-tauri/` — Rust shell. Registers `tauri-plugin-sql` with the schema migration in `src-tauri/migrations/`. The SQLite file lives in the app's data directory (`~/Library/Application Support/com.tildone.desktop/tildone.db` on macOS).
 - `src/db.ts` — thin data-access layer; all SQL lives here.
 - `src/store.ts` — zustand store; optimistic UI state + persistence via `db.ts`.
 - `src/selectors.ts` — pure filtering/selection logic shared by the list and board views.

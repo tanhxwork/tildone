@@ -13,7 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:taskflow.db", migrations)
+                .add_migrations("sqlite:tildone.db", migrations)
                 .build(),
         )
         .run(tauri::generate_context!())
