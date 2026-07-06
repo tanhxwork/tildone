@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { aiReady, useAI } from "../ai";
 import { useStore } from "../store";
 import type { Status } from "../types";
 import { PRIORITY_COLORS, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from "../types";
-import { IconFlag, IconTrash, IconX } from "./Icons";
+import { IconFlag, IconSparkles, IconTrash, IconX } from "./Icons";
 
 export function TaskEditor() {
   const {
@@ -15,7 +16,10 @@ export function TaskEditor() {
     removeTask,
     addTag,
     assignTags,
+    addTask,
   } = useStore();
+  const aiConfig = useAI((s) => s.config);
+  const chat = useAI((s) => s.chat);
 
   const task = tasks.find((t) => t.id === editingTaskId);
 
@@ -23,6 +27,8 @@ export function TaskEditor() {
   const [notes, setNotes] = useState("");
   const [tagInput, setTagInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState("");
 
   useEffect(() => {
     if (task) {
@@ -30,6 +36,7 @@ export function TaskEditor() {
       setNotes(task.notes);
       setTagInput("");
       setConfirmDelete(false);
+      setAiError("");
     }
     // Re-sync local fields only when switching to a different task.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,6 +67,34 @@ export function TaskEditor() {
       await assignTags(task!.id, [...task!.tag_ids, id]);
     }
     setTagInput("");
+  }
+
+  async function breakIntoSubtasks() {
+    setAiBusy(true);
+    setAiError("");
+    try {
+      const context = task!.notes ? `${task!.title}\n\nNotes: ${task!.notes}` : task!.title;
+      const reply = await chat(
+        "You break a task into small actionable subtasks. Reply with one subtask per line, 3 to 6 lines. Each line is a short imperative phrase. No numbering, no bullets, no headings, no extra commentary.",
+        `Break this task into subtasks:\n\n${context}`,
+      );
+      const lines = reply
+        .split("\n")
+        .map((l) => l.replace(/^[\s\-*•\d.)]+/, "").trim())
+        .filter((l) => l.length > 2)
+        .slice(0, 8);
+      if (lines.length === 0) {
+        setAiError("The AI did not return any subtasks — try again.");
+        return;
+      }
+      for (const line of lines) {
+        await addTask({ title: line, project_id: task!.project_id, due_date: null });
+      }
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAiBusy(false);
+    }
   }
 
   const taskTags = tags.filter((t) => task.tag_ids.includes(t.id));
@@ -93,6 +128,16 @@ export function TaskEditor() {
           onChange={(e) => setNotes(e.target.value)}
           onBlur={commitNotes}
         />
+
+        {aiReady(aiConfig) && (
+          <div className="field">
+            <button className="btn ai-action" disabled={aiBusy} onClick={() => void breakIntoSubtasks()}>
+              <IconSparkles size={13} />
+              {aiBusy ? "Thinking…" : "Break into subtasks"}
+            </button>
+            {aiError && <p className="ai-error">{aiError}</p>}
+          </div>
+        )}
 
         <div className="field">
           <span className="field-label">Status</span>

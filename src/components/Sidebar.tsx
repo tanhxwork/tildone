@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useAI } from "../ai";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { todayStr } from "../utils/dates";
@@ -8,6 +9,7 @@ import {
   IconLayers,
   IconPencil,
   IconPlus,
+  IconSparkles,
   IconStar,
   IconX,
 } from "./Icons";
@@ -33,6 +35,8 @@ export function Sidebar() {
     removeTag,
   } = useStore();
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
+  const aiMode = useAI((s) => s.config.mode);
+  const openAISettings = useAI((s) => s.openSettings);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
 
   const counts = useMemo(() => {
@@ -189,6 +193,16 @@ export function Sidebar() {
           </div>
         </div>
       )}
+
+      <div className="sidebar-footer">
+        <button className="nav-item" onClick={openAISettings}>
+          <span className="nav-icon">
+            <IconSparkles />
+          </span>
+          <span className="nav-label">AI Assistant</span>
+          <span className={`ai-dot ${aiMode !== "off" ? "on" : ""}`} />
+        </button>
+      </div>
 
       {dialog !== null && (
         <ProjectDialog
