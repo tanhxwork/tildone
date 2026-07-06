@@ -4,16 +4,32 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let migrations = vec![Migration {
-        version: 1,
-        description: "create_initial_schema",
-        sql: include_str!("../migrations/001_init.sql"),
-        kind: MigrationKind::Up,
-    }];
+    let migrations = vec![
+        Migration {
+            version: 1,
+            description: "create_initial_schema",
+            sql: include_str!("../migrations/001_init.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "add_task_soft_delete",
+            sql: include_str!("../migrations/002_trash.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "add_subtasks_and_activity",
+            sql: include_str!("../migrations/003_subtasks_activity.sql"),
+            kind: MigrationKind::Up,
+        },
+    ];
 
     tauri::Builder::default()
         .manage(ai::EngineProcess::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:tildone.db", migrations)

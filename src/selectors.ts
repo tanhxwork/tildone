@@ -8,6 +8,15 @@ export interface Filters {
   showCompleted: boolean;
 }
 
+/** Tasks that are not in the trash — every view except Trash works on these. */
+export function liveTasks(tasks: Task[]): Task[] {
+  return tasks.filter((t) => t.deleted_at === null);
+}
+
+export function trashedTasks(tasks: Task[]): Task[] {
+  return tasks.filter((t) => t.deleted_at !== null);
+}
+
 export function taskMatchesFilters(task: Task, filters: Filters): boolean {
   if (!filters.showCompleted && task.status === "done") return false;
   if (filters.priorityFilter && task.priority !== filters.priorityFilter) return false;
@@ -25,18 +34,23 @@ export function taskMatchesFilters(task: Task, filters: Filters): boolean {
 }
 
 export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
+  const live = liveTasks(tasks);
   const today = todayStr();
   switch (selection.type) {
     case "today":
-      return tasks.filter((t) => t.due_date !== null && t.due_date <= today);
+      return live.filter((t) => t.due_date !== null && t.due_date <= today);
     case "upcoming":
-      return tasks.filter((t) => t.due_date !== null && t.due_date > today);
+      return live.filter((t) => t.due_date !== null && t.due_date > today);
     case "inbox":
-      return tasks.filter((t) => t.project_id === null);
+      return live.filter((t) => t.project_id === null);
     case "all":
-      return tasks;
+    // Pages (week, review, completed) do their own slicing from the full live set.
+    case "week":
+    case "review":
+    case "completed":
+      return live;
     case "project":
-      return tasks.filter((t) => t.project_id === selection.projectId);
+      return live.filter((t) => t.project_id === selection.projectId);
   }
 }
 

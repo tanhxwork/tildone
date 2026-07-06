@@ -1,16 +1,22 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useAI } from "../ai";
+import { useSettings } from "../settings";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { todayStr } from "../utils/dates";
 import {
+  IconArchive,
   IconCalendar,
+  IconChart,
+  IconColumns,
   IconInbox,
   IconLayers,
   IconPencil,
   IconPlus,
+  IconSettings,
   IconSparkles,
   IconStar,
+  IconTag,
   IconX,
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
@@ -37,11 +43,13 @@ export function Sidebar() {
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
   const aiMode = useAI((s) => s.config.mode);
   const openAISettings = useAI((s) => s.openSettings);
+  const openSettings = useSettings((s) => s.openSettings);
+  const setTagManagerOpen = useStore((s) => s.setTagManagerOpen);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
 
   const counts = useMemo(() => {
     const today = todayStr();
-    const open = tasks.filter((t) => t.status !== "done");
+    const open = tasks.filter((t) => t.status !== "done" && t.deleted_at === null);
     const byProject = new Map<number, number>();
     for (const t of open) {
       if (t.project_id !== null) {
@@ -71,6 +79,12 @@ export function Sidebar() {
     { sel: { type: "all" }, label: "All Tasks", icon: <IconLayers />, count: counts.all },
   ];
 
+  const pages: { sel: Selection; label: string; icon: ReactNode }[] = [
+    { sel: { type: "week" }, label: "My Week", icon: <IconColumns /> },
+    { sel: { type: "review" }, label: "Review", icon: <IconChart /> },
+    { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
+  ];
+
   return (
     <aside className="sidebar">
       <div className="sidebar-titlebar" data-tauri-drag-region />
@@ -88,6 +102,22 @@ export function Sidebar() {
             <span className="nav-icon">{item.icon}</span>
             <span className="nav-label">{item.label}</span>
             {item.count > 0 && <span className="nav-count">{item.count}</span>}
+          </button>
+        ))}
+      </nav>
+
+      <nav className="sidebar-section">
+        <div className="section-header">
+          <span>Plan</span>
+        </div>
+        {pages.map((item) => (
+          <button
+            key={item.label}
+            className={`nav-item ${isSelected(selection, item.sel) ? "active" : ""}`}
+            onClick={() => select(item.sel)}
+          >
+            <span className="nav-icon">{item.icon}</span>
+            <span className="nav-label">{item.label}</span>
           </button>
         ))}
       </nav>
@@ -201,6 +231,18 @@ export function Sidebar() {
           </span>
           <span className="nav-label">AI Assistant</span>
           <span className={`ai-dot ${aiMode !== "off" ? "on" : ""}`} />
+        </button>
+        <button className="nav-item" onClick={() => setTagManagerOpen(true)}>
+          <span className="nav-icon">
+            <IconTag />
+          </span>
+          <span className="nav-label">Tags & projects</span>
+        </button>
+        <button className="nav-item" onClick={openSettings}>
+          <span className="nav-icon">
+            <IconSettings />
+          </span>
+          <span className="nav-label">Settings</span>
         </button>
       </div>
 
