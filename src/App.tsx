@@ -38,16 +38,22 @@ function App() {
   }, [openEditor]);
 
   if (!loaded) {
-    return <div className="app-loading">Loading…</div>;
+    return (
+      <div className="flex h-screen items-center justify-center text-ink-muted">
+        Loading…
+      </div>
+    );
   }
 
   return (
-    <div className="app">
+    <div className="flex h-screen">
       <Sidebar />
-      <main className="main">
+      <main className="flex min-w-0 flex-1 flex-col bg-main">
         <Header searchRef={searchRef} />
         <QuickAdd inputRef={quickAddRef} />
-        <div className="content">{viewMode === "board" ? <Kanban /> : <TaskList />}</div>
+        <div className="flex-1 overflow-y-auto px-5 pb-6 pt-1">
+          {viewMode === "board" ? <Kanban /> : <TaskList />}
+        </div>
       </main>
       {editingTaskId !== null && <TaskEditor />}
       {aiSettingsOpen && <AISettings />}

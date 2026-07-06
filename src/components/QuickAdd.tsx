@@ -31,13 +31,14 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
           : "to inbox";
 
   return (
-    <div className="quick-add">
+    <div className="mx-5 my-3 flex items-center gap-2 rounded-lg border border-edge bg-card px-2.5 py-[7px] text-ink-faint transition-[border-color,box-shadow] focus-within:border-accent focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_18%,transparent)]">
       <IconPlus size={15} />
       <input
         ref={inputRef}
         value={title}
         placeholder={`Add a task (${hint})…`}
         aria-label="New task title"
+        className="flex-1 bg-transparent text-ink outline-none placeholder:text-ink-faint"
         onChange={(e) => setTitle(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && submit()}
       />

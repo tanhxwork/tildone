@@ -4,6 +4,16 @@ import { useStore } from "../store";
 import type { Status } from "../types";
 import { PRIORITY_COLORS, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from "../types";
 import { IconFlag, IconSparkles, IconTrash, IconX } from "./Icons";
+import {
+  Button,
+  Segmented,
+  TagChip,
+  field,
+  fieldLabel,
+  iconBtn,
+  inputBase,
+  tagDeleteClass,
+} from "./ui";
 
 export function TaskEditor() {
   const {
@@ -101,17 +111,22 @@ export function TaskEditor() {
   const availableTags = tags.filter((t) => !task.tag_ids.includes(t.id));
 
   return (
-    <aside className="editor" aria-label="Task details">
-      <div className="editor-header">
-        <span className="editor-heading">Details</span>
-        <button className="icon-btn" aria-label="Close details" onClick={() => openEditor(null)}>
+    <aside
+      className="flex w-[300px] shrink-0 flex-col border-l border-edge bg-sidebar"
+      aria-label="Task details"
+    >
+      <div className="flex items-center justify-between px-3.5 pb-2 pt-10">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.5px] text-ink-faint">
+          Details
+        </span>
+        <button className={iconBtn} aria-label="Close details" onClick={() => openEditor(null)}>
           <IconX />
         </button>
       </div>
 
-      <div className="editor-body">
+      <div className="flex flex-1 flex-col gap-3.5 overflow-y-auto px-3.5">
         <input
-          className="editor-title"
+          className="w-full rounded-md border border-edge bg-card px-2.5 py-[7px] text-[14px] font-semibold focus:border-accent focus:outline-none"
           value={title}
           aria-label="Task title"
           onChange={(e) => setTitle(e.target.value)}
@@ -120,7 +135,7 @@ export function TaskEditor() {
         />
 
         <textarea
-          className="editor-notes"
+          className="min-h-[70px] w-full resize-y rounded-md border border-edge bg-card px-2.5 py-[7px] focus:border-accent focus:outline-none"
           value={notes}
           placeholder="Notes…"
           aria-label="Task notes"
@@ -130,59 +145,67 @@ export function TaskEditor() {
         />
 
         {aiReady(aiConfig) && (
-          <div className="field">
-            <button className="btn ai-action" disabled={aiBusy} onClick={() => void breakIntoSubtasks()}>
+          <div className={field}>
+            <Button
+              variant="accent"
+              className="self-start"
+              disabled={aiBusy}
+              onClick={() => void breakIntoSubtasks()}
+            >
               <IconSparkles size={13} />
               {aiBusy ? "Thinking…" : "Break into subtasks"}
-            </button>
-            {aiError && <p className="ai-error">{aiError}</p>}
+            </Button>
+            {aiError && (
+              <p className="text-[12px] text-danger wrap-anywhere">{aiError}</p>
+            )}
           </div>
         )}
 
-        <div className="field">
-          <span className="field-label">Status</span>
-          <div className="segmented full">
-            {STATUSES.map((status: Status) => (
-              <button
-                key={status}
-                className={task.status === status ? "active" : ""}
-                onClick={() => patchTask(task.id, { status })}
-              >
-                {STATUS_LABELS[status]}
-              </button>
-            ))}
-          </div>
+        <div className={field}>
+          <span className={fieldLabel}>Status</span>
+          <Segmented
+            full
+            value={task.status}
+            onChange={(status: Status) => void patchTask(task.id, { status })}
+            options={STATUSES.map((status: Status) => ({
+              value: status,
+              label: STATUS_LABELS[status],
+            }))}
+          />
         </div>
 
-        <div className="field">
-          <span className="field-label">Priority</span>
-          <div className="segmented full">
-            {[0, 1, 2, 3].map((priority) => (
-              <button
-                key={priority}
-                className={task.priority === priority ? "active" : ""}
-                onClick={() => patchTask(task.id, { priority })}
-              >
-                {priority > 0 && (
-                  <IconFlag size={11} style={{ color: PRIORITY_COLORS[priority] }} />
-                )}
-                {PRIORITY_LABELS[priority]}
-              </button>
-            ))}
-          </div>
+        <div className={field}>
+          <span className={fieldLabel}>Priority</span>
+          <Segmented
+            full
+            value={task.priority}
+            onChange={(priority) => void patchTask(task.id, { priority })}
+            options={[0, 1, 2, 3].map((priority) => ({
+              value: priority,
+              label: (
+                <>
+                  {priority > 0 && (
+                    <IconFlag size={11} style={{ color: PRIORITY_COLORS[priority] }} />
+                  )}
+                  {PRIORITY_LABELS[priority]}
+                </>
+              ),
+            }))}
+          />
         </div>
 
-        <label className="field">
-          <span className="field-label">Due date</span>
-          <div className="date-row">
+        <label className={field}>
+          <span className={fieldLabel}>Due date</span>
+          <div className="flex items-center gap-1.5">
             <input
               type="date"
+              className="flex-1 cursor-pointer rounded-md border border-edge bg-card px-2 py-1 focus:border-accent focus:outline-none"
               value={task.due_date ?? ""}
               onChange={(e) => patchTask(task.id, { due_date: e.target.value || null })}
             />
             {task.due_date && (
               <button
-                className="icon-btn"
+                className={iconBtn}
                 aria-label="Clear due date"
                 onClick={() => patchTask(task.id, { due_date: null })}
               >
@@ -192,9 +215,10 @@ export function TaskEditor() {
           </div>
         </label>
 
-        <label className="field">
-          <span className="field-label">Project</span>
+        <label className={field}>
+          <span className={fieldLabel}>Project</span>
           <select
+            className={`${inputBase} cursor-pointer`}
             value={task.project_id ?? ""}
             onChange={(e) =>
               patchTask(task.id, {
@@ -211,32 +235,31 @@ export function TaskEditor() {
           </select>
         </label>
 
-        <div className="field">
-          <span className="field-label">Tags</span>
-          <div className="editor-tags">
-            {taskTags.map((tag) => (
-              <span
-                key={tag.id}
-                className="tag-chip active"
-                style={{ ["--tag-color" as string]: tag.color }}
-              >
-                {tag.name}
-                <button
-                  className="tag-delete"
-                  aria-label={`Remove tag ${tag.name}`}
-                  onClick={() =>
-                    assignTags(
-                      task.id,
-                      task.tag_ids.filter((id) => id !== tag.id),
-                    )
-                  }
-                >
-                  <IconX size={11} />
-                </button>
-              </span>
-            ))}
-          </div>
+        <div className={field}>
+          <span className={fieldLabel}>Tags</span>
+          {taskTags.length > 0 && (
+            <div className="flex flex-wrap gap-[5px]">
+              {taskTags.map((tag) => (
+                <TagChip key={tag.id} color={tag.color} active>
+                  {tag.name}
+                  <button
+                    className={tagDeleteClass()}
+                    aria-label={`Remove tag ${tag.name}`}
+                    onClick={() =>
+                      assignTags(
+                        task.id,
+                        task.tag_ids.filter((id) => id !== tag.id),
+                      )
+                    }
+                  >
+                    <IconX size={11} />
+                  </button>
+                </TagChip>
+              ))}
+            </div>
+          )}
           <input
+            className={inputBase}
             value={tagInput}
             placeholder="Add tag and press Enter…"
             aria-label="Add tag"
@@ -252,16 +275,16 @@ export function TaskEditor() {
         </div>
       </div>
 
-      <div className="editor-footer">
+      <div className="border-t border-edge px-3.5 py-3">
         {confirmDelete ? (
-          <button className="btn danger" onClick={() => removeTask(task.id)}>
+          <Button variant="danger" onClick={() => removeTask(task.id)}>
             Confirm delete
-          </button>
+          </Button>
         ) : (
-          <button className="btn ghost-danger" onClick={() => setConfirmDelete(true)}>
+          <Button variant="ghost-danger" onClick={() => setConfirmDelete(true)}>
             <IconTrash size={13} />
             Delete task
-          </button>
+          </Button>
         )}
       </div>
     </aside>

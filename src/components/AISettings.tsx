@@ -1,9 +1,31 @@
 import { useEffect, useState } from "react";
 import { aiReady, useAI, type AIMode } from "../ai";
 import { IconCheck, IconSparkles, IconX } from "./Icons";
+import {
+  Button,
+  field,
+  fieldLabel,
+  iconBtn,
+  modal,
+  modalOverlay,
+  modalTitle,
+} from "./ui";
 
 function formatMB(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
+}
+
+const aiHint = "text-[12px] text-ink-muted";
+const aiPanel = "flex flex-col gap-2.5 rounded-lg bg-inset p-3";
+
+function aiDotClass(on: boolean): string {
+  return `size-[7px] shrink-0 rounded-full ${on ? "bg-success" : "bg-ink-faint"}`;
+}
+
+function aiModeClass(selected: boolean): string {
+  return `flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition-colors ${
+    selected ? "border-accent bg-active" : "border-edge hover:bg-hover"
+  }`;
 }
 
 export function AISettings() {
@@ -108,70 +130,71 @@ export function AISettings() {
       : null;
 
   return (
-    <div className="modal-overlay" onClick={closeSettings}>
+    <div className={modalOverlay} onClick={closeSettings}>
       <div
-        className="modal ai-modal"
+        className={`${modal} max-h-[calc(100vh-80px)] w-[520px] max-w-[calc(100vw-48px)] overflow-y-auto`}
         role="dialog"
         aria-label="AI Assistant settings"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal-header">
-          <h2>
+        <div className="flex items-center justify-between">
+          <h2 className={`${modalTitle} flex items-center gap-[7px]`}>
             <IconSparkles size={15} /> AI Assistant
           </h2>
-          <button className="icon-btn" aria-label="Close" onClick={closeSettings}>
+          <button className={iconBtn} aria-label="Close" onClick={closeSettings}>
             <IconX />
           </button>
         </div>
 
-        <p className="ai-intro">
+        <p className="text-[12.5px] text-ink-muted">
           Everything runs locally on this computer — your tasks never leave your
           machine.
         </p>
 
-        <div className="ai-modes">
-          <label className={`ai-mode ${config.mode === "off" ? "selected" : ""}`}>
+        <div className="flex flex-col gap-2">
+          <label className={aiModeClass(config.mode === "off")}>
             <input
               type="radio"
               name="ai-mode"
+              className="mt-0.5 accent-accent"
               checked={config.mode === "off"}
               onChange={() => pickMode("off")}
             />
             <div>
-              <div className="ai-mode-title">Off</div>
-              <div className="ai-mode-desc">No AI features.</div>
+              <div className="text-[13px] font-semibold">Off</div>
+              <div className="mt-0.5 text-[12px] leading-[1.45] text-ink-muted">
+                No AI features.
+              </div>
             </div>
           </label>
 
-          <label
-            className={`ai-mode ${config.mode === "external" ? "selected" : ""}`}
-          >
+          <label className={aiModeClass(config.mode === "external")}>
             <input
               type="radio"
               name="ai-mode"
+              className="mt-0.5 accent-accent"
               checked={config.mode === "external"}
               onChange={() => pickMode("external")}
             />
             <div>
-              <div className="ai-mode-title">My own local AI</div>
-              <div className="ai-mode-desc">
+              <div className="text-[13px] font-semibold">My own local AI</div>
+              <div className="mt-0.5 text-[12px] leading-[1.45] text-ink-muted">
                 Use Ollama, LM Studio or any local server you already run.
               </div>
             </div>
           </label>
 
-          <label
-            className={`ai-mode ${config.mode === "builtin" ? "selected" : ""}`}
-          >
+          <label className={aiModeClass(config.mode === "builtin")}>
             <input
               type="radio"
               name="ai-mode"
+              className="mt-0.5 accent-accent"
               checked={config.mode === "builtin"}
               onChange={() => pickMode("builtin")}
             />
             <div>
-              <div className="ai-mode-title">Built-in engine</div>
-              <div className="ai-mode-desc">
+              <div className="text-[13px] font-semibold">Built-in engine</div>
+              <div className="mt-0.5 text-[12px] leading-[1.45] text-ink-muted">
                 Tildone runs its own model on port 11500 — it won't touch your
                 other AI apps.
               </div>
@@ -180,16 +203,16 @@ export function AISettings() {
         </div>
 
         {config.mode === "external" && (
-          <div className="ai-panel">
-            <div className="ai-panel-header">
+          <div className={aiPanel}>
+            <div className="flex items-center justify-between text-[12px] font-semibold text-ink-muted">
               <span>Detected on this computer</span>
-              <button className="btn small" disabled={probing} onClick={() => void probe()}>
+              <Button small disabled={probing} onClick={() => void probe()}>
                 {probing ? "Scanning…" : "Rescan"}
-              </button>
+              </Button>
             </div>
 
             {detected.length === 0 && !probing && (
-              <p className="ai-hint">
+              <p className={aiHint}>
                 Nothing found on the usual ports (11434, 1234, 8080). Start your
                 AI app, or enter its address below.
               </p>
@@ -198,24 +221,28 @@ export function AISettings() {
             {detected.map((server) => (
               <div key={server.base_url}>
                 <label
-                  className={`ai-server ${config.baseUrl === server.base_url ? "selected" : ""}`}
+                  className={`flex cursor-pointer items-center gap-2 rounded-md border bg-card px-2.5 py-2 text-[12.5px] ${
+                    config.baseUrl === server.base_url ? "border-accent" : "border-edge"
+                  }`}
                 >
                   <input
                     type="radio"
                     name="ai-server"
+                    className="accent-accent"
                     checked={config.baseUrl === server.base_url}
                     onChange={() => pickServer(server.base_url, server.models)}
                   />
-                  <span className="ai-server-name">{server.name}</span>
-                  <span className="ai-server-url">{server.base_url}</span>
-                  <span className="ai-server-count">
+                  <span className="font-semibold">{server.name}</span>
+                  <span className="text-[11.5px] text-ink-faint">{server.base_url}</span>
+                  <span className="ml-auto text-[11.5px] text-ink-muted">
                     {server.models.length} model{server.models.length === 1 ? "" : "s"}
                   </span>
                 </label>
                 {config.baseUrl === server.base_url && server.models.length > 0 && (
-                  <label className="field ai-model-field">
-                    <span className="field-label">Model</span>
+                  <label className={`${field} mt-2`}>
+                    <span className={fieldLabel}>Model</span>
                     <select
+                      className="w-full cursor-pointer rounded-md border border-edge bg-card px-[9px] py-1.5 focus:border-accent focus:outline-none"
                       value={config.model}
                       onChange={(e) => setConfig({ model: e.target.value })}
                     >
@@ -231,104 +258,104 @@ export function AISettings() {
             ))}
 
             {selected === undefined && config.baseUrl && (
-              <p className="ai-hint">
+              <p className={aiHint}>
                 Currently set to {config.baseUrl} ({config.model || "no model"}).
               </p>
             )}
 
-            <div className="ai-custom">
+            <div className="flex gap-2">
               <input
+                className="flex-1 rounded-md border border-edge bg-card px-2.5 py-[7px] text-[12.5px] text-ink focus:border-accent focus:outline-none"
                 value={customUrl}
                 placeholder="Custom address, e.g. localhost:8080"
                 aria-label="Custom server address"
                 onChange={(e) => setCustomUrl(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && customUrl.trim() && void connectCustom()}
               />
-              <button
-                className="btn"
+              <Button
                 disabled={!customUrl.trim() || customBusy}
                 onClick={() => void connectCustom()}
               >
                 {customBusy ? "Connecting…" : "Connect"}
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         {config.mode === "builtin" && (
-          <div className="ai-panel">
+          <div className={aiPanel}>
             {engine === null ? (
-              <p className="ai-hint">Checking engine status…</p>
+              <p className={aiHint}>Checking engine status…</p>
             ) : !engine.installed ? (
               installing ? (
-                <div className="ai-progress-block">
-                  <span className="ai-hint">
+                <div className="flex flex-col gap-2">
+                  <span className={aiHint}>
                     {progress?.phase === "model"
                       ? `Downloading model… ${formatMB(progress.downloaded)}${progress.total ? ` of ${formatMB(progress.total)}` : ""}`
                       : progress
                         ? `Downloading engine… ${formatMB(progress.downloaded)}${progress.total ? ` of ${formatMB(progress.total)}` : ""}`
                         : "Preparing download…"}
                   </span>
-                  <div className="ai-progress">
+                  <div className="h-1.5 overflow-hidden rounded-[3px] bg-hover">
                     <div
-                      className="ai-progress-fill"
+                      className="h-full rounded-[3px] bg-accent transition-[width] duration-300"
                       style={{ width: pct !== null ? `${pct}%` : "8%" }}
                     />
                   </div>
                 </div>
               ) : (
                 <>
-                  <p className="ai-hint">
+                  <p className={aiHint}>
                     One-time download of about 1.1 GB (engine + Qwen 2.5 model).
                     After that it works fully offline.
                   </p>
-                  <button className="btn primary" onClick={() => void install()}>
+                  <Button variant="primary" className="justify-center" onClick={() => void install()}>
                     Download &amp; set up
-                  </button>
+                  </Button>
                 </>
               )
             ) : (
-              <div className="ai-engine-status">
-                <span className={`ai-dot ${engine.running ? "on" : ""}`} />
-                <span className="ai-hint">
+              <div className="flex items-center gap-2">
+                <span className={aiDotClass(engine.running)} />
+                <span className={aiHint}>
                   {engine.running
                     ? `Running on port ${engine.port}`
                     : starting
                       ? "Starting…"
                       : "Installed — starts automatically when you use an AI feature"}
                 </span>
-                <div className="spacer" />
+                <div className="flex-1" />
                 {engine.running ? (
-                  <button className="btn small" onClick={() => void stopEngine()}>
+                  <Button small onClick={() => void stopEngine()}>
                     Stop
-                  </button>
+                  </Button>
                 ) : (
-                  <button className="btn small" disabled={starting} onClick={() => void start()}>
+                  <Button small disabled={starting} onClick={() => void start()}>
                     Start now
-                  </button>
+                  </Button>
                 )}
               </div>
             )}
           </div>
         )}
 
-        {error && <p className="ai-error">{error}</p>}
+        {error && <p className="text-[12px] text-danger wrap-anywhere">{error}</p>}
         {testResult && (
-          <p className="ai-test-result">
+          <p className="flex items-center gap-1.5 text-[12.5px] text-success">
             <IconCheck size={13} /> {testResult}
           </p>
         )}
 
-        <div className="modal-footer">
+        <div className="flex items-center gap-2">
           {aiReady(config) && (
-            <button className="btn" disabled={testing} onClick={() => void runTest()}>
+            <Button disabled={testing} onClick={() => void runTest()}>
               {testing ? "Testing…" : "Test it"}
-            </button>
+            </Button>
           )}
-          <div className="spacer" />
-          <button className="btn primary" onClick={closeSettings}>
+          <div className="flex-1" />
+          <Button variant="primary" onClick={closeSettings}>
             Done
-          </button>
+          </Button>
         </div>
       </div>
     </div>

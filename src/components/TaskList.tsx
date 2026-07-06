@@ -95,13 +95,13 @@ export function TaskList() {
 
   if (isEmpty) {
     return (
-      <div className="empty-state">
-        <p className="empty-title">
+      <div className="flex flex-col items-center justify-center gap-1 px-5 py-20 text-center">
+        <p className="text-[15px] font-semibold text-ink-muted">
           {search || activeTagIds.length > 0 || priorityFilter
             ? "No tasks match your filters"
             : "All clear"}
         </p>
-        <p className="empty-hint">
+        <p className="text-ink-faint">
           {search || activeTagIds.length > 0 || priorityFilter
             ? "Try clearing the search or filters."
             : "Add a task above to get started."}
@@ -111,14 +111,20 @@ export function TaskList() {
   }
 
   return (
-    <div className="task-list">
+    <div>
       {groups.map((group) =>
         group.tasks.length === 0 ? null : (
-          <section key={group.key} className="task-group">
+          <section key={group.key} className="mb-[18px]">
             {group.label && (
-              <h2 className={`group-label ${group.accent ?? ""}`}>
+              <h2
+                className={`flex items-center gap-[7px] px-2.5 pb-1 pt-1.5 text-[12px] font-semibold uppercase tracking-[0.4px] ${
+                  group.accent === "danger" ? "text-danger" : "text-ink-muted"
+                }`}
+              >
                 {group.label}
-                <span className="group-count">{group.tasks.length}</span>
+                <span className="text-[11px] font-medium tabular-nums text-ink-faint">
+                  {group.tasks.length}
+                </span>
               </h2>
             )}
             {group.tasks.map((task) => (

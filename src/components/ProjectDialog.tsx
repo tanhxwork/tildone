@@ -3,6 +3,16 @@ import { useStore } from "../store";
 import type { Project } from "../types";
 import { COLOR_CHOICES } from "../types";
 import { IconX } from "./Icons";
+import {
+  Button,
+  field,
+  fieldLabel,
+  iconBtn,
+  inputBase,
+  modal,
+  modalOverlay,
+  modalTitle,
+} from "./ui";
 
 export function ProjectDialog({
   project,
@@ -28,24 +38,25 @@ export function ProjectDialog({
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className={modalOverlay} onClick={onClose}>
       <div
-        className="modal"
+        className={`${modal} w-[340px]`}
         role="dialog"
         aria-label={project ? "Edit project" : "New project"}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal-header">
-          <h2>{project ? "Edit Project" : "New Project"}</h2>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
+        <div className="flex items-center justify-between">
+          <h2 className={modalTitle}>{project ? "Edit Project" : "New Project"}</h2>
+          <button className={iconBtn} aria-label="Close" onClick={onClose}>
             <IconX />
           </button>
         </div>
 
-        <label className="field">
-          <span className="field-label">Name</span>
+        <label className={field}>
+          <span className={fieldLabel}>Name</span>
           <input
             autoFocus
+            className={inputBase}
             value={name}
             placeholder="Project name"
             onChange={(e) => setName(e.target.value)}
@@ -53,13 +64,15 @@ export function ProjectDialog({
           />
         </label>
 
-        <div className="field">
-          <span className="field-label">Color</span>
-          <div className="color-row">
+        <div className={field}>
+          <span className={fieldLabel}>Color</span>
+          <div className="flex gap-2">
             {COLOR_CHOICES.map((c) => (
               <button
                 key={c}
-                className={`color-swatch ${c === color ? "selected" : ""}`}
+                className={`size-[22px] rounded-full border-2 transition-[transform,border-color] hover:scale-[1.12] ${
+                  c === color ? "border-ink" : "border-transparent"
+                }`}
                 style={{ background: c }}
                 aria-label={`Color ${c}`}
                 onClick={() => setColor(c)}
@@ -68,30 +81,28 @@ export function ProjectDialog({
           </div>
         </div>
 
-        <div className="modal-footer">
+        <div className="flex items-center gap-2">
           {project &&
             (confirmDelete ? (
-              <button
-                className="btn danger"
+              <Button
+                variant="danger"
                 onClick={async () => {
                   await removeProject(project.id);
                   onClose();
                 }}
               >
                 Delete project and its tasks?
-              </button>
+              </Button>
             ) : (
-              <button className="btn ghost-danger" onClick={() => setConfirmDelete(true)}>
+              <Button variant="ghost-danger" onClick={() => setConfirmDelete(true)}>
                 Delete
-              </button>
+              </Button>
             ))}
-          <div className="spacer" />
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn primary" disabled={!name.trim()} onClick={save}>
+          <div className="flex-1" />
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!name.trim()} onClick={save}>
             {project ? "Save" : "Create"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

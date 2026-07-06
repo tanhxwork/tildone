@@ -3,15 +3,18 @@ import type { Task } from "../types";
 import { PRIORITY_COLORS, PRIORITY_LABELS, STATUS_LABELS } from "../types";
 import { dueLabel, isOverdue } from "../utils/dates";
 import { IconCheck, IconFlag } from "./Icons";
+import { TagChip } from "./ui";
 
 export function TaskMeta({
   task,
   showProject,
   hideStatus,
+  className = "",
 }: {
   task: Task;
   showProject?: boolean;
   hideStatus?: boolean;
+  className?: string;
 }) {
   const { projects, tags } = useStore();
   const project = showProject
@@ -26,16 +29,24 @@ export function TaskMeta({
   if (!hasMeta) return null;
 
   return (
-    <span className="task-meta">
-      {showDoing && <span className="status-pill">{STATUS_LABELS.doing}</span>}
+    <span className={`inline-flex shrink-0 items-center gap-1.5 ${className}`}>
+      {showDoing && (
+        <span className="rounded-full border border-doing/45 bg-doing/10 px-1.5 text-[10.5px] font-semibold text-doing">
+          {STATUS_LABELS.doing}
+        </span>
+      )}
       {task.due_date && (
-        <span className={`due-chip ${overdue ? "overdue" : ""}`}>
+        <span
+          className={`rounded-full px-[7px] py-px text-[11px] tabular-nums ${
+            overdue ? "bg-danger/10 font-semibold text-danger" : "bg-inset text-ink-muted"
+          }`}
+        >
           {dueLabel(task.due_date)}
         </span>
       )}
       {task.priority > 0 && (
         <span
-          className="priority-flag"
+          className="inline-flex"
           title={`${PRIORITY_LABELS[task.priority]} priority`}
           style={{ color: PRIORITY_COLORS[task.priority] }}
         >
@@ -43,17 +54,16 @@ export function TaskMeta({
         </span>
       )}
       {taskTags.map((tag) => (
-        <span
-          key={tag.id}
-          className="tag-chip mini"
-          style={{ ["--tag-color" as string]: tag.color }}
-        >
+        <TagChip key={tag.id} color={tag.color} mini>
           {tag.name}
-        </span>
+        </TagChip>
       ))}
       {project && (
-        <span className="project-label">
-          <span className="project-dot" style={{ background: project.color }} />
+        <span className="inline-flex max-w-[140px] items-center gap-[5px] truncate text-[11px] text-ink-faint">
+          <span
+            className="size-[9px] shrink-0 rounded-full"
+            style={{ background: project.color }}
+          />
           {project.name}
         </span>
       )}
@@ -67,14 +77,18 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
 
   return (
     <div
-      className={`task-row ${done ? "done" : ""} ${editingTaskId === task.id ? "editing" : ""}`}
+      className={`flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-[7px] transition-colors ${
+        editingTaskId === task.id ? "bg-active" : "hover:bg-hover"
+      }`}
       onClick={() => openEditor(task.id)}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === "Enter" && openEditor(task.id)}
     >
       <button
-        className={`task-check ${done ? "checked" : ""}`}
+        className={`inline-flex size-[17px] shrink-0 items-center justify-center rounded-full border-[1.5px] text-accent-contrast transition-colors ${
+          done ? "border-accent bg-accent" : "border-edge-strong hover:border-accent"
+        }`}
         aria-label={done ? "Mark as not done" : "Mark as done"}
         onClick={(e) => {
           e.stopPropagation();
@@ -83,8 +97,10 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       >
         {done && <IconCheck size={11} />}
       </button>
-      <span className="task-title">{task.title}</span>
-      <TaskMeta task={task} showProject={showProject} />
+      <span className={`min-w-0 truncate ${done ? "text-ink-faint line-through" : ""}`}>
+        {task.title}
+      </span>
+      <TaskMeta task={task} showProject={showProject} className="ml-auto" />
     </div>
   );
 }

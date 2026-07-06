@@ -141,7 +141,7 @@ export function Kanban() {
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
     >
-      <div className="board">
+      <div className="flex min-h-full items-start gap-3.5 pt-2">
         {STATUSES.map((status) => (
           <Column
             key={status}
@@ -173,19 +173,29 @@ function Column({
   const { setNodeRef } = useDroppable({ id: status });
 
   return (
-    <div className="board-column">
-      <div className={`column-header ${status}`}>
-        <span className="column-dot" />
+    <div className="min-w-[210px] max-w-[340px] flex-1 rounded-[10px] border border-edge bg-inset p-2">
+      <div className="flex items-center gap-[7px] px-1.5 pb-2 pt-1 text-[12px] font-semibold">
+        <span
+          className={`size-2 rounded-full ${
+            status === "doing" ? "bg-doing" : status === "done" ? "bg-success" : "bg-ink-faint"
+          }`}
+        />
         {STATUS_LABELS[status]}
-        <span className="column-count">{ids.length}</span>
+        <span className="ml-auto text-[11px] font-medium tabular-nums text-ink-faint">
+          {ids.length}
+        </span>
       </div>
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        <div ref={setNodeRef} className="column-body">
+        <div ref={setNodeRef} className="flex min-h-[60px] flex-col gap-[7px]">
           {ids.map((id) => {
             const task = taskById.get(id);
             return task ? <Card key={id} task={task} onOpen={onOpen} /> : null;
           })}
-          {ids.length === 0 && <div className="column-empty">Drop tasks here</div>}
+          {ids.length === 0 && (
+            <div className="flex min-h-[60px] items-center justify-center rounded-lg border-[1.5px] border-dashed border-edge-strong text-[12px] text-ink-faint">
+              Drop tasks here
+            </div>
+          )}
         </div>
       </SortableContext>
     </div>
@@ -215,9 +225,19 @@ function Card({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
 
 function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
   return (
-    <div className={`board-card ${overlay ? "overlay" : ""} ${task.status === "done" ? "done" : ""}`}>
-      <span className="card-title">{task.title}</span>
-      <TaskMeta task={task} showProject hideStatus />
+    <div
+      className={`flex flex-col gap-1.5 rounded-lg border border-edge bg-card px-[11px] py-[9px] transition-colors hover:border-edge-strong ${
+        overlay ? "rotate-2 cursor-grabbing shadow-pop" : "cursor-grab shadow-card"
+      }`}
+    >
+      <span
+        className={`font-medium wrap-anywhere ${
+          task.status === "done" ? "text-ink-faint line-through" : ""
+        }`}
+      >
+        {task.title}
+      </span>
+      <TaskMeta task={task} showProject hideStatus className="flex-wrap" />
     </div>
   );
 }

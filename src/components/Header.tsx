@@ -8,6 +8,7 @@ import {
   IconSearch,
   IconX,
 } from "./Icons";
+import { Segmented, TagChip, iconBtn } from "./ui";
 
 export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | null> }) {
   const {
@@ -52,32 +53,44 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
   const activeTags = tags.filter((t) => activeTagIds.includes(t.id));
 
   return (
-    <header className="header">
-      <div className="header-top" data-tauri-drag-region>
-        <h1 className="view-title" data-tauri-drag-region>
-          {dotColor && <span className="project-dot large" style={{ background: dotColor }} />}
+    <header className="px-5 pt-2">
+      <div
+        className="flex min-h-10 flex-wrap items-center justify-between gap-4"
+        data-tauri-drag-region
+      >
+        <h1
+          className="flex items-center gap-2 text-[19px] font-bold tracking-[-0.3px]"
+          data-tauri-drag-region
+        >
+          {dotColor && (
+            <span
+              className="size-[11px] shrink-0 rounded-full"
+              style={{ background: dotColor }}
+            />
+          )}
           {title}
         </h1>
 
-        <div className="header-controls">
-          <div className="search-box">
+        <div className="flex items-center gap-2">
+          <div className="flex w-[190px] items-center gap-1.5 rounded-md border border-edge bg-card px-2 py-1 text-ink-faint transition-colors focus-within:border-accent">
             <IconSearch size={14} />
             <input
               ref={searchRef}
               value={search}
               placeholder="Search tasks…"
               aria-label="Search tasks"
+              className="min-w-0 flex-1 bg-transparent text-ink outline-none placeholder:text-ink-faint"
               onChange={(e) => setSearch(e.target.value)}
             />
             {search && (
-              <button className="icon-btn" aria-label="Clear search" onClick={() => setSearch("")}>
+              <button className={iconBtn} aria-label="Clear search" onClick={() => setSearch("")}>
                 <IconX size={12} />
               </button>
             )}
           </div>
 
           <select
-            className="priority-filter"
+            className="cursor-pointer rounded-md border border-edge bg-card px-2 py-1 text-ink"
             aria-label="Filter by priority"
             value={priorityFilter}
             onChange={(e) => setPriorityFilter(Number(e.target.value))}
@@ -89,7 +102,11 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
           </select>
 
           <button
-            className={`icon-btn toggle ${showCompleted ? "on" : ""}`}
+            className={`inline-flex items-center justify-center rounded-md border bg-card p-[5px] transition-colors hover:bg-hover ${
+              showCompleted
+                ? "border-accent text-accent"
+                : "border-edge text-ink-muted hover:text-ink"
+            }`}
             aria-label={showCompleted ? "Hide completed tasks" : "Show completed tasks"}
             title={showCompleted ? "Hide completed" : "Show completed"}
             onClick={toggleShowCompleted}
@@ -97,40 +114,42 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
             {showCompleted ? <IconEye /> : <IconEyeOff />}
           </button>
 
-          <div className="segmented" role="group" aria-label="View mode">
-            <button
-              className={viewMode === "list" ? "active" : ""}
-              aria-label="List view"
-              title="List view"
-              onClick={() => setViewMode("list")}
-            >
-              <IconList size={14} />
-            </button>
-            <button
-              className={viewMode === "board" ? "active" : ""}
-              aria-label="Board view"
-              title="Board view"
-              onClick={() => setViewMode("board")}
-            >
-              <IconBoard size={14} />
-            </button>
-          </div>
+          <Segmented
+            aria-label="View mode"
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              {
+                value: "list" as const,
+                label: <IconList size={14} />,
+                title: "List view",
+                "aria-label": "List view",
+              },
+              {
+                value: "board" as const,
+                label: <IconBoard size={14} />,
+                title: "Board view",
+                "aria-label": "Board view",
+              },
+            ]}
+          />
         </div>
       </div>
 
       {activeTags.length > 0 && (
-        <div className="active-filters">
-          <span className="filters-label">Filtered by</span>
+        <div className="flex flex-wrap items-center gap-1.5 pt-2">
+          <span className="text-[11.5px] text-ink-faint">Filtered by</span>
           {activeTags.map((tag) => (
-            <button
+            <TagChip
               key={tag.id}
-              className="tag-chip active removable"
-              style={{ ["--tag-color" as string]: tag.color }}
+              as="button"
+              color={tag.color}
+              active
               onClick={() => toggleTagFilter(tag.id)}
             >
               {tag.name}
               <IconX size={11} />
-            </button>
+            </TagChip>
           ))}
         </div>
       )}

@@ -14,6 +14,7 @@ import {
   IconX,
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
+import { TagChip, iconBtn, tagDeleteClass } from "./ui";
 
 function isSelected(a: Selection, b: Selection): boolean {
   if (a.type !== b.type) return false;
@@ -22,6 +23,21 @@ function isSelected(a: Selection, b: Selection): boolean {
   }
   return true;
 }
+
+function navItemClass(active: boolean): string {
+  return `flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left transition-colors ${
+    active ? "bg-active font-semibold text-accent" : "hover:bg-hover"
+  }`;
+}
+
+function navIconClass(active: boolean): string {
+  return `flex ${active ? "text-accent" : "text-ink-muted"}`;
+}
+
+const navLabel = "min-w-0 flex-1 truncate";
+const navCount = "text-[11px] tabular-nums text-ink-faint";
+const sectionHeader =
+  "mb-1 flex items-center justify-between px-2 text-[11px] font-semibold uppercase tracking-[0.5px] text-ink-faint";
 
 export function Sidebar() {
   const {
@@ -72,31 +88,34 @@ export function Sidebar() {
   ];
 
   return (
-    <aside className="sidebar">
-      <div className="sidebar-titlebar" data-tauri-drag-region />
-      <div className="sidebar-brand" data-tauri-drag-region>
+    <aside className="flex w-[232px] shrink-0 flex-col overflow-y-auto border-r border-edge bg-sidebar px-2.5 pb-4">
+      <div className="h-[34px] shrink-0" data-tauri-drag-region />
+      <div className="px-2 pb-2.5 text-[14px] font-bold tracking-[-0.2px]" data-tauri-drag-region>
         Tildone
       </div>
 
-      <nav className="sidebar-section">
-        {smartLists.map((item) => (
-          <button
-            key={item.label}
-            className={`nav-item ${isSelected(selection, item.sel) ? "active" : ""}`}
-            onClick={() => select(item.sel)}
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <span className="nav-label">{item.label}</span>
-            {item.count > 0 && <span className="nav-count">{item.count}</span>}
-          </button>
-        ))}
+      <nav className="mb-[18px]">
+        {smartLists.map((item) => {
+          const active = isSelected(selection, item.sel);
+          return (
+            <button
+              key={item.label}
+              className={navItemClass(active)}
+              onClick={() => select(item.sel)}
+            >
+              <span className={navIconClass(active)}>{item.icon}</span>
+              <span className={navLabel}>{item.label}</span>
+              {item.count > 0 && <span className={navCount}>{item.count}</span>}
+            </button>
+          );
+        })}
       </nav>
 
-      <div className="sidebar-section">
-        <div className="section-header">
+      <div className="mb-[18px]">
+        <div className={sectionHeader}>
           <span>Projects</span>
           <button
-            className="icon-btn"
+            className={iconBtn}
             aria-label="New project"
             title="New project"
             onClick={() => setDialog("new")}
@@ -106,19 +125,23 @@ export function Sidebar() {
         </div>
         {projects.map((project) => {
           const sel: Selection = { type: "project", projectId: project.id };
+          const active = isSelected(selection, sel);
           return (
             <div
               key={project.id}
-              className={`nav-item nav-project ${isSelected(selection, sel) ? "active" : ""}`}
+              className={`group ${navItemClass(active)}`}
               onClick={() => select(sel)}
               role="button"
               tabIndex={0}
               onKeyDown={(e) => e.key === "Enter" && select(sel)}
             >
-              <span className="project-dot" style={{ background: project.color }} />
-              <span className="nav-label">{project.name}</span>
+              <span
+                className="size-[9px] shrink-0 rounded-full"
+                style={{ background: project.color }}
+              />
+              <span className={navLabel}>{project.name}</span>
               <button
-                className="icon-btn row-action"
+                className={`${iconBtn} opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}
                 aria-label={`Edit ${project.name}`}
                 title="Edit project"
                 onClick={(e) => {
@@ -129,27 +152,29 @@ export function Sidebar() {
                 <IconPencil size={13} />
               </button>
               {(counts.byProject.get(project.id) ?? 0) > 0 && (
-                <span className="nav-count">{counts.byProject.get(project.id)}</span>
+                <span className={navCount}>{counts.byProject.get(project.id)}</span>
               )}
             </div>
           );
         })}
         {projects.length === 0 && (
-          <p className="sidebar-hint">No projects yet — create one with +</p>
+          <p className="px-2 py-0.5 text-[12px] text-ink-faint">
+            No projects yet — create one with +
+          </p>
         )}
       </div>
 
       {tags.length > 0 && (
-        <div className="sidebar-section">
-          <div className="section-header">
+        <div className="mb-[18px]">
+          <div className={sectionHeader}>
             <span>Tags</span>
           </div>
-          <div className="tag-cloud">
+          <div className="flex flex-wrap gap-[5px] px-2 py-0.5">
             {tags.map((tag) => (
-              <span
+              <TagChip
                 key={tag.id}
-                className={`tag-chip ${activeTagIds.includes(tag.id) ? "active" : ""}`}
-                style={{ ["--tag-color" as string]: tag.color }}
+                color={tag.color}
+                active={activeTagIds.includes(tag.id)}
                 onClick={() => {
                   setConfirmTagId(null);
                   toggleTagFilter(tag.id);
@@ -160,11 +185,13 @@ export function Sidebar() {
               >
                 {tag.name}
                 {(counts.byTag.get(tag.id) ?? 0) > 0 && (
-                  <span className="tag-count">{counts.byTag.get(tag.id)}</span>
+                  <span className="text-[10px] tabular-nums text-ink-faint">
+                    {counts.byTag.get(tag.id)}
+                  </span>
                 )}
                 {confirmTagId === tag.id ? (
                   <button
-                    className="tag-delete confirm"
+                    className={tagDeleteClass(true)}
                     aria-label={`Confirm delete tag ${tag.name}`}
                     title="Click again to delete"
                     onClick={(e) => {
@@ -177,7 +204,7 @@ export function Sidebar() {
                   </button>
                 ) : (
                   <button
-                    className="tag-delete"
+                    className={tagDeleteClass()}
                     aria-label={`Delete tag ${tag.name}`}
                     title="Delete tag"
                     onClick={(e) => {
@@ -188,19 +215,23 @@ export function Sidebar() {
                     <IconX size={11} />
                   </button>
                 )}
-              </span>
+              </TagChip>
             ))}
           </div>
         </div>
       )}
 
-      <div className="sidebar-footer">
-        <button className="nav-item" onClick={openAISettings}>
-          <span className="nav-icon">
+      <div className="mt-auto border-t border-edge pt-2.5">
+        <button className={navItemClass(false)} onClick={openAISettings}>
+          <span className={navIconClass(false)}>
             <IconSparkles />
           </span>
-          <span className="nav-label">AI Assistant</span>
-          <span className={`ai-dot ${aiMode !== "off" ? "on" : ""}`} />
+          <span className={navLabel}>AI Assistant</span>
+          <span
+            className={`size-[7px] shrink-0 rounded-full ${
+              aiMode !== "off" ? "bg-success" : "bg-ink-faint"
+            }`}
+          />
         </button>
       </div>
 
