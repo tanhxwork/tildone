@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Private dev docs — tracked by the .gitprivate overlay repo (tildone-dev),
+# never by this public repo
+CLAUDE.md
+.claude/
+docs/
+.gitprivate/
