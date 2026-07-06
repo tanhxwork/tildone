@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { Project, Status, Tag, Task } from "./types";
+import type { ActivityEntry, Project, Status, Subtask, Tag, Task } from "./types";
 
 let db: Database | null = null;
 
@@ -16,8 +16,13 @@ export async function fetchAll(): Promise<{
   projects: Project[];
   tasks: Task[];
   tags: Tag[];
+  subtasks: Subtask[];
 }> {
   const d = await getDb();
+  const subtaskRows = await d.select<(Omit<Subtask, "done"> & { done: number })[]>(
+    "SELECT id, task_id, title, done, position FROM subtasks ORDER BY position, id",
+  );
+  const subtasks = subtaskRows.map((s) => ({ ...s, done: s.done !== 0 }));
   const projects = await d.select<Project[]>(
     "SELECT id, name, color, position FROM projects ORDER BY position, id",
   );
@@ -40,7 +45,52 @@ export async function fetchAll(): Promise<{
     ...row,
     tag_ids: tagsByTask.get(row.id) ?? [],
   }));
-  return { projects, tasks, tags };
+  return { projects, tasks, tags, subtasks };
+}
+
+export async function insertSubtask(taskId: number, title: string, position: number): Promise<number> {
+  const d = await getDb();
+  const result = await d.execute(
+    "INSERT INTO subtasks (task_id, title, position) VALUES ($1, $2, $3)",
+    [taskId, title, position],
+  );
+  return result.lastInsertId ?? 0;
+}
+
+export async function updateSubtask(
+  id: number,
+  patch: { title?: string; done?: boolean; position?: number },
+): Promise<void> {
+  const d = await getDb();
+  const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
+  if (entries.length === 0) return;
+  const sets = entries.map(([key], i) => `${key} = $${i + 1}`).join(", ");
+  const values = entries.map(([, value]) => (typeof value === "boolean" ? (value ? 1 : 0) : value));
+  await d.execute(`UPDATE subtasks SET ${sets} WHERE id = $${entries.length + 1}`, [
+    ...values,
+    id,
+  ]);
+}
+
+export async function deleteSubtask(id: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM subtasks WHERE id = $1", [id]);
+}
+
+export async function insertActivity(taskId: number, label: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("INSERT INTO task_activity (task_id, label) VALUES ($1, $2)", [
+    taskId,
+    label,
+  ]);
+}
+
+export async function fetchActivity(taskId: number): Promise<ActivityEntry[]> {
+  const d = await getDb();
+  return d.select<ActivityEntry[]>(
+    "SELECT id, task_id, label, created_at FROM task_activity WHERE task_id = $1 ORDER BY id DESC LIMIT 50",
+    [taskId],
+  );
 }
 
 export async function insertProject(name: string, color: string): Promise<number> {

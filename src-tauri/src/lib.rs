@@ -17,6 +17,12 @@ pub fn run() {
             sql: include_str!("../migrations/002_trash.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "add_subtasks_and_activity",
+            sql: include_str!("../migrations/003_subtasks_activity.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

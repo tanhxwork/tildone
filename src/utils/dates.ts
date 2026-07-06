@@ -69,3 +69,28 @@ export function compareTasks(a: Task, b: Task): number {
   if (a.position !== b.position) return a.position - b.position;
   return a.id - b.id;
 }
+
+/** "in 5 days" / "today" / "3 days overdue" — the secondary label next to a due date. */
+export function relativeDueLabel(dueDate: string): string {
+  const diff = differenceInCalendarDays(parseISO(dueDate), startOfDay(new Date()));
+  if (diff === 0) return "today";
+  if (diff === 1) return "tomorrow";
+  if (diff > 1) return `in ${diff} days`;
+  if (diff === -1) return "1 day ago";
+  return `${-diff} days ago`;
+}
+
+/** Short relative timestamp for activity rows: "just now", "2h ago", "Yesterday", "Jul 5". */
+export function timeAgo(timestamp: string): string {
+  const date = new Date(timestamp.includes("T") ? timestamp : timestamp.replace(" ", "T") + "Z");
+  if (isNaN(date.getTime())) return "";
+  const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24 && date.getDate() === new Date().getDate()) return `${hours}h ago`;
+  const days = differenceInCalendarDays(startOfDay(new Date()), startOfDay(date));
+  if (days <= 1) return "Yesterday";
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return format(date, sameYear ? "MMM d" : "MMM d, yyyy");
+}

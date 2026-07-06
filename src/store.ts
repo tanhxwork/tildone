@@ -1,7 +1,17 @@
 import { create } from "zustand";
 import * as db from "./db";
-import type { Project, Selection, Status, Tag, Task, ViewMode } from "./types";
-import { COLOR_CHOICES } from "./types";
+import type {
+  ActivityEntry,
+  Project,
+  Selection,
+  Status,
+  Subtask,
+  Tag,
+  Task,
+  ViewMode,
+} from "./types";
+import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
+import { dueLabel } from "./utils/dates";
 
 export interface ImportedTask {
   title: string;
@@ -19,6 +29,9 @@ interface Store {
   projects: Project[];
   tasks: Task[];
   tags: Tag[];
+  subtasks: Subtask[];
+  /** Activity log for the task currently open in the details view. */
+  activity: ActivityEntry[];
 
   selection: Selection;
   viewMode: ViewMode;
@@ -66,6 +79,12 @@ interface Store {
     updates: { id: number; status: Status; position: number }[],
   ) => Promise<void>;
 
+  addSubtask: (taskId: number, title: string) => Promise<void>;
+  toggleSubtask: (id: number) => Promise<void>;
+  renameSubtask: (id: number, title: string) => Promise<void>;
+  removeSubtask: (id: number) => Promise<void>;
+  loadActivity: (taskId: number) => Promise<void>;
+
   addTag: (name: string) => Promise<number>;
   removeTag: (id: number) => Promise<void>;
   updateTagMeta: (id: number, name: string, color: string) => Promise<void>;
@@ -88,6 +107,8 @@ export const useStore = create<Store>()((set, get) => ({
   projects: [],
   tasks: [],
   tags: [],
+  subtasks: [],
+  activity: [],
 
   selection: { type: "today" },
   viewMode: "list",
@@ -119,7 +140,10 @@ export const useStore = create<Store>()((set, get) => ({
     })),
   setPriorityFilter: (priorityFilter) => set({ priorityFilter }),
   toggleShowCompleted: () => set((s) => ({ showCompleted: !s.showCompleted })),
-  openEditor: (editingTaskId) => set({ editingTaskId }),
+  openEditor: (editingTaskId) => {
+    set({ editingTaskId, activity: [] });
+    if (editingTaskId !== null) void get().loadActivity(editingTaskId);
+  },
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
 
@@ -145,9 +169,13 @@ export const useStore = create<Store>()((set, get) => ({
         s.selection.type === "project" && s.selection.projectId === id
           ? ({ type: "today" } as Selection)
           : s.selection;
+      const removedTaskIds = new Set(
+        s.tasks.filter((t) => t.project_id === id).map((t) => t.id),
+      );
       return {
         projects: s.projects.filter((p) => p.id !== id),
         tasks: s.tasks.filter((t) => t.project_id !== id),
+        subtasks: s.subtasks.filter((x) => !removedTaskIds.has(x.task_id)),
         selection,
       };
     });
@@ -180,6 +208,7 @@ export const useStore = create<Store>()((set, get) => ({
       priority,
     });
     if (tag_ids.length > 0) await db.setTaskTags(id, tag_ids);
+    void recordActivity(id, "Task created");
     const task: Task = {
       id,
       project_id,
@@ -208,6 +237,28 @@ export const useStore = create<Store>()((set, get) => ({
     set((s) => ({
       tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...full } : t)),
     }));
+
+    const labels: string[] = [];
+    if (patch.status && patch.status !== current.status) {
+      labels.push(`Status changed to ${STATUS_LABELS[patch.status]}`);
+    }
+    if (patch.priority !== undefined && patch.priority !== current.priority) {
+      labels.push(
+        patch.priority > 0
+          ? `Priority set to ${PRIORITY_LABELS[patch.priority]}`
+          : "Priority cleared",
+      );
+    }
+    if (patch.due_date !== undefined && patch.due_date !== current.due_date) {
+      labels.push(
+        patch.due_date ? `Due date set to ${dueLabel(patch.due_date)}` : "Due date cleared",
+      );
+    }
+    if (patch.project_id !== undefined && patch.project_id !== current.project_id) {
+      const project = get().projects.find((p) => p.id === patch.project_id);
+      labels.push(project ? `Moved to ${project.name}` : "Moved to Inbox");
+    }
+    for (const label of labels) void recordActivity(id, label);
   },
 
   toggleDone: async (id) => {
@@ -237,13 +288,22 @@ export const useStore = create<Store>()((set, get) => ({
     await db.deleteTask(id);
     set((s) => ({
       tasks: s.tasks.filter((t) => t.id !== id),
+      subtasks: s.subtasks.filter((x) => x.task_id !== id),
       editingTaskId: s.editingTaskId === id ? null : s.editingTaskId,
     }));
   },
 
   emptyTrash: async () => {
     await db.deleteAllTrashed();
-    set((s) => ({ tasks: s.tasks.filter((t) => t.deleted_at === null) }));
+    set((s) => {
+      const trashedIds = new Set(
+        s.tasks.filter((t) => t.deleted_at !== null).map((t) => t.id),
+      );
+      return {
+        tasks: s.tasks.filter((t) => t.deleted_at === null),
+        subtasks: s.subtasks.filter((x) => !trashedIds.has(x.task_id)),
+      };
+    });
   },
 
   applyPositions: async (updates) => {
@@ -276,6 +336,44 @@ export const useStore = create<Store>()((set, get) => ({
         completed_at: u.completed_at,
       });
     }
+  },
+
+  addSubtask: async (taskId, title) => {
+    const position =
+      get()
+        .subtasks.filter((s) => s.task_id === taskId)
+        .reduce((max, s) => Math.max(max, s.position), -1) + 1;
+    const id = await db.insertSubtask(taskId, title, position);
+    set((s) => ({
+      subtasks: [...s.subtasks, { id, task_id: taskId, title, done: false, position }],
+    }));
+  },
+
+  toggleSubtask: async (id) => {
+    const sub = get().subtasks.find((s) => s.id === id);
+    if (!sub) return;
+    await db.updateSubtask(id, { done: !sub.done });
+    set((s) => ({
+      subtasks: s.subtasks.map((x) => (x.id === id ? { ...x, done: !sub.done } : x)),
+    }));
+  },
+
+  renameSubtask: async (id, title) => {
+    await db.updateSubtask(id, { title });
+    set((s) => ({
+      subtasks: s.subtasks.map((x) => (x.id === id ? { ...x, title } : x)),
+    }));
+  },
+
+  removeSubtask: async (id) => {
+    await db.deleteSubtask(id);
+    set((s) => ({ subtasks: s.subtasks.filter((x) => x.id !== id) }));
+  },
+
+  loadActivity: async (taskId) => {
+    const activity = await db.fetchActivity(taskId);
+    // The user may have switched tasks while we were fetching.
+    if (get().editingTaskId === taskId) set({ activity });
   },
 
   addTag: async (name) => {
@@ -395,3 +493,10 @@ export const useStore = create<Store>()((set, get) => ({
     return imported;
   },
 }));
+
+/** Persist an activity entry and refresh the log if that task's details are open. */
+async function recordActivity(taskId: number, label: string): Promise<void> {
+  await db.insertActivity(taskId, label);
+  const s = useStore.getState();
+  if (s.editingTaskId === taskId) await s.loadActivity(taskId);
+}

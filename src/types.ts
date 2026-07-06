@@ -36,6 +36,21 @@ export interface Task {
   tag_ids: number[];
 }
 
+export interface Subtask {
+  id: number;
+  task_id: number;
+  title: string;
+  done: boolean;
+  position: number;
+}
+
+export interface ActivityEntry {
+  id: number;
+  task_id: number;
+  label: string;
+  created_at: string;
+}
+
 export type Selection =
   | { type: "today" }
   | { type: "upcoming" }
