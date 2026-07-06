@@ -76,11 +76,12 @@ export async function insertTask(task: {
   due_date: string | null;
   status: Status;
   position: number;
+  priority: number;
 }): Promise<number> {
   const d = await getDb();
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, title, due_date, status, position) VALUES ($1, $2, $3, $4, $5)",
-    [task.project_id, task.title, task.due_date, task.status, task.position],
+    "INSERT INTO tasks (project_id, title, due_date, status, position, priority) VALUES ($1, $2, $3, $4, $5, $6)",
+    [task.project_id, task.title, task.due_date, task.status, task.position, task.priority],
   );
   return result.lastInsertId ?? 0;
 }

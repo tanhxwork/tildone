@@ -34,6 +34,8 @@ interface Store {
     title: string;
     project_id: number | null;
     due_date: string | null;
+    priority?: number;
+    tag_ids?: number[];
   }) => Promise<void>;
   patchTask: (
     id: number,
@@ -118,25 +120,33 @@ export const useStore = create<Store>()((set, get) => ({
     });
   },
 
-  addTask: async ({ title, project_id, due_date }) => {
+  addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [] }) => {
     const { tasks } = get();
     const position =
       tasks
         .filter((t) => t.project_id === project_id && t.status === "todo")
         .reduce((max, t) => Math.max(max, t.position), -1) + 1;
-    const id = await db.insertTask({ project_id, title, due_date, status: "todo", position });
+    const id = await db.insertTask({
+      project_id,
+      title,
+      due_date,
+      status: "todo",
+      position,
+      priority,
+    });
+    if (tag_ids.length > 0) await db.setTaskTags(id, tag_ids);
     const task: Task = {
       id,
       project_id,
       title,
       notes: "",
       status: "todo",
-      priority: 0,
+      priority,
       due_date,
       position,
       created_at: new Date().toISOString(),
       completed_at: null,
-      tag_ids: [],
+      tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
   },

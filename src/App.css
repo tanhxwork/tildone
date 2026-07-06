@@ -508,6 +508,34 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
+.quick-add-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 20px 12px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.qa-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+}
+
+.qa-chip.qa-date {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.qa-chip.qa-priority {
+  border-color: color-mix(in srgb, #ef4444 45%, transparent);
+  color: #ef4444;
+}
+
 /* ---------- Task list ---------- */
 
 .task-group {
