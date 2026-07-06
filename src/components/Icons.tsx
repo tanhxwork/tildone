@@ -138,3 +138,9 @@ export const IconEyeOff = (p: IconProps) => (
     <path d="m2 2 20 20" />
   </Svg>
 );
+
+export const IconChevronDown = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m6 9 6 6 6-6" />
+  </Svg>
+);
