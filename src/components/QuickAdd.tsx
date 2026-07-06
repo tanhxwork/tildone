@@ -1,4 +1,5 @@
 import { useMemo, useState, type RefObject } from "react";
+import { useSettings } from "../settings";
 import { useStore } from "../store";
 import { PRIORITY_LABELS } from "../types";
 import { dueLabel, todayStr, tomorrowStr } from "../utils/dates";
@@ -7,6 +8,7 @@ import { IconPlus } from "./Icons";
 
 export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | null> }) {
   const { selection, addTask, addTag, projects, tags } = useStore();
+  const defaultProjectId = useSettings((s) => s.defaultProjectId);
   const [title, setTitle] = useState("");
 
   const parsed = useMemo(
@@ -26,10 +28,11 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
     const p = parseQuickAdd(trimmed, { projects, tags });
     // Parsed tokens override the view defaults; absent tokens keep them.
     const project_id =
-      p.projectId ?? (selection.type === "project" ? selection.projectId : null);
+      p.projectId ??
+      (selection.type === "project" ? selection.projectId : defaultProjectId);
     const due_date =
       p.dueDate ??
-      (selection.type === "today"
+      (selection.type === "today" || selection.type === "week"
         ? todayStr()
         : selection.type === "upcoming"
           ? tomorrowStr()
@@ -47,14 +50,17 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
     setTitle("");
   }
 
+  const defaultProject = projects.find((p) => p.id === defaultProjectId);
   const hint =
-    selection.type === "today"
+    selection.type === "today" || selection.type === "week"
       ? "due today"
       : selection.type === "upcoming"
         ? "due tomorrow"
         : selection.type === "project"
           ? "in this project"
-          : "to inbox";
+          : defaultProject
+            ? `to ${defaultProject.name}`
+            : "to inbox";
 
   return (
     <>

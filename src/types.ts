@@ -32,6 +32,7 @@ export interface Task {
   position: number;
   created_at: string;
   completed_at: string | null;
+  deleted_at: string | null;
   tag_ids: number[];
 }
 
@@ -40,9 +41,19 @@ export type Selection =
   | { type: "upcoming" }
   | { type: "inbox" }
   | { type: "all" }
+  | { type: "week" }
+  | { type: "review" }
+  | { type: "completed" }
   | { type: "project"; projectId: number };
 
-export type ViewMode = "list" | "board";
+/** Pages render their own layout; view mode, filters and quick add only apply to task lists. */
+export function isPageSelection(selection: Selection): boolean {
+  return (
+    selection.type === "week" || selection.type === "review" || selection.type === "completed"
+  );
+}
+
+export type ViewMode = "list" | "board" | "table" | "calendar";
 
 export const PRIORITY_LABELS: Record<number, string> = {
   0: "None",

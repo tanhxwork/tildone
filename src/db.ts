@@ -25,7 +25,7 @@ export async function fetchAll(): Promise<{
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at FROM tasks",
+    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -65,6 +65,15 @@ export async function updateProject(id: number, name: string, color: string): Pr
   ]);
 }
 
+export async function updateProjectPositions(
+  updates: { id: number; position: number }[],
+): Promise<void> {
+  const d = await getDb();
+  for (const u of updates) {
+    await d.execute("UPDATE projects SET position = $1 WHERE id = $2", [u.position, u.id]);
+  }
+}
+
 export async function deleteProject(id: number): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM projects WHERE id = $1", [id]);
@@ -77,11 +86,22 @@ export async function insertTask(task: {
   status: Status;
   position: number;
   priority: number;
+  notes?: string;
+  completed_at?: string | null;
 }): Promise<number> {
   const d = await getDb();
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, title, due_date, status, position, priority) VALUES ($1, $2, $3, $4, $5, $6)",
-    [task.project_id, task.title, task.due_date, task.status, task.position, task.priority],
+    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [
+      task.project_id,
+      task.title,
+      task.due_date,
+      task.status,
+      task.position,
+      task.priority,
+      task.notes ?? "",
+      task.completed_at ?? null,
+    ],
   );
   return result.lastInsertId ?? 0;
 }
@@ -95,6 +115,7 @@ const TASK_COLUMNS = new Set([
   "due_date",
   "position",
   "completed_at",
+  "deleted_at",
 ]);
 
 export async function updateTask(
@@ -117,6 +138,19 @@ export async function deleteTask(id: number): Promise<void> {
   await d.execute("DELETE FROM tasks WHERE id = $1", [id]);
 }
 
+export async function deleteAllTrashed(): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM tasks WHERE deleted_at IS NOT NULL");
+}
+
+/** Hard-delete trashed tasks older than the cutoff (ISO timestamp). */
+export async function purgeTrashedBefore(cutoff: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM tasks WHERE deleted_at IS NOT NULL AND deleted_at < $1", [
+    cutoff,
+  ]);
+}
+
 export async function insertTag(name: string, color: string): Promise<number> {
   const d = await getDb();
   const result = await d.execute("INSERT INTO tags (name, color) VALUES ($1, $2)", [
@@ -126,9 +160,25 @@ export async function insertTag(name: string, color: string): Promise<number> {
   return result.lastInsertId ?? 0;
 }
 
+export async function updateTag(id: number, name: string, color: string): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE tags SET name = $1, color = $2 WHERE id = $3", [name, color, id]);
+}
+
 export async function deleteTag(id: number): Promise<void> {
   const d = await getDb();
   await d.execute("DELETE FROM tags WHERE id = $1", [id]);
+}
+
+/** Re-point every task from one tag to another, then drop the source tag. */
+export async function mergeTags(fromId: number, toId: number): Promise<void> {
+  const d = await getDb();
+  await d.execute(
+    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) SELECT task_id, $1 FROM task_tags WHERE tag_id = $2",
+    [toId, fromId],
+  );
+  await d.execute("DELETE FROM task_tags WHERE tag_id = $1", [fromId]);
+  await d.execute("DELETE FROM tags WHERE id = $1", [fromId]);
 }
 
 export async function setTaskTags(taskId: number, tagIds: number[]): Promise<void> {

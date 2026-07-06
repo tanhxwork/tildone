@@ -4,8 +4,36 @@ import {
   format,
   parseISO,
   startOfDay,
+  startOfMonth,
+  startOfWeek,
 } from "date-fns";
 import type { Task } from "../types";
+
+export type WeekStartDay = "monday" | "sunday";
+
+export function toDateStr(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+/** The 7 dates (YYYY-MM-DD) of the week containing `anchor`. */
+export function weekDates(anchor: Date, weekStart: WeekStartDay): string[] {
+  const start = startOfWeek(anchor, { weekStartsOn: weekStart === "monday" ? 1 : 0 });
+  return Array.from({ length: 7 }, (_, i) => toDateStr(addDays(start, i)));
+}
+
+/** Full weeks (rows of 7 date strings) covering the month of `anchor`. */
+export function monthGrid(anchor: Date, weekStart: WeekStartDay): string[][] {
+  const first = startOfMonth(anchor);
+  const gridStart = startOfWeek(first, { weekStartsOn: weekStart === "monday" ? 1 : 0 });
+  const weeks: string[][] = [];
+  let cursor = gridStart;
+  const month = first.getMonth();
+  do {
+    weeks.push(Array.from({ length: 7 }, (_, i) => toDateStr(addDays(cursor, i))));
+    cursor = addDays(cursor, 7);
+  } while (cursor.getMonth() === month);
+  return weeks;
+}
 
 export function todayStr(): string {
   return format(new Date(), "yyyy-MM-dd");
