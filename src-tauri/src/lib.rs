@@ -43,6 +43,7 @@ pub fn run() {
             ai::engine_install,
             ai::engine_start,
             ai::engine_stop,
+            ai::system_ram,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

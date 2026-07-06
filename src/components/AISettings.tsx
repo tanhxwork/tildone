@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { aiReady, useAI, type AIMode } from "../ai";
+import {
+  MODEL_TIERS,
+  aiReady,
+  recommendedTier,
+  useAI,
+  type AIMode,
+  type EngineModelId,
+} from "../ai";
 import { IconCheck, IconSparkles, IconX } from "./Icons";
 
 function formatMB(bytes: number): string {
@@ -16,6 +23,8 @@ export function AISettings() {
     refreshEngine,
     identify,
     engine,
+    ramBytes,
+    fetchRam,
     installing,
     starting,
     progress,
@@ -29,6 +38,7 @@ export function AISettings() {
   useEffect(() => {
     void probe();
     void refreshEngine();
+    void fetchRam();
     // Scan once when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -101,7 +111,13 @@ export function AISettings() {
     }
   }
 
+  function pickTier(id: EngineModelId) {
+    setError("");
+    setConfig({ engineModel: id });
+  }
+
   const selected = detected.find((d) => d.base_url === config.baseUrl);
+  const selectedTier = MODEL_TIERS.find((t) => t.id === config.engineModel);
   const pct =
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
@@ -257,6 +273,41 @@ export function AISettings() {
 
         {config.mode === "builtin" && (
           <div className="ai-panel">
+            <div className="ai-tiers">
+              {MODEL_TIERS.map((tier) => {
+                const rec = ramBytes !== null && recommendedTier(ramBytes) === tier.id;
+                return (
+                  <label
+                    key={tier.id}
+                    className={`ai-tier ${config.engineModel === tier.id ? "selected" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="ai-tier"
+                      checked={config.engineModel === tier.id}
+                      disabled={installing}
+                      onChange={() => pickTier(tier.id)}
+                    />
+                    <span className="ai-tier-label">{tier.label}</span>
+                    <span className="ai-tier-detail">{tier.detail}</span>
+                    <span className="ai-tier-size">
+                      {tier.sizeGB} GB
+                      {tier.minRamGB > 0 ? ` · needs ≥ ${tier.minRamGB} GB RAM` : " · any machine"}
+                    </span>
+                    {rec && <span className="ai-tier-badge">Recommended</span>}
+                  </label>
+                );
+              })}
+            </div>
+
+            {ramBytes !== null &&
+              (selectedTier?.minRamGB ?? 0) > ramBytes / 1024 ** 3 && (
+                <p className="ai-warn">
+                  This machine has {Math.round(ramBytes / 1024 ** 3)} GB RAM — the{" "}
+                  {selectedTier?.label} model may run slowly or fail to load.
+                </p>
+              )}
+
             {engine === null ? (
               <p className="ai-hint">Checking engine status…</p>
             ) : !engine.installed ? (
@@ -279,8 +330,8 @@ export function AISettings() {
               ) : (
                 <>
                   <p className="ai-hint">
-                    One-time download of about 1.1 GB (engine + Qwen 2.5 model).
-                    After that it works fully offline.
+                    One-time download of about {selectedTier?.sizeGB ?? 1.1} GB. After
+                    that it works fully offline.
                   </p>
                   <button className="btn primary" onClick={() => void install()}>
                     Download &amp; set up
@@ -309,6 +360,15 @@ export function AISettings() {
                 )}
               </div>
             )}
+
+            <label className="ai-autostart">
+              <input
+                type="checkbox"
+                checked={config.autoStart}
+                onChange={(e) => setConfig({ autoStart: e.target.checked })}
+              />
+              Start the engine when Tildone opens
+            </label>
           </div>
         )}
 
