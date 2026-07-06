@@ -10,6 +10,29 @@ A lightweight desktop app for project and task management, built with Tauri 2, R
 - **Inbox** — tasks that don't belong to a project yet
 - **Tags, filters & search** — tag tasks, filter by tag/priority, search across titles and notes
 - **Light & dark mode** — follows the system appearance
+- **Agent access (MCP)** — opt-in local MCP server so AI agents can manage your tasks
+
+## Agent access (MCP)
+
+Tildone can act as an [MCP](https://modelcontextprotocol.io) server so AI agents
+(Claude Code, Claude Desktop, or any MCP client) can create and manage tasks —
+under a specific project or in the Inbox.
+
+1. In Tildone, open **Settings → Agent access** and switch it **On**.
+2. Connect your agent to `http://127.0.0.1:11502/mcp` (Streamable HTTP). With
+   Claude Code:
+
+   ```bash
+   claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
+   ```
+
+Agents get tools to list/create/update/complete/delete tasks (title, notes,
+status, priority, due date, tags) and to manage projects, referring to projects
+and tags by name. Changes show up in the app instantly.
+
+Notes: the server only runs while Tildone is open, listens on localhost only,
+and is off by default. Deleted tasks go to the app's trash; deleting a project
+is permanent.
 
 ## Keyboard shortcuts
 

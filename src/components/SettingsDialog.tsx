@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useState } from "react";
@@ -16,14 +17,31 @@ export function SettingsDialog() {
     theme,
     weekStart,
     defaultProjectId,
+    agentServer,
     setTheme,
     setWeekStart,
     setDefaultProjectId,
+    setAgentServer,
     closeSettings,
   } = useSettings();
   const { projects, tasks, tags, importData } = useStore();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [agentMessage, setAgentMessage] = useState<string | null>(null);
+
+  async function toggleAgentServer(enabled: boolean) {
+    setAgentMessage(null);
+    try {
+      if (enabled) {
+        await invoke<string>("agent_server_start");
+      } else {
+        await invoke("agent_server_stop");
+      }
+      setAgentServer(enabled);
+    } catch (err) {
+      setAgentMessage(String(err));
+    }
+  }
 
   async function doExport(format: ExportFormat) {
     setMessage(null);
@@ -171,6 +189,38 @@ export function SettingsDialog() {
               ))}
             </select>
           </div>
+        </section>
+
+        <section className="settings-section">
+          <h3 className="settings-heading">Agent access</h3>
+
+          <div className="settings-row">
+            <div className="settings-label">
+              Let AI agents manage tasks
+              <span className="settings-sub">
+                Local MCP server on 127.0.0.1:11502 — only while Tildone is running
+              </span>
+            </div>
+            <div className="segmented" role="group" aria-label="Agent access">
+              {([false, true] as const).map((on) => (
+                <button
+                  key={String(on)}
+                  className={agentServer === on ? "active" : ""}
+                  onClick={() => void toggleAgentServer(on)}
+                >
+                  {on ? "On" : "Off"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {agentServer && (
+            <p className="settings-sub">
+              Connect an agent, e.g.:{" "}
+              <code>claude mcp add --transport http tildone http://127.0.0.1:11502/mcp</code>
+            </p>
+          )}
+          {agentMessage && <p className="settings-message">{agentMessage}</p>}
         </section>
 
         <section className="settings-section">

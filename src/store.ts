@@ -44,6 +44,8 @@ interface Store {
   tagManagerOpen: boolean;
 
   init: () => Promise<void>;
+  /** Re-read everything from SQLite, e.g. after an external agent writes. */
+  reload: () => Promise<void>;
   select: (selection: Selection) => void;
   setViewMode: (mode: ViewMode) => void;
   setSearch: (search: string) => void;
@@ -127,6 +129,11 @@ export const useStore = create<Store>()((set, get) => ({
     await db.purgeTrashedBefore(cutoff);
     const data = await db.fetchAll();
     set({ ...data, loaded: true });
+  },
+
+  reload: async () => {
+    const data = await db.fetchAll();
+    set({ ...data });
   },
 
   select: (selection) => set({ selection, editingTaskId: null }),

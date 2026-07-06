@@ -27,9 +27,16 @@ serde_json = "1"
 tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "net"] }
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sysinfo = "0.39.5"
+rmcp = { version = "2.1.0", features = ["server", "transport-streamable-http-server", "schemars"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio-util = "0.7.18"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
