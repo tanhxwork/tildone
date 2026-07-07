@@ -28,7 +28,8 @@ under a specific project or in the Inbox.
 
 Agents get tools to list/create/update/complete/delete tasks (title, notes,
 status, priority, due date, tags) and to manage projects, referring to projects
-and tags by name. Changes show up in the app instantly.
+and tags by name. Changes show up in the app instantly. See **[MCP.md](MCP.md)**
+for the full tool reference (safe to paste into an agent's context).
 
 Notes: the server only runs while Tildone is open, listens on localhost only,
 and is off by default. Deleted tasks go to the app's trash; deleting a project
