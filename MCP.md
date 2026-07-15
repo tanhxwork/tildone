@@ -62,6 +62,14 @@ Conventions:
 - Clearing fields on update: `due_date: ""` clears the due date,
   `priority: 0` clears priority, `project: "inbox"` moves the task out of
   any project.
+- **Order is the board.** `list_tasks` returns tasks in the order the user sees
+  them, so `list_tasks(project: "X", status: "todo")` starts at the top card of
+  that column — *"work the top task first"* means **rank 0**. `rank` is a dense
+  0-based ordinal within a **(project, status)** group. It is **not** comparable
+  across projects, and it is `null` for a trashed task.
+- **Rank is read-only** — only the user reorders, by dragging. No tool takes a
+  rank or position, by design: the board is theirs.
+- Tasks are **not** sorted by due date. Use `due_before` to ask for overdue work.
 - Tool errors (unknown id, bad date, unknown project…) come back as MCP tool
   errors with a human-readable message — read it, it usually says what to do.
 - All writes are visible in the user's open app immediately.
@@ -74,8 +82,8 @@ Conventions:
 |---|---|---|
 | `list_projects` | — | `[{id, name, color, open_tasks, done_tasks}]` |
 | `list_tags` | — | `[{id, name, color, task_count}]` |
-| `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags}]}` |
-| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at` |
+| `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags, rank}]}` |
+| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at`, `rank` |
 
 By default `list_tasks` excludes completed tasks; pass `include_done: true`
 or `status: "done"` to see them. Trashed tasks are never listed.
@@ -110,6 +118,10 @@ the full task after a write.
 
 // Everything overdue or due today, any project
 { "name": "list_tasks", "arguments": { "due_before": "2026-07-06" } }
+
+// The top card of a project's To Do column — the one to work first
+{ "name": "list_tasks", "arguments": { "project": "Work", "status": "todo" } }
+// -> {"count": 3, "tasks": [{"id": 31, "rank": 0, ...}, {"rank": 1}, {"rank": 2}]}
 
 // Move a task to another project and bump priority
 { "name": "update_task", "arguments": { "id": 42, "project": "Home", "priority": 3 } }

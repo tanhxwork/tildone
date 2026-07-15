@@ -23,6 +23,23 @@ pub const AGENT_PORT: u16 = 11502;
 
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 
+/// Dense 0-based ordinal within (project, status), ordered exactly as the Kanban
+/// column sorts: `position`, then `id`. Expressed as "count the tasks that sort
+/// before this one" so it stays the *board* rank even when the caller filters by
+/// tag or search — a window function over the result set would renumber from 0.
+///
+/// `x.project_id IS t.project_id` (not `=`) so the Inbox, where project_id is
+/// NULL, forms one group per status instead of vanishing on NULL comparison.
+///
+/// Only meaningful within one (project, status) group: positions are not
+/// comparable across projects. Requires the outer query to alias tasks as `t`.
+const RANK_SQL: &str = "(SELECT COUNT(*) FROM tasks x
+      WHERE x.deleted_at IS NULL
+        AND x.status = t.status
+        AND x.project_id IS t.project_id
+        AND (x.position < t.position
+             OR (x.position = t.position AND x.id < t.id)))";
+
 // Mirrors COLOR_CHOICES in src/types.ts.
 const COLOR_CHOICES: [&str; 8] = [
     "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#8b5cf6", "#64748b",
@@ -259,10 +276,13 @@ impl TildoneAgent {
     fn task_json(conn: &Connection, id: i64) -> Result<Option<Value>, rusqlite::Error> {
         let row = conn
             .query_row(
-                "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
-                        t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name
-                 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-                 WHERE t.id = ?1",
+                &format!(
+                    "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
+                            t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name,
+                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END
+                     FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                     WHERE t.id = ?1"
+                ),
                 [id],
                 |r| {
                     Ok(json!({
@@ -279,6 +299,8 @@ impl TildoneAgent {
                             (Some(pid), Some(pname)) => json!({"id": pid, "name": pname}),
                             _ => Value::Null,
                         },
+                        // null for a trashed task — it has no place on the board.
+                        "rank": r.get::<_, Option<i64>>(11)?,
                     }))
                 },
             )
@@ -470,7 +492,7 @@ struct AppendNoteParams {
     text: String,
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Default)]
 struct ListTasksParams {
     #[schemars(description = "Filter by project name or id, or \"inbox\" for tasks with no project. Omit for all tasks.")]
     project: Option<String>,
@@ -697,13 +719,18 @@ impl TildoneAgent {
             wheres.push(format!("(t.title LIKE ?{n} OR t.notes LIKE ?{n})"));
         }
 
+        // Board order, not due order: the first task an agent sees is the top
+        // card of its column, so "work the top task first" means rank 0. Due
+        // date used to lead here, which made the first result the most overdue
+        // task instead — `due_before` is how a caller asks for that now.
         let sql = format!(
             "SELECT t.id, t.title, t.status, t.priority, t.due_date, t.completed_at, p.name,
                     (SELECT GROUP_CONCAT(tg.name, ', ') FROM tags tg
-                     JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id)
+                     JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id),
+                    {RANK_SQL}
              FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
              WHERE {}
-             ORDER BY t.due_date IS NULL, t.due_date, p.position, t.position, t.id",
+             ORDER BY p.position, t.position, t.id",
             wheres.join(" AND ")
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -718,6 +745,7 @@ impl TildoneAgent {
                     "completed_at": r.get::<_, Option<String>>(5)?,
                     "project": r.get::<_, Option<String>>(6)?,
                     "tags": r.get::<_, Option<String>>(7)?,
+                    "rank": r.get::<_, i64>(8)?,
                 }))
             })
             .map_err(db_err)?
@@ -1381,6 +1409,116 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 2, "expected creation + status activity, got {n}");
+    }
+
+    /// The board is the queue: list_tasks must return what the user sees, so a
+    /// task ranked top comes first even when a lower one is years overdue. Due
+    /// date led this ORDER BY until now, which made "the top task" the most
+    /// overdue one instead of the top card.
+    #[test]
+    fn list_tasks_returns_board_order_not_due_order() {
+        let agent = test_agent();
+        for (title, due) in [("top", "2099-01-01"), ("bottom", "2000-01-01")] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: Some(due.into()),
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks[0]["title"], "top", "board order must beat due date");
+        assert_eq!(tasks[0]["rank"], 0);
+        assert_eq!(tasks[1]["title"], "bottom");
+        assert_eq!(tasks[1]["rank"], 1);
+
+        // due_before is how a caller asks for overdue work now.
+        let (_, overdue) = extract(
+            &agent
+                .list_tasks(Parameters(ListTasksParams {
+                    due_before: Some("2026-07-16".into()),
+                    ..Default::default()
+                }))
+                .unwrap(),
+        );
+        assert_eq!(overdue["count"], 1);
+        assert_eq!(overdue["tasks"][0]["title"], "bottom");
+    }
+
+    /// Rank is the task's place on the board, not its index in the response.
+    /// Filter down to the last card and it must still report rank 2 — an agent
+    /// that reads rank 0 there would think it was working the top task.
+    #[test]
+    fn rank_is_true_rank_under_filtering() {
+        let agent = test_agent();
+        for title in ["a", "b", "c"] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: (title == "c").then(|| vec!["find-me".to_string()]),
+                    status: None,
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(
+            &agent
+                .list_tasks(Parameters(ListTasksParams {
+                    tag: Some("find-me".into()),
+                    ..Default::default()
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["tasks"][0]["rank"], 2, "rank must survive filtering");
+    }
+
+    /// Rank is scoped per (project, status) — every group starts at 0, and
+    /// ranks from different groups are not comparable.
+    #[test]
+    fn rank_is_scoped_per_project_and_status() {
+        let agent = test_agent();
+        agent
+            .create_project(Parameters(CreateProjectParams {
+                name: "Work".into(),
+                color: None,
+            }))
+            .unwrap();
+        for (title, project, status) in [
+            ("inbox-todo", None, None),
+            ("work-todo", Some("Work"), None),
+            ("work-doing", Some("Work"), Some("doing")),
+        ] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: project.map(Into::into),
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: status.map(Into::into),
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        for task in tasks {
+            assert_eq!(
+                task["rank"], 0,
+                "each (project, status) group starts at 0: {task}"
+            );
+        }
     }
 
     #[test]
