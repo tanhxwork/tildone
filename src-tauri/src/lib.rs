@@ -30,6 +30,12 @@ pub fn run() {
             sql: include_str!("../migrations/004_iso_timestamps.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "add_changes_feed",
+            sql: include_str!("../migrations/005_changes.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

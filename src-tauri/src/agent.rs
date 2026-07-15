@@ -1325,6 +1325,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/002_trash.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -2021,5 +2022,154 @@ mod tests {
         );
 
         ct.cancel();
+    }
+
+    // -----------------------------------------------------------------------
+    // Change feed — triggers
+    //
+    // These drive SQL directly rather than the MCP tools, on purpose: the point
+    // of the trigger design is that the feed catches writers who never call it.
+    // A test that went through agent.rs would only prove agent.rs cooperates.
+
+    /// The case that motivated the whole feature. Kanban drag does NOT go through
+    /// patchTask; it goes through applyPositions (store.ts:319), which writes
+    /// status+position straight to the row and records no task_activity at all.
+    /// This writes the row the way applyPositions does — deliberately not the way
+    /// agent.rs does — and asserts the trigger caught it anyway.
+    #[test]
+    fn a_drag_shaped_write_lands_in_the_changes_feed() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO tasks (title, status, position, created_at)
+             VALUES ('Ship it', 'done', 0, ?1)",
+            [now_iso()],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("DELETE FROM changes", []).unwrap(); // drop the 'created' row
+
+        // Byte-for-byte what applyPositions emits: status + position + completed_at.
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', position = 0, completed_at = NULL WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+
+        let kinds: Vec<String> = conn
+            .prepare("SELECT kind FROM changes WHERE entity_id = ?1 ORDER BY id")
+            .unwrap()
+            .query_map([id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            kinds.contains(&"status".to_string()),
+            "a drag from Done to To Do must appear in the feed; got {kinds:?}"
+        );
+    }
+
+    /// Reordering within a column must not look like a status change: applyPositions
+    /// rewrites status for every card it touches, so an unguarded `AFTER UPDATE OF
+    /// status` would fire for cards that never left the column and wake an agent
+    /// once per card for nothing.
+    #[test]
+    fn reordering_within_a_column_reports_moved_and_never_status() {
+        let conn = migrated_conn();
+        for (t, pos) in [("A", 0), ("B", 1)] {
+            conn.execute(
+                "INSERT INTO tasks (title, status, position, created_at)
+                 VALUES (?1, 'todo', ?2, ?3)",
+                rusqlite::params![t, pos, now_iso()],
+            )
+            .unwrap();
+        }
+        conn.execute("DELETE FROM changes", []).unwrap();
+
+        // Swap them, the way a drag does: status is rewritten to its CURRENT value
+        // for every affected card, and both positions genuinely change.
+        conn.execute("UPDATE tasks SET status = 'todo', position = 1 WHERE title = 'A'", [])
+            .unwrap();
+        conn.execute("UPDATE tasks SET status = 'todo', position = 0 WHERE title = 'B'", [])
+            .unwrap();
+
+        let kinds: Vec<String> = conn
+            .prepare("SELECT kind FROM changes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["moved", "moved"], "a pure reorder must not emit `status`");
+    }
+
+    /// A write that changes nothing wakes nobody. applyPositions rewrites status
+    /// and position for every card it touches — including cards whose values are
+    /// already what it is writing — so without the WHEN guards a single drag would
+    /// emit a change per card in the column. Found the honest way: an earlier
+    /// version of the reorder test above put both cards at position 0 and expected
+    /// two `moved` rows; the trigger emitted one, because the second write really
+    /// was a no-op. The trigger was right and the test was wrong. Pin the property.
+    #[test]
+    fn a_write_that_changes_nothing_emits_nothing() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO tasks (title, status, priority, position, created_at)
+             VALUES ('t', 'todo', 2, 7, ?1)",
+            [now_iso()],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM changes", []).unwrap();
+
+        // Every column set to the value it already holds.
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', position = 7, priority = 2, title = 't'",
+            [],
+        )
+        .unwrap();
+
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM changes", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "a no-op write must not appear in the feed");
+    }
+
+    /// The trigger is a new writer of a created_at. datetime('now') would emit the
+    /// marker-less format migration 004 existed to erase, which JS reads as local
+    /// time and lands hours off. Guard it the way the other writers are guarded.
+    #[test]
+    fn trigger_timestamps_are_iso_utc_with_a_z() {
+        let conn = migrated_conn();
+        conn.execute("INSERT INTO tasks (title, created_at) VALUES ('t', ?1)", [now_iso()])
+            .unwrap();
+        let ts: String = conn
+            .query_row("SELECT created_at FROM changes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let b = ts.as_bytes();
+        assert!(
+            ts.len() == 24 && ts.ends_with('Z') && b[10] == b'T' && b[19] == b'.',
+            "trigger wrote {ts:?}; expected ISO-8601 UTC like 2026-07-16T05:12:33.123Z, \
+             the shape now_iso() and JS toISOString() produce"
+        );
+    }
+
+    #[test]
+    fn trash_and_restore_are_distinct_kinds() {
+        let conn = migrated_conn();
+        conn.execute("INSERT INTO tasks (title, created_at) VALUES ('t', ?1)", [now_iso()])
+            .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("DELETE FROM changes", []).unwrap();
+        conn.execute(
+            "UPDATE tasks SET deleted_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_iso(), id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tasks SET deleted_at = NULL WHERE id = ?1", [id]).unwrap();
+        let kinds: Vec<String> = conn
+            .prepare("SELECT kind FROM changes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["trashed", "restored"]);
     }
 }
