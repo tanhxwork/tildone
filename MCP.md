@@ -85,9 +85,47 @@ Conventions:
 | `list_tags` | — | `[{id, name, color, task_count}]` |
 | `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags, rank}]}` |
 | `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at`, `rank` |
+| `list_changes` | all optional: `since` (cursor), `wait_ms` (block up to N ms, max 60000) | `{cursor, changes: [{id, entity, entity_id, kind, created_at}], truncated?}` |
 
 By default `list_tasks` excludes completed tasks; pass `include_done: true`
 or `status: "done"` to see them. Trashed tasks are never listed.
+
+### Waking on board changes
+
+`list_changes` lets you **wait for the user** instead of polling. Call it once
+with no arguments to get a cursor, then pass that cursor back with a `wait_ms`:
+the call **blocks** until something changes, then returns the changes and a new
+cursor. Loop on it.
+
+```jsonc
+{ "name": "list_changes", "arguments": {} }
+// -> {"cursor": 41, "changes": []}
+
+{ "name": "list_changes", "arguments": { "since": 41, "wait_ms": 30000 } }
+// ... the call parks; the user drags a card into To Do ...
+// -> {"cursor": 42, "changes": [{"id": 42, "entity": "task", "entity_id": 7,
+//                                "kind": "status", "created_at": "..."}]}
+```
+
+- `kind` is one of `created`, `status`, `moved`, `trashed`, `restored`, `edited`.
+  `entity` is always `"task"` today.
+- A change says **that** a task changed, not what it now is — it carries no task
+  fields. Follow up with `get_task` / `list_tasks`.
+- **Every writer is caught**, because the feed is written by database triggers
+  rather than by the app: a card dragged across the board and a task updated by
+  another agent both show up, with no cooperation required from either.
+- A write that changes nothing produces nothing, so a drag that reshuffles a
+  column reports `moved` for the cards that moved — not a `status` change for
+  every card it rewrote.
+- A timeout is a **normal result**: an empty `changes` and the same `cursor`.
+  Call again to keep waiting.
+- Omitting `since` always returns immediately with a baseline — it never replays
+  history, and `wait_ms` is ignored.
+- Changes are kept for **30 days**. If your cursor is older than that, the reply
+  carries `truncated: true` and a note: the list is incomplete, so re-sync with
+  `list_tasks` and continue from the returned `cursor`.
+- Like every tool here, this only runs while **Tildone is open**. A parked call
+  returns as soon as the app quits.
 
 ### Write
 
