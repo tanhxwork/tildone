@@ -135,6 +135,10 @@ export const useStore = create<Store>()((set, get) => ({
   reload: async () => {
     const data = await db.fetchAll();
     set({ ...data });
+    // fetchAll has no activity in it, so an open task's log would sit frozen while
+    // an agent writes to it — the one place the user is actually watching.
+    const { editingTaskId } = get();
+    if (editingTaskId !== null) await get().loadActivity(editingTaskId);
   },
 
   select: (selection) => set({ selection, editingTaskId: null }),
