@@ -48,6 +48,7 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 | Concept | Details |
 |---|---|
 | **Task** | `title`, `notes`, `status` (`todo` / `doing` / `done`), `priority` (0 none, 1 low, 2 medium, 3 high), `due_date` (`YYYY-MM-DD` or null), optional project, tag names |
+| **Subtask** | A task's checklist item: `title`, `done`, kept in insertion order. Returned by `get_task`. The board card renders them as a live progress bar — **put your plan checklist here, not in `notes`**, and tick items as you go so the user can watch progress. Every subtask write returns `progress: {done, total}`. |
 | **Project** | Named container with a color. Deleting a project permanently deletes its tasks. |
 | **Inbox** | Where tasks without a project live. Pass `"inbox"` (or omit `project`) to target it. |
 | **Tags** | Case-insensitive names. Unknown tag names are **created automatically** when used on a task. |
@@ -102,6 +103,9 @@ Writes return a **receipt, not the row**: `{id, title, status}` (plus
 `completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
 — that doubled the cost of every update. Call `get_task` when you genuinely need
 the full task after a write.
+| `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
+| `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. |
+| `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |

@@ -213,6 +213,36 @@ impl TildoneAgent {
         );
     }
 
+    /// `(done, total)` for a task's subtasks — returned by every subtask write so
+    /// the caller gets the new progress without a follow-up `get_task`.
+    fn subtask_progress(conn: &Connection, task_id: i64) -> Result<(i64, i64), rusqlite::Error> {
+        conn.query_row(
+            "SELECT COALESCE(SUM(done), 0), COUNT(*) FROM subtasks WHERE task_id = ?1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
+    /// Resolve a subtask to `(parent task id, parent is trashed)`, or None when the
+    /// subtask does not exist. Subtask writes refuse a trashed parent for the same
+    /// reason `append_note` does: the task is not on the board to be worked.
+    fn parent_task_of(
+        conn: &Connection,
+        subtask_id: i64,
+    ) -> Result<Option<(i64, bool)>, rusqlite::Error> {
+        conn.query_row(
+            "SELECT t.id, t.deleted_at IS NOT NULL FROM subtasks s
+             JOIN tasks t ON t.id = s.task_id WHERE s.id = ?1",
+            [subtask_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+    }
+
     /// Find-or-create tags by name (case-insensitive) and link them to a task.
     fn set_tags(conn: &Connection, task_id: i64, tags: &[String]) -> Result<(), rusqlite::Error> {
         conn.execute("DELETE FROM task_tags WHERE task_id = ?1", [task_id])?;
@@ -490,6 +520,23 @@ struct AppendNoteParams {
     id: i64,
     #[schemars(description = "Text to append. A newline is inserted first when the notes are not already empty or newline-terminated.")]
     text: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AddSubtaskParams {
+    #[schemars(description = "Id of the parent task")]
+    task_id: i64,
+    title: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetSubtaskParams {
+    #[schemars(description = "Id of the subtask itself, not of its parent task")]
+    id: i64,
+    #[schemars(description = "Tick (true) or untick (false) the subtask")]
+    done: Option<bool>,
+    #[schemars(description = "Rename the subtask")]
+    title: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Default)]
@@ -897,6 +944,158 @@ impl TildoneAgent {
         drop(conn);
         self.notify();
         ok_json(&ack)
+    }
+
+    #[tool(
+        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes."
+    )]
+    fn add_subtask(
+        &self,
+        Parameters(AddSubtaskParams { task_id, title }): Parameters<AddSubtaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Ok(err("Subtask title cannot be empty."));
+        }
+        let conn = self.db.lock().unwrap();
+        let trashed: Option<bool> = conn
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        match trashed {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        let position: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        conn.execute(
+            "INSERT INTO subtasks (task_id, title, position) VALUES (?1, ?2, ?3)",
+            rusqlite::params![task_id, title, position],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        Self::record_activity(&conn, task_id, &format!("Subtask added: {title}"));
+        let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "title": title,
+            "done": false,
+            "progress": {"done": done, "total": total},
+        }))
+    }
+
+    #[tool(description = "Tick, untick or rename a subtask. Only the provided fields change.")]
+    fn set_subtask(
+        &self,
+        Parameters(SetSubtaskParams { id, done, title }): Parameters<SetSubtaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if done.is_none() && title.is_none() {
+            return Ok(err("Nothing to change — pass done and/or title."));
+        }
+        let conn = self.db.lock().unwrap();
+        let Some((task_id, trashed)) = Self::parent_task_of(&conn, id).map_err(db_err)? else {
+            return Ok(err(format!("No subtask with id {id}.")));
+        };
+        if trashed {
+            return Ok(err(format!(
+                "Subtask {id} belongs to a task in the trash; it can only be restored from the app."
+            )));
+        }
+        if let Some(title) = &title {
+            let title = title.trim();
+            if title.is_empty() {
+                return Ok(err("Subtask title cannot be empty."));
+            }
+            conn.execute(
+                "UPDATE subtasks SET title = ?1 WHERE id = ?2",
+                rusqlite::params![title, id],
+            )
+            .map_err(db_err)?;
+            Self::record_activity(&conn, task_id, &format!("Subtask renamed: {title}"));
+        }
+        if let Some(done) = done {
+            conn.execute(
+                "UPDATE subtasks SET done = ?1 WHERE id = ?2",
+                rusqlite::params![done as i64, id],
+            )
+            .map_err(db_err)?;
+            let current: String = conn
+                .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(db_err)?;
+            Self::record_activity(
+                &conn,
+                task_id,
+                &format!(
+                    "Subtask {}: {current}",
+                    if done { "completed" } else { "reopened" }
+                ),
+            );
+        }
+        let (done_count, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "progress": {"done": done_count, "total": total},
+        }))
+    }
+
+    #[tool(
+        description = "Remove a subtask. This is a hard delete — unlike delete_task there is no trash for subtasks."
+    )]
+    fn delete_subtask(
+        &self,
+        Parameters(IdParams { id }): Parameters<IdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let Some((task_id, trashed)) = Self::parent_task_of(&conn, id).map_err(db_err)? else {
+            return Ok(err(format!("No subtask with id {id}.")));
+        };
+        if trashed {
+            return Ok(err(format!(
+                "Subtask {id} belongs to a task in the trash; it can only be restored from the app."
+            )));
+        }
+        let title: String = conn
+            .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .map_err(db_err)?;
+        conn.execute("DELETE FROM subtasks WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        Self::record_activity(&conn, task_id, &format!("Subtask removed: {title}"));
+        let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "task_id": task_id,
+            "deleted": id,
+            "progress": {"done": done, "total": total},
+        }))
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -1409,6 +1608,94 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 2, "expected creation + status activity, got {n}");
+    }
+
+    /// The subtask lifecycle an agent drives: add, tick, read back, delete —
+    /// and refuse once the parent is trashed, the rule append_note set.
+    #[test]
+    fn subtask_writes_and_progress() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let task_id = task["id"].as_i64().unwrap();
+
+        let mut ids = Vec::new();
+        for title in ["write test", "implement", "verify"] {
+            let (is_err, out) = extract(
+                &agent
+                    .add_subtask(Parameters(AddSubtaskParams {
+                        task_id,
+                        title: title.into(),
+                    }))
+                    .unwrap(),
+            );
+            assert!(!is_err, "add_subtask failed: {out}");
+            ids.push(out["id"].as_i64().unwrap());
+        }
+
+        let (_, out) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[0],
+                    done: Some(true),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["done"], 1);
+        assert_eq!(out["progress"]["total"], 3);
+
+        // Order is insertion order, and the tick is visible to the next reader.
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id: task_id })).unwrap());
+        let subs = full["subtasks"].as_array().unwrap();
+        assert_eq!(subs.len(), 3);
+        assert_eq!(subs[0]["title"], "write test");
+        assert_eq!(subs[0]["done"], true);
+        assert_eq!(subs[2]["title"], "verify");
+
+        let (_, out) = extract(
+            &agent
+                .delete_subtask(Parameters(IdParams { id: ids[2] }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["total"], 2);
+
+        // Untick walks progress back down.
+        let (_, out) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[0],
+                    done: Some(false),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["done"], 0);
+
+        agent
+            .delete_task(Parameters(IdParams { id: task_id }))
+            .unwrap();
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[1],
+                    done: Some(true),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "a trashed parent must refuse subtask writes");
     }
 
     /// The board is the queue: list_tasks must return what the user sees, so a
