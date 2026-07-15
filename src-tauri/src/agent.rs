@@ -215,6 +215,77 @@ impl TildoneAgent {
         );
     }
 
+    /// Highest change id ever issued.
+    ///
+    /// Read from `sqlite_sequence`, **not** `MAX(id)`: the retention sweep deletes
+    /// rows, and `MAX(id)` would then move *backwards* and hand out a cursor that
+    /// replays history the agent already saw. AUTOINCREMENT keeps `seq` as a
+    /// high-water mark that never decreases. The row is absent until the first
+    /// insert, hence the COALESCE.
+    fn changes_cursor(conn: &Connection) -> Result<i64, rusqlite::Error> {
+        conn.query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'changes'), 0)",
+            [],
+            |r| r.get(0),
+        )
+    }
+
+    /// One read of the feed: the cursor, plus everything after `since`.
+    fn read_changes(conn: &Connection, since: Option<i64>) -> Result<Value, rusqlite::Error> {
+        let cursor = Self::changes_cursor(conn)?;
+        let Some(since) = since else {
+            // Baseline: the agent gets a cursor to come back with, not a flood.
+            return Ok(json!({"cursor": cursor, "changes": []}));
+        };
+
+        let rows: Vec<Value> = conn
+            .prepare(
+                "SELECT id, entity, entity_id, kind, created_at FROM changes
+                 WHERE id > ?1 ORDER BY id",
+            )?
+            .query_map([since], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "entity": r.get::<_, String>(1)?,
+                    "entity_id": r.get::<_, i64>(2)?,
+                    "kind": r.get::<_, String>(3)?,
+                    "created_at": r.get::<_, String>(4)?,
+                }))
+            })?
+            .collect::<Result<_, _>>()?;
+
+        // A cursor older than the retention horizon must not look like "nothing
+        // happened". That failure is silent and shaped exactly like success: the
+        // agent would trust a board it never re-read. Say so instead.
+        let oldest: Option<i64> = conn.query_row("SELECT MIN(id) FROM changes", [], |r| r.get(0))?;
+        let truncated = match oldest {
+            Some(min) => since < min - 1,
+            None => since < cursor,
+        };
+
+        let mut out = json!({"cursor": cursor, "changes": rows});
+        if truncated {
+            out["truncated"] = json!(true);
+            out["note"] = json!(
+                "Your cursor is older than the 30-day retention horizon, so some changes \
+                 are gone. This list is incomplete — re-sync with list_tasks and continue \
+                 from the returned cursor."
+            );
+        }
+        Ok(out)
+    }
+
+    /// Retention: 30 days. ISO-8601 UTC sorts lexicographically, so a string
+    /// compare is a date compare. Runs on call — no scheduler to own.
+    fn prune_changes(conn: &Connection) -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "DELETE FROM changes
+             WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// `(done, total)` for a task's subtasks — returned by every subtask write so
     /// the caller gets the new progress without a follow-up `get_task`.
     fn subtask_progress(conn: &Connection, task_id: i64) -> Result<(i64, i64), rusqlite::Error> {
@@ -529,6 +600,18 @@ struct AddSubtaskParams {
     #[schemars(description = "Id of the parent task")]
     task_id: i64,
     title: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ListChangesParams {
+    #[schemars(
+        description = "Return changes newer than this cursor. Omit on the first call to get the current cursor and an empty list — a baseline, not the whole history."
+    )]
+    since: Option<i64>,
+    #[schemars(
+        description = "Block up to this many milliseconds waiting for a change before returning (max 60000). Omit or 0 to return immediately. Ignored when `since` is omitted."
+    )]
+    wait_ms: Option<i64>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1161,6 +1244,25 @@ impl TildoneAgent {
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
         ok_json(&json!(tags))
+    }
+
+    #[tool(
+        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited. A change says THAT a task changed, not what it now is — follow up with get_task."
+    )]
+    async fn list_changes(
+        &self,
+        Parameters(ListChangesParams { since, wait_ms: _ }): Parameters<ListChangesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Scoped: `db` is a std::sync::Mutex over the server's one connection, so
+        // the guard must never be alive across an await (see the long-poll below).
+        let out = {
+            let conn = self.db.lock().unwrap();
+            Self::prune_changes(&conn).map_err(db_err)?;
+            Self::read_changes(&conn, since).map_err(db_err)?
+        };
+        // No self.notify() — this is a read tool. Notifying would make the app
+        // reload its whole store on every poll.
+        ok_json(&out)
     }
 }
 
@@ -2171,5 +2273,190 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(kinds, vec!["trashed", "restored"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Change feed — the list_changes tool
+
+    fn no_wait(since: Option<i64>) -> Parameters<ListChangesParams> {
+        Parameters(ListChangesParams { since, wait_ms: None })
+    }
+
+    #[tokio::test]
+    async fn list_changes_without_since_returns_a_baseline_not_a_flood() {
+        let (agent, db) = test_agent_with_db();
+        {
+            let conn = db.lock().unwrap();
+            for i in 0..3 {
+                conn.execute(
+                    "INSERT INTO tasks (title, created_at) VALUES (?1, ?2)",
+                    rusqlite::params![format!("t{i}"), now_iso()],
+                )
+                .unwrap();
+            }
+        }
+        let (_, v) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        assert_eq!(
+            v["changes"].as_array().unwrap().len(),
+            0,
+            "no `since` must mean a baseline, never a replay of history"
+        );
+        assert_eq!(v["cursor"], 3);
+    }
+
+    #[tokio::test]
+    async fn list_changes_round_trips_its_cursor() {
+        let (agent, db) = test_agent_with_db();
+        let (_, base_v) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        let base = base_v["cursor"].as_i64().unwrap();
+
+        db.lock()
+            .unwrap()
+            .execute("INSERT INTO tasks (title, created_at) VALUES ('new', ?1)", [now_iso()])
+            .unwrap();
+
+        let (_, v) = extract(&agent.list_changes(no_wait(Some(base))).await.unwrap());
+        let changes = v["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["kind"], "created");
+        let next = v["cursor"].as_i64().unwrap();
+        assert!(next > base, "the cursor must advance");
+
+        // Passing the new cursor back yields nothing — no duplicate delivery.
+        let (_, v2) = extract(&agent.list_changes(no_wait(Some(next))).await.unwrap());
+        assert_eq!(v2["changes"].as_array().unwrap().len(), 0);
+    }
+
+    /// An agent's own writes go through the same trigger as the user's — there is
+    /// no second code path to keep in sync. That is the whole design, so pin it.
+    #[tokio::test]
+    async fn an_agent_write_shows_up_in_the_feed_too() {
+        let (agent, _db) = test_agent_with_db();
+        let (_, created) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Work".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = created["id"].as_i64().unwrap();
+
+        let (_, base_v) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        let base = base_v["cursor"].as_i64().unwrap();
+
+        agent
+            .update_task(Parameters(UpdateTaskParams {
+                id,
+                title: None,
+                notes: None,
+                status: Some("doing".into()),
+                priority: None,
+                due_date: None,
+                project: None,
+                tags: None,
+            }))
+            .unwrap();
+
+        let (_, v) = extract(&agent.list_changes(no_wait(Some(base))).await.unwrap());
+        let kinds: Vec<&str> = v["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["kind"].as_str().unwrap())
+            .collect();
+        assert!(
+            kinds.contains(&"status"),
+            "an agent write must feed the same trigger as a user's; got {kinds:?}"
+        );
+    }
+
+    /// The silent-success failure: a cursor past the retention horizon must not
+    /// return [] as though the board were untouched.
+    #[tokio::test]
+    async fn a_cursor_older_than_retention_reports_truncation() {
+        let (agent, db) = test_agent_with_db();
+        {
+            let conn = db.lock().unwrap();
+            // Changes the reaper will drop: created_at well past the horizon.
+            for i in 1..=2 {
+                conn.execute(
+                    "INSERT INTO changes (entity, entity_id, kind, created_at)
+                     VALUES ('task', ?1, 'status', strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 days'))",
+                    [i],
+                )
+                .unwrap();
+            }
+        }
+        let (_, v) = extract(&agent.list_changes(no_wait(Some(0))).await.unwrap());
+        assert_eq!(
+            v["truncated"], true,
+            "a stale cursor must not be answered with a bare [] that reads as 'nothing happened'"
+        );
+        assert!(v["note"].is_string(), "and it must say what to do about it");
+    }
+
+    /// The reaper must not take live rows with it.
+    #[tokio::test]
+    async fn retention_keeps_recent_changes() {
+        let (agent, db) = test_agent_with_db();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO changes (entity, entity_id, kind, created_at)
+                 VALUES ('task', 1, 'status', strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 days'))",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO changes (entity, entity_id, kind, created_at)
+                 VALUES ('task', 2, 'status', strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 days'))",
+                [],
+            )
+            .unwrap();
+        }
+        agent.list_changes(no_wait(None)).await.unwrap(); // triggers the sweep
+        let surviving: Vec<i64> = db
+            .lock()
+            .unwrap()
+            .prepare("SELECT entity_id FROM changes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(surviving, vec![2], "the 40-day-old row goes, the 1-day-old row stays");
+    }
+
+    /// The reaper deletes rows, so MAX(id) would walk the cursor backwards and
+    /// replay history the agent already processed. sqlite_sequence does not.
+    #[tokio::test]
+    async fn the_cursor_never_walks_backwards_after_a_prune() {
+        let (agent, db) = test_agent_with_db();
+        {
+            let conn = db.lock().unwrap();
+            for i in 1..=3 {
+                conn.execute(
+                    "INSERT INTO changes (entity, entity_id, kind, created_at)
+                     VALUES ('task', ?1, 'status', strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 days'))",
+                    [i],
+                )
+                .unwrap();
+            }
+        }
+        let (_, before) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        // Everything was over the horizon, so the sweep emptied the table.
+        assert_eq!(db.lock().unwrap().query_row("SELECT COUNT(*) FROM changes", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let (_, after) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        assert_eq!(
+            before["cursor"], after["cursor"],
+            "an empty table must not reset the cursor — MAX(id) would, sqlite_sequence must not"
+        );
+        assert_eq!(after["cursor"], 3);
     }
 }
