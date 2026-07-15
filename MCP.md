@@ -98,17 +98,17 @@ or `status: "done"` to see them. Trashed tasks are never listed.
 | `append_note` | `id`, `text` | Appends to `notes` (newline-separated). **Prefer this for progress logs** — it cannot destroy existing notes, and costs the same however long the notes are. Returns a `notes_chars` size hint. |
 | `complete_task` | `id` | Shorthand for `status: "done"`; sets the completion timestamp. |
 | `delete_task` | `id` | Soft delete to the app's trash (restorable by the user). |
-
-Writes return a **receipt, not the row**: `{id, title, status}` (plus
-`completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
-— that doubled the cost of every update. Call `get_task` when you genuinely need
-the full task after a write.
 | `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
 | `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. |
 | `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |
+
+Writes return a **receipt, not the row**: `{id, title, status}` (plus
+`completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
+— that doubled the cost of every update. Call `get_task` when you genuinely need
+the full task after a write. Subtask writes also return `progress: {done, total}`.
 
 ### Examples
 
