@@ -320,10 +320,17 @@ export function AISettings() {
                         ? `Downloading engine… ${formatMB(progress.downloaded)}${progress.total ? ` of ${formatMB(progress.total)}` : ""}`
                         : "Preparing download…"}
                   </span>
-                  <div className="ai-progress">
+                  <div
+                    className="ai-progress"
+                    role="progressbar"
+                    aria-label="Download progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    {...(pct !== null ? { "aria-valuenow": pct } : {})}
+                  >
                     <div
                       className="ai-progress-fill"
-                      style={{ width: pct !== null ? `${pct}%` : "8%" }}
+                      style={{ transform: `scaleX(${(pct ?? 8) / 100})` }}
                     />
                   </div>
                 </div>
