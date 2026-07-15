@@ -23,7 +23,7 @@ import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Status, Task } from "../types";
 import { STATUSES, STATUS_LABELS } from "../types";
-import { TaskMeta } from "./TaskRow";
+import { TaskMeta, reservedState } from "./TaskRow";
 
 type Columns = Record<Status, number[]>;
 
@@ -215,11 +215,22 @@ function Card({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
 
 function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
   const subtasks = useStore((s) => s.subtasks);
+  const tags = useStore((s) => s.tags);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const done = mine.filter((s) => s.done).length;
+  const state = reservedState(task, tags);
 
   return (
-    <div className={`board-card ${overlay ? "overlay" : ""} ${task.status === "done" ? "done" : ""}`}>
+    <div
+      className={[
+        "board-card",
+        overlay ? "overlay" : "",
+        task.status === "done" ? "done" : "",
+        state ? `state-${state}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <span className="card-title">{task.title}</span>
       {mine.length > 0 && (
         <span
