@@ -191,8 +191,8 @@ impl TildoneAgent {
 
     fn record_activity(conn: &Connection, task_id: i64, label: &str) {
         let _ = conn.execute(
-            "INSERT INTO task_activity (task_id, label) VALUES (?1, ?2)",
-            rusqlite::params![task_id, label],
+            "INSERT INTO task_activity (task_id, label, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![task_id, label, now_iso()],
         );
     }
 
@@ -544,9 +544,9 @@ impl TildoneAgent {
         }
         let color = color.unwrap_or_else(|| color_for_name(&name).to_string());
         conn.execute(
-            "INSERT INTO projects (name, color, position)
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects))",
-            rusqlite::params![name, color],
+            "INSERT INTO projects (name, color, position, created_at)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects), ?3)",
+            rusqlite::params![name, color, now_iso()],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
@@ -757,8 +757,8 @@ impl TildoneAgent {
         let position = Self::next_position(&conn, project_id, &status).map_err(db_err)?;
         let completed_at: Option<String> = (status == "done").then(now_iso);
         conn.execute(
-            "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 project_id,
                 title,
@@ -767,7 +767,8 @@ impl TildoneAgent {
                 priority,
                 due_date,
                 position,
-                completed_at
+                completed_at,
+                now_iso()
             ],
         )
         .map_err(db_err)?;
@@ -988,13 +989,98 @@ mod tests {
         (result.is_error.unwrap_or(false), value)
     }
 
-    fn test_agent() -> TildoneAgent {
+    fn migrated_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/002_trash.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-        TildoneAgent::new(Arc::new(Mutex::new(conn)), Arc::new(|| {}))
+        conn
+    }
+
+    fn test_agent() -> TildoneAgent {
+        TildoneAgent::new(Arc::new(Mutex::new(migrated_conn())), Arc::new(|| {}))
+    }
+
+    fn test_agent_with_db() -> (TildoneAgent, Db) {
+        let db: Db = Arc::new(Mutex::new(migrated_conn()));
+        (TildoneAgent::new(db.clone(), Arc::new(|| {})), db)
+    }
+
+    /// created_at must match completed_at's format. The column DEFAULT
+    /// `datetime('now')` still emits a bare, marker-less UTC string, so every
+    /// writer has to pass created_at explicitly — this is the guard for that.
+    #[test]
+    fn created_at_is_iso_utc_for_every_writer() {
+        let (agent, db) = test_agent_with_db();
+        extract(
+            &agent
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Work".into(),
+                    color: None,
+                }))
+                .unwrap(),
+        );
+        extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Ship it".into(),
+                    project: Some("Work".into()),
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+
+        let conn = db.lock().unwrap();
+        for table in ["projects", "tasks", "task_activity"] {
+            let ts: String = conn
+                .query_row(&format!("SELECT created_at FROM {table} LIMIT 1"), [], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("{table}: no created_at row ({e})"));
+            assert!(
+                ts.contains('T') && ts.ends_with('Z'),
+                "{table}.created_at is not ISO-8601 UTC: {ts}"
+            );
+        }
+    }
+
+    /// Rows written before 004 carry SQLite's "YYYY-MM-DD HH:MM:SS"; the
+    /// migration must rewrite them in place without touching valid rows.
+    #[test]
+    fn migration_004_backfills_legacy_timestamps() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/002_trash.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (title, created_at) VALUES ('legacy', '2026-07-15 16:01:11')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (title, created_at) VALUES ('already-iso', '2026-07-15T16:01:11.500Z')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
+
+        let legacy: String = conn
+            .query_row("SELECT created_at FROM tasks WHERE title='legacy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy, "2026-07-15T16:01:11.000Z", "legacy row not normalised");
+
+        let untouched: String = conn
+            .query_row("SELECT created_at FROM tasks WHERE title='already-iso'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            untouched, "2026-07-15T16:01:11.500Z",
+            "already-ISO row must be left alone (millis preserved)"
+        );
     }
 
     #[test]

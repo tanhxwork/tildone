@@ -119,10 +119,7 @@ export function TaskEditor() {
     }
   }
 
-  const createdLabel = format(
-    parseISO(task.created_at.slice(0, 10)),
-    "MMMM d, yyyy",
-  );
+  const createdLabel = format(parseISO(task.created_at), "MMMM d, yyyy");
 
   return (
     <div className="modal-overlay detail-overlay" onClick={() => openEditor(null)}>

@@ -24,6 +24,12 @@ pub fn run() {
             sql: include_str!("../migrations/003_subtasks_activity.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "normalise_created_at_to_iso",
+            sql: include_str!("../migrations/004_iso_timestamps.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

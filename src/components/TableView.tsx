@@ -282,8 +282,7 @@ function TableRow({
           ))}
         </select>
       </td>
-      {/* created_at may use SQLite's space-separated datetime, so parse the date part only */}
-      <td className="col-created">{format(parseISO(task.created_at.slice(0, 10)), "MMM d")}</td>
+      <td className="col-created">{format(parseISO(task.created_at), "MMM d")}</td>
       <td className="col-open">
         <button
           className="icon-btn"
