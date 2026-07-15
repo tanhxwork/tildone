@@ -10,6 +10,10 @@ reference; it is safe to paste into an agent's context.
 - The Tildone app must be **running** and **Settings → Agent access** must be
   **On** (off by default). If the connection is refused, ask the user to open
   Tildone and enable it.
+- 11502 is the **installed app**. A dev build (`bun run tauri dev`) takes a free
+  port instead, so it never knocks the installed app off the air — Settings shows
+  the real endpoint. To point an agent at a dev build, pin it with
+  `TILDONE_AGENT_PORT=11599 bun run tauri dev`.
 - Start Tildone **before** the agent session. Clients connect to MCP servers
   once, at startup — a session that began while Tildone was closed (or Agent
   access was Off) has no tildone tools, and calls fail with "No such tool

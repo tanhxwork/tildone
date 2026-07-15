@@ -26,6 +26,9 @@ under a specific project or in the Inbox.
    claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
    ```
 
+   11502 is the installed app's port. A dev build takes a free one so the two
+   never collide; Settings → Agent access shows the endpoint actually in use.
+
 Agents get tools to list/create/update/complete/delete tasks (title, notes,
 status, priority, due date, tags) and to manage projects, referring to projects
 and tags by name. Changes show up in the app instantly. See **[MCP.md](MCP.md)**

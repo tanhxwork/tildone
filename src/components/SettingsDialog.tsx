@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettings, type Theme, type WeekStart } from "../settings";
 import { useStore, type ImportedTask } from "../store";
 import type { Status } from "../types";
@@ -28,17 +28,30 @@ export function SettingsDialog() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [agentMessage, setAgentMessage] = useState<string | null>(null);
+  // The port is only fixed for a release build — a dev build takes whatever the
+  // OS hands out — so the endpoint has to be asked for, never assumed. This also
+  // reports the *server's* real state rather than echoing the setting back, which
+  // is what let the server sit dead while the dialog claimed it was on.
+  const [endpoint, setEndpoint] = useState<string | null>(null);
+
+  useEffect(() => {
+    void invoke<string | null>("agent_server_endpoint")
+      .then(setEndpoint)
+      .catch(() => setEndpoint(null));
+  }, []);
 
   async function toggleAgentServer(enabled: boolean) {
     setAgentMessage(null);
     try {
       if (enabled) {
-        await invoke<string>("agent_server_start");
+        setEndpoint(await invoke<string>("agent_server_start"));
       } else {
         await invoke("agent_server_stop");
+        setEndpoint(null);
       }
       setAgentServer(enabled);
     } catch (err) {
+      setEndpoint(null);
       setAgentMessage(String(err));
     }
   }
@@ -198,7 +211,9 @@ export function SettingsDialog() {
             <div className="settings-label">
               Let AI agents manage tasks
               <span className="settings-sub">
-                Local MCP server on 127.0.0.1:11502 — only while Tildone is running
+                {endpoint
+                  ? `Local MCP server on ${endpoint.replace(/^https?:\/\//, "").replace(/\/mcp$/, "")} — only while Tildone is running`
+                  : "Local MCP server — only while Tildone is running"}
               </span>
             </div>
             <div className="segmented" role="group" aria-label="Agent access">
@@ -214,10 +229,16 @@ export function SettingsDialog() {
             </div>
           </div>
 
-          {agentServer && (
+          {endpoint && (
             <p className="settings-sub">
               Connect an agent, e.g.:{" "}
-              <code>claude mcp add --transport http tildone http://127.0.0.1:11502/mcp</code>
+              <code>claude mcp add --transport http tildone {endpoint}</code>
+            </p>
+          )}
+          {agentServer && !endpoint && (
+            <p className="settings-message">
+              Agent access is on, but the server is not listening. Restarting Tildone
+              usually fixes it.
             </p>
           )}
           {agentMessage && <p className="settings-message">{agentMessage}</p>}

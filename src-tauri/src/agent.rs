@@ -47,8 +47,11 @@ const COLOR_CHOICES: [&str; 8] = [
     "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#8b5cf6", "#64748b",
 ];
 
+/// The endpoint is stored alongside the token because the port is not known
+/// until bind time: a dev build asks the OS for a free one (see `requested_port`),
+/// so nothing may assume it is `AGENT_PORT`.
 #[derive(Default)]
-pub struct AgentServer(Mutex<Option<CancellationToken>>);
+pub struct AgentServer(Mutex<Option<(CancellationToken, String)>>);
 
 type Db = Arc<Mutex<Connection>>;
 
@@ -1210,11 +1213,41 @@ impl ServerHandler for TildoneAgent {
 /// of that, reject any browser-originated request outright: web pages always
 /// send an Origin header and can never legitimately talk to this server, while
 /// real MCP clients (CLIs, desktop apps) send none and pass.
-fn server_config() -> StreamableHttpServerConfig {
+fn server_config(port: u16) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default().with_allowed_origins([
-        format!("http://127.0.0.1:{AGENT_PORT}"),
-        format!("http://localhost:{AGENT_PORT}"),
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
     ])
+}
+
+/// The port to *request* at bind time.
+///
+/// `AGENT_PORT` is the contract: an agent's MCP config points at a fixed URL, so
+/// the installed app must always own it. Every other instance has to get out of
+/// the way — `tauri dev` and each git worktree would otherwise all grab the same
+/// port, and only the first would win. Worse, that loss is silent (the frontend
+/// discards the bind error), so a dev build looks healthy with no board at all.
+///
+/// Hence: a debug build asks for port 0 and lets the OS hand out a free one, so
+/// any number of dev instances coexist. `TILDONE_AGENT_PORT` overrides both, for
+/// when a dev genuinely needs a known port (e.g. pointing an agent at a dev build).
+fn resolve_port(env_override: Option<&str>, is_dev_build: bool) -> u16 {
+    if let Some(raw) = env_override {
+        if let Ok(port) = raw.trim().parse::<u16>() {
+            return port;
+        }
+        eprintln!("tildone: ignoring unparseable TILDONE_AGENT_PORT={raw:?}");
+    }
+    if is_dev_build {
+        0
+    } else {
+        AGENT_PORT
+    }
+}
+
+fn requested_port() -> u16 {
+    let env_override = std::env::var("TILDONE_AGENT_PORT").ok();
+    resolve_port(env_override.as_deref(), cfg!(debug_assertions))
 }
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -1241,19 +1274,31 @@ pub async fn agent_server_start(
     app: AppHandle,
     state: State<'_, AgentServer>,
 ) -> Result<String, String> {
-    let endpoint = format!("http://127.0.0.1:{AGENT_PORT}/mcp");
     {
         let guard = state.0.lock().unwrap();
-        if let Some(ct) = guard.as_ref() {
+        if let Some((ct, endpoint)) = guard.as_ref() {
             if !ct.is_cancelled() {
-                return Ok(endpoint);
+                return Ok(endpoint.clone());
             }
         }
     }
 
+    // Bind before configuring: with a requested port of 0 the real port only
+    // exists once the OS has assigned it, and both the endpoint we hand back and
+    // the allowed-origins list have to name that port, not AGENT_PORT.
+    let requested = requested_port();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", requested))
+        .await
+        .map_err(|e| format!("cannot listen on port {requested}: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("cannot resolve the bound address: {e}"))?
+        .port();
+    let endpoint = format!("http://127.0.0.1:{port}/mcp");
+
     let db: Db = Arc::new(Mutex::new(open_db(&app)?));
     let ct = CancellationToken::new();
-    let config = server_config().with_cancellation_token(ct.child_token());
+    let config = server_config(port).with_cancellation_token(ct.child_token());
     let emitter = app.clone();
     let on_change: Notify = Arc::new(move || {
         let _ = emitter.emit("agent-db-changed", ());
@@ -1265,9 +1310,6 @@ pub async fn agent_server_start(
             config,
         );
     let router = axum::Router::new().nest_service("/mcp", service);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", AGENT_PORT))
-        .await
-        .map_err(|e| format!("cannot listen on port {AGENT_PORT}: {e}"))?;
 
     let serve_ct = ct.clone();
     tauri::async_runtime::spawn(async move {
@@ -1276,13 +1318,13 @@ pub async fn agent_server_start(
             .await;
     });
 
-    *state.0.lock().unwrap() = Some(ct);
+    *state.0.lock().unwrap() = Some((ct, endpoint.clone()));
     Ok(endpoint)
 }
 
 #[tauri::command]
 pub fn agent_server_stop(state: State<'_, AgentServer>) {
-    if let Some(ct) = state.0.lock().unwrap().take() {
+    if let Some((ct, _)) = state.0.lock().unwrap().take() {
         ct.cancel();
     }
 }
@@ -1294,13 +1336,26 @@ pub fn agent_server_status(state: State<'_, AgentServer>) -> bool {
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|ct| !ct.is_cancelled())
+        .is_some_and(|(ct, _)| !ct.is_cancelled())
+}
+
+/// The live endpoint, or None when the server is not running. The UI must ask
+/// rather than assume: the port is only fixed for a release build.
+#[tauri::command]
+pub fn agent_server_endpoint(state: State<'_, AgentServer>) -> Option<String> {
+    state
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(ct, _)| !ct.is_cancelled())
+        .map(|(_, endpoint)| endpoint.clone())
 }
 
 /// Called from the app exit hook.
 pub fn shutdown(app: &AppHandle) {
     if let Some(server) = app.try_state::<AgentServer>() {
-        if let Some(ct) = server.0.lock().unwrap().take() {
+        if let Some((ct, _)) = server.0.lock().unwrap().take() {
             ct.cancel();
         }
     }
@@ -1336,6 +1391,34 @@ mod tests {
     fn test_agent_with_db() -> (TildoneAgent, Db) {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         (TildoneAgent::new(db.clone(), Arc::new(|| {})), db)
+    }
+
+    /// AGENT_PORT is a contract: an agent's MCP config points at a fixed URL, so
+    /// the installed app must own it and nothing else may squat on it. A dev build
+    /// or a worktree that grabbed it first would take the installed app's board
+    /// down — silently, since the frontend discards the bind error.
+    #[test]
+    fn only_a_release_build_asks_for_the_installed_apps_port() {
+        assert_eq!(
+            resolve_port(None, false),
+            AGENT_PORT,
+            "a release build IS the installed app and must own 11502"
+        );
+        assert_eq!(
+            resolve_port(None, true),
+            0,
+            "a dev build must ask the OS for a free port (0), never AGENT_PORT — \
+             otherwise two worktrees fight each other and the installed app"
+        );
+        assert_ne!(resolve_port(None, true), AGENT_PORT);
+
+        // The escape hatch: pointing an agent at a dev build needs a known port.
+        assert_eq!(resolve_port(Some("11599"), true), 11599);
+        assert_eq!(resolve_port(Some("  11599  "), true), 11599);
+
+        // Junk must not silently become port 0 in a release build; fall through.
+        assert_eq!(resolve_port(Some("not-a-port"), false), AGENT_PORT);
+        assert_eq!(resolve_port(Some("70000"), true), 0);
     }
 
     /// We shipped `tools: {}` for months, which tells every client "my tool list
@@ -1884,14 +1967,16 @@ mod tests {
     async fn mcp_over_streamable_http() {
         let agent = test_agent();
         let ct = CancellationToken::new();
-        // Same config as agent_server_start so origin/host validation is
-        // exercised too.
-        let config = server_config().with_cancellation_token(ct.child_token());
+        // Bind first, then configure from the real port — the same order as
+        // agent_server_start, so origin/host validation is exercised against the
+        // port actually in use rather than against AGENT_PORT.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = server_config(addr.port()).with_cancellation_token(ct.child_token());
         let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(agent.clone()), Default::default(), config);
         let router = axum::Router::new().nest_service("/mcp", service);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let url = format!("http://{addr}/mcp");
         tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
