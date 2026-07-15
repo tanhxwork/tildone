@@ -23,6 +23,11 @@ reference; it is safe to paste into an agent's context.
   reconnects on its own within a few seconds (verified across a 2-minute
   outage). Unknown/expired session ids get a `404`, which is the client's cue
   to re-initialize.
+- **New tools are the exception to that.** Clients cache the tool list from
+  when they connected, so a Tildone build that *adds* a tool stays invisible to
+  sessions already running — the existing tools keep working and the new one is
+  simply absent, even though the server serves it. Restart the client session
+  after upgrading Tildone if you expect a new tool.
 - Localhost only, no authentication. Requests carrying a browser `Origin`
   header are rejected (403).
 
