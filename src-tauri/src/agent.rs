@@ -215,6 +215,20 @@ impl TildoneAgent {
         );
     }
 
+    /// `Some(trashed)` for an existing task, `None` when there is no such task.
+    fn task_trashed(conn: &Connection, task_id: i64) -> Result<Option<bool>, rusqlite::Error> {
+        conn.query_row(
+            "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+    }
+
     /// `(done, total)` for a task's subtasks — returned by every subtask write so
     /// the caller gets the new progress without a follow-up `get_task`.
     fn subtask_progress(conn: &Connection, task_id: i64) -> Result<(i64, i64), rusqlite::Error> {
@@ -529,6 +543,16 @@ struct AddSubtaskParams {
     #[schemars(description = "Id of the parent task")]
     task_id: i64,
     title: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct LogProgressParams {
+    #[schemars(description = "Id of the task")]
+    task_id: i64,
+    #[schemars(
+        description = "One short, factual line in the present tense — e.g. \"tests written (RED, 5 failing)\""
+    )]
+    text: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -960,19 +984,7 @@ impl TildoneAgent {
             return Ok(err("Subtask title cannot be empty."));
         }
         let conn = self.db.lock().unwrap();
-        let trashed: Option<bool> = conn
-            .query_row(
-                "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
-                [task_id],
-                |r| r.get(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })
-            .map_err(db_err)?;
-        match trashed {
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
             None => return Ok(err(format!("No task with id {task_id}."))),
             Some(true) => {
                 return Ok(err(format!(
@@ -1098,6 +1110,35 @@ impl TildoneAgent {
             "deleted": id,
             "progress": {"done": done, "total": total},
         }))
+    }
+
+    #[tool(
+        description = "Log one line of narrative progress on a task — what you just did, found or decided. It lands in the task's Activity feed in the app, timestamped, so the user can watch the work happen. Prefer this over keeping a `## Log` section inside `notes`: it costs the same however long the history gets, it cannot clobber anything, and it leaves notes as prose. Use subtasks for the plan checklist and this for the running commentary."
+    )]
+    fn log_progress(
+        &self,
+        Parameters(LogProgressParams { task_id, text }): Parameters<LogProgressParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Ok(err("Log text cannot be empty."));
+        }
+        let conn = self.db.lock().unwrap();
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        Self::record_activity(&conn, task_id, &text);
+        drop(conn);
+        self.notify();
+        // A receipt, like every other write: the entry is on screen, echoing it back
+        // would only pay for the same bytes twice.
+        ok_json(&json!({ "task_id": task_id, "logged": text }))
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -1651,6 +1692,163 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 2, "expected creation + status activity, got {n}");
+    }
+
+    /// The canonical board-protocol skeleton, where `## Evidence` is last.
+    const CANONICAL_NOTES: &str = "Goal: ship it\n\n\
+         ## Plan\n- [x] write failing test\n- [ ] implement\n\n\
+         ## Log\n- 14:20 started\n\n\
+         ## Evidence\n- tests: 12 passed\n";
+
+    /// Characterization test: pins WHY `log_progress` exists.
+    ///
+    /// `append_note` is strict end-concatenation, so against real notes — where
+    /// `## Evidence` is the last section — a log line lands under `## Evidence`
+    /// rather than `## Log`. The older test appends to notes of "Goal: ship it",
+    /// which has no headings at all, so it never exercises this shape.
+    ///
+    /// This asserts today's behaviour, not desired behaviour. The fix is not to
+    /// make `append_note` section-aware — it is to stop keeping a log in `notes`
+    /// at all and use `log_progress`, after which appends are only ever prose and
+    /// end-concatenation is correct. If someone does make it section-aware, this
+    /// test should fail and be deleted deliberately.
+    #[test]
+    fn append_note_cannot_target_a_section_in_canonical_notes() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Logged work".into(),
+                    project: None,
+                    notes: Some(CANONICAL_NOTES.into()),
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams {
+                    id,
+                    text: "- 14:32 tests written (RED, 5 failing)".into(),
+                }))
+                .unwrap(),
+        );
+
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let notes = full["notes"].as_str().unwrap();
+        let evidence_at = notes.find("## Evidence").unwrap();
+        let appended_at = notes.find("- 14:32 tests written").unwrap();
+        assert!(
+            appended_at > evidence_at,
+            "append_note is end-only, so the log line lands under ## Evidence — \
+             this is the limitation log_progress removes. notes:\n{notes}"
+        );
+    }
+
+    /// The log half of a checkpoint: narrative goes to the Activity feed, and
+    /// `notes` are left completely alone — that is the whole point, since resending
+    /// the notes blob is what a checkpoint used to cost.
+    #[test]
+    fn log_progress_records_activity_and_never_touches_notes() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: Some(CANONICAL_NOTES.into()),
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        let (is_err, ack) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "  tests written (RED, 5 failing)  ".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "log_progress failed: {ack}");
+        assert_eq!(ack["logged"], "tests written (RED, 5 failing)", "text is trimmed");
+        assert!(ack.get("notes").is_none(), "a receipt must not echo notes: {ack}");
+
+        // The entry is in the feed the app already renders, verbatim.
+        let conn = agent.db.lock().unwrap();
+        let logged: String = conn
+            .query_row(
+                "SELECT label FROM task_activity WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        assert_eq!(logged, "tests written (RED, 5 failing)");
+
+        // notes are byte-identical: the log cost nothing in notes traffic.
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(full["notes"].as_str().unwrap(), CANONICAL_NOTES);
+    }
+
+    #[test]
+    fn log_progress_rejects_empty_unknown_and_trashed() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        let (is_err, _) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "   ".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "empty log text must be refused");
+
+        let (is_err, _) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: 999_999,
+                    text: "ghost".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "unknown task must be refused");
+
+        // Same rule the subtask writes follow: a trashed task takes no writes.
+        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, out) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "still going".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "trashed task must refuse a log entry: {out}");
     }
 
     /// The subtask lifecycle an agent drives: add, tick, read back, delete —

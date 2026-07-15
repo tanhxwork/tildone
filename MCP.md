@@ -49,6 +49,7 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 |---|---|
 | **Task** | `title`, `notes`, `status` (`todo` / `doing` / `done`), `priority` (0 none, 1 low, 2 medium, 3 high), `due_date` (`YYYY-MM-DD` or null), optional project, tag names |
 | **Subtask** | A task's checklist item: `title`, `done`, kept in insertion order. Returned by `get_task`. The board card renders them as a live progress bar — **put your plan checklist here, not in `notes`**, and tick items as you go so the user can watch progress. Every subtask write returns `progress: {done, total}`. |
+| **Activity** | A task's timestamped log, shown as the **Activity** feed in the app. Tildone writes an entry for every field change on its own; `log_progress` adds your narrative ones. **Put your running log here, not in `notes`.** |
 | **Project** | Named container with a color. Deleting a project permanently deletes its tasks. |
 | **Inbox** | Where tasks without a project live. Pass `"inbox"` (or omit `project`) to target it. |
 | **Tags** | Case-insensitive names. Unknown tag names are **created automatically** when used on a task. |
@@ -70,6 +71,20 @@ Conventions:
   across projects, and it is `null` for a trashed task.
 - **Rank is read-only** — only the user reorders, by dragging. No tool takes a
   rank or position, by design: the board is theirs.
+- **A task has three surfaces — use the right one.** They each have their own
+  storage and their own place in the UI, and picking wrong is what makes progress
+  expensive and invisible:
+
+  | Your | Goes in | Via | The user sees |
+  |---|---|---|---|
+  | plan / checklist | subtasks | `add_subtask` / `set_subtask` | a live progress bar on the card |
+  | running log | activity | `log_progress` | the Activity feed, timestamped |
+  | goal, findings, evidence | `notes` | `create_task` / `append_note` | the notes body |
+
+  Writing a `## Plan` checklist or a `## Log` section **into `notes`** works, but it
+  is the expensive path: ticking one box then means resending the whole notes blob
+  through `update_task`, and none of it renders as progress. Keep `notes` as prose
+  that rarely changes, and it stays cheap to append to.
 - Tasks are **not** sorted by due date. Use `due_before` to ask for overdue work.
 - Tool errors (unknown id, bad date, unknown project…) come back as MCP tool
   errors with a human-readable message — read it, it usually says what to do.
@@ -95,7 +110,8 @@ or `status: "done"` to see them. Trashed tasks are never listed.
 |---|---|---|
 | `create_task` | `title` (required); optional `project`, `notes`, `due_date`, `priority`, `tags` (array), `status` | Omit `project` → Inbox. |
 | `update_task` | `id` (required); any of `title`, `notes`, `status`, `priority`, `due_date`, `project`, `tags` | Only provided fields change, but a provided field **replaces** wholesale — `notes` and `tags` included. Read before you write, or use `append_note`. |
-| `append_note` | `id`, `text` | Appends to `notes` (newline-separated). **Prefer this for progress logs** — it cannot destroy existing notes, and costs the same however long the notes are. Returns a `notes_chars` size hint. |
+| `append_note` | `id`, `text` | Appends prose to the **end** of `notes` (newline-separated). It cannot destroy existing notes and costs the same however long they are, but it is **end-only** — it cannot insert into a section. For a running log use `log_progress`. Returns a `notes_chars` size hint. |
+| `log_progress` | `task_id`, `text` | One narrative line — what you just did, found or decided. Lands in the task's **Activity** feed, timestamped. **Prefer this for progress logs**, not a `## Log` section in `notes`. |
 | `complete_task` | `id` | Shorthand for `status: "done"`; sets the completion timestamp. |
 | `delete_task` | `id` | Soft delete to the app's trash (restorable by the user). |
 | `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
