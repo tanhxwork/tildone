@@ -79,10 +79,10 @@ export async function deleteSubtask(id: number): Promise<void> {
 
 export async function insertActivity(taskId: number, label: string): Promise<void> {
   const d = await getDb();
-  await d.execute("INSERT INTO task_activity (task_id, label) VALUES ($1, $2)", [
-    taskId,
-    label,
-  ]);
+  await d.execute(
+    "INSERT INTO task_activity (task_id, label, created_at) VALUES ($1, $2, $3)",
+    [taskId, label, new Date().toISOString()],
+  );
 }
 
 export async function fetchActivity(taskId: number): Promise<ActivityEntry[]> {
@@ -100,8 +100,8 @@ export async function insertProject(name: string, color: string): Promise<number
   );
   const position = (max[0]?.p ?? -1) + 1;
   const result = await d.execute(
-    "INSERT INTO projects (name, color, position) VALUES ($1, $2, $3)",
-    [name, color, position],
+    "INSERT INTO projects (name, color, position, created_at) VALUES ($1, $2, $3, $4)",
+    [name, color, position, new Date().toISOString()],
   );
   return result.lastInsertId ?? 0;
 }
@@ -138,10 +138,11 @@ export async function insertTask(task: {
   priority: number;
   notes?: string;
   completed_at?: string | null;
+  created_at: string;
 }): Promise<number> {
   const d = await getDb();
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     [
       task.project_id,
       task.title,
@@ -151,6 +152,7 @@ export async function insertTask(task: {
       task.priority,
       task.notes ?? "",
       task.completed_at ?? null,
+      task.created_at,
     ],
   );
   return result.lastInsertId ?? 0;

@@ -80,9 +80,19 @@ export function relativeDueLabel(dueDate: string): string {
   return `${-diff} days ago`;
 }
 
+/**
+ * Coerce a timestamp to ISO-8601 UTC. Rows written before migration 004 (and
+ * data imported from an export taken back then) carry SQLite's
+ * "YYYY-MM-DD HH:MM:SS", which is UTC but has no marker — `new Date()` would
+ * read it as local time and land hours off.
+ */
+export function toIsoUtc(timestamp: string): string {
+  return timestamp.includes("T") ? timestamp : timestamp.replace(" ", "T") + "Z";
+}
+
 /** Short relative timestamp for activity rows: "just now", "2h ago", "Yesterday", "Jul 5". */
 export function timeAgo(timestamp: string): string {
-  const date = new Date(timestamp.includes("T") ? timestamp : timestamp.replace(" ", "T") + "Z");
+  const date = new Date(toIsoUtc(timestamp));
   if (isNaN(date.getTime())) return "";
   const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
   if (minutes < 1) return "just now";

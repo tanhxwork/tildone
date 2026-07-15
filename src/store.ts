@@ -11,7 +11,7 @@ import type {
   ViewMode,
 } from "./types";
 import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
-import { dueLabel } from "./utils/dates";
+import { dueLabel, toIsoUtc } from "./utils/dates";
 
 export interface ImportedTask {
   title: string;
@@ -20,6 +20,7 @@ export interface ImportedTask {
   priority?: number;
   due_date?: string | null;
   completed_at?: string | null;
+  created_at?: string;
   project?: string | null;
   tags?: string[];
 }
@@ -206,6 +207,7 @@ export const useStore = create<Store>()((set, get) => ({
       tasks
         .filter((t) => t.project_id === project_id && t.status === "todo")
         .reduce((max, t) => Math.max(max, t.position), -1) + 1;
+    const created_at = new Date().toISOString();
     const id = await db.insertTask({
       project_id,
       title,
@@ -213,6 +215,7 @@ export const useStore = create<Store>()((set, get) => ({
       status: "todo",
       position,
       priority,
+      created_at,
     });
     if (tag_ids.length > 0) await db.setTaskTags(id, tag_ids);
     void recordActivity(id, "Task created");
@@ -225,7 +228,7 @@ export const useStore = create<Store>()((set, get) => ({
       priority,
       due_date,
       position,
-      created_at: new Date().toISOString(),
+      created_at,
       completed_at: null,
       deleted_at: null,
       tag_ids,
@@ -480,6 +483,8 @@ export const useStore = create<Store>()((set, get) => ({
         priority: Math.min(3, Math.max(0, t.priority ?? 0)),
         notes: t.notes ?? "",
         completed_at: status === "done" ? (t.completed_at ?? new Date().toISOString()) : null,
+        // Older exports predate the field; those tasks start life now.
+        created_at: t.created_at ? toIsoUtc(t.created_at) : new Date().toISOString(),
       });
       const tag_ids: number[] = [];
       for (const rawName of t.tags ?? []) {
