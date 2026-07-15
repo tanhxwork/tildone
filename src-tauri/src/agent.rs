@@ -61,6 +61,10 @@ struct TildoneAgent {
     tool_router: ToolRouter<Self>,
     db: Db,
     on_change: Notify,
+    /// Cancelled when the server stops. A parked `list_changes` selects on this,
+    /// so stopping the server (or quitting the app) never has to wait out a
+    /// 60-second long-poll.
+    shutdown: CancellationToken,
 }
 
 // ---------------------------------------------------------------------------
@@ -138,11 +142,12 @@ fn db_err(e: rusqlite::Error) -> ErrorData {
 }
 
 impl TildoneAgent {
-    fn new(db: Db, on_change: Notify) -> Self {
+    fn new(db: Db, on_change: Notify, shutdown: CancellationToken) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db,
             on_change,
+            shutdown,
         }
     }
 
@@ -1251,18 +1256,52 @@ impl TildoneAgent {
     )]
     async fn list_changes(
         &self,
-        Parameters(ListChangesParams { since, wait_ms: _ }): Parameters<ListChangesParams>,
+        Parameters(ListChangesParams { since, wait_ms }): Parameters<ListChangesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Scoped: `db` is a std::sync::Mutex over the server's one connection, so
-        // the guard must never be alive across an await (see the long-poll below).
-        let out = {
+        // Every db read below is inside a closing scope. `db` is a
+        // std::sync::Mutex over the server's ONE connection: a guard alive across
+        // the await would make this future non-Send (a compile error) and would
+        // block every other tool for the whole park.
+        let first = {
             let conn = self.db.lock().unwrap();
             Self::prune_changes(&conn).map_err(db_err)?;
             Self::read_changes(&conn, since).map_err(db_err)?
         };
-        // No self.notify() — this is a read tool. Notifying would make the app
-        // reload its whole store on every poll.
-        ok_json(&out)
+
+        let wait_ms = wait_ms.unwrap_or(0).clamp(0, 60_000);
+        let nothing_yet = first["changes"].as_array().is_some_and(|c| c.is_empty());
+        // No `since` is a baseline request — there is nothing to wait for.
+        if since.is_none() || wait_ms == 0 || !nothing_yet {
+            return ok_json(&first);
+        }
+
+        // Park. The agent experiences push: it called a tool, and the call simply
+        // does not return until the board moves. Inside, we tick — SQLite's
+        // update_hook only fires for the connection that wrote, so this connection
+        // cannot be told about the UI's writes. The tick is a lookup on an indexed
+        // integer and only runs while someone is actually parked.
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms as u64);
+        loop {
+            tokio::select! {
+                _ = self.shutdown.cancelled() => break,
+                _ = tokio::time::sleep_until(deadline) => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+            }
+            let out = {
+                let conn = self.db.lock().unwrap();
+                Self::read_changes(&conn, since).map_err(db_err)?
+            };
+            if out["changes"].as_array().is_some_and(|c| !c.is_empty()) {
+                return ok_json(&out);
+            }
+        }
+
+        // Timed out, or the server is stopping: success with an empty list and the
+        // cursor, never an error. "Nothing happened" is a real answer.
+        // No self.notify() anywhere here — this is a read tool, and notifying would
+        // reload the app's whole store on every poll.
+        ok_json(&first)
     }
 }
 
@@ -1360,9 +1399,12 @@ pub async fn agent_server_start(
     let on_change: Notify = Arc::new(move || {
         let _ = emitter.emit("agent-db-changed", ());
     });
+    // The same token the server shuts down on, so a parked list_changes is
+    // released by agent_server_stop / app exit instead of holding them up.
+    let agent_ct = ct.clone();
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(TildoneAgent::new(db.clone(), on_change.clone())),
+            move || Ok(TildoneAgent::new(db.clone(), on_change.clone(), agent_ct.clone())),
             Default::default(),
             config,
         );
@@ -1433,12 +1475,19 @@ mod tests {
     }
 
     fn test_agent() -> TildoneAgent {
-        TildoneAgent::new(Arc::new(Mutex::new(migrated_conn())), Arc::new(|| {}))
+        TildoneAgent::new(
+            Arc::new(Mutex::new(migrated_conn())),
+            Arc::new(|| {}),
+            CancellationToken::new(),
+        )
     }
 
     fn test_agent_with_db() -> (TildoneAgent, Db) {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
-        (TildoneAgent::new(db.clone(), Arc::new(|| {})), db)
+        (
+            TildoneAgent::new(db.clone(), Arc::new(|| {}), CancellationToken::new()),
+            db,
+        )
     }
 
     /// We shipped `tools: {}` for months, which tells every client "my tool list
@@ -2458,5 +2507,131 @@ mod tests {
             "an empty table must not reset the cursor — MAX(id) would, sqlite_sequence must not"
         );
         assert_eq!(after["cursor"], 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Change feed — the long-poll
+
+    /// The headline behaviour: the call is parked, the user moves a card, the call
+    /// returns. This is what makes a plain tool call behave like push.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_parked_call_returns_the_moment_a_change_lands() {
+        let (agent, db) = test_agent_with_db();
+        let (_, base_v) = extract(&agent.list_changes(no_wait(None)).await.unwrap());
+        let base = base_v["cursor"].as_i64().unwrap();
+
+        let writer = db.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            writer
+                .lock()
+                .unwrap()
+                .execute("INSERT INTO tasks (title, created_at) VALUES ('dropped', ?1)", [now_iso()])
+                .unwrap();
+        });
+
+        let started = std::time::Instant::now();
+        let (_, v) = extract(
+            &agent
+                .list_changes(Parameters(ListChangesParams {
+                    since: Some(base),
+                    wait_ms: Some(10_000),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            v["changes"].as_array().unwrap().len(),
+            1,
+            "the park must deliver the change that woke it"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "it must return on the event, not sit out the timeout (took {:?})",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_park_that_times_out_is_success_not_an_error() {
+        let (agent, _db) = test_agent_with_db();
+        let r = agent
+            .list_changes(Parameters(ListChangesParams { since: Some(0), wait_ms: Some(400) }))
+            .await
+            .unwrap();
+        let (is_err, v) = extract(&r);
+        assert!(!is_err, "a quiet board is a normal answer, not a tool error");
+        assert_eq!(v["changes"].as_array().unwrap().len(), 0);
+        assert!(v["cursor"].is_i64(), "a timeout still returns a usable cursor");
+    }
+
+    /// A parked call must not hold the app open. Without the shutdown token in the
+    /// select, quitting Tildone would wait out a 60s long-poll.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shutdown_releases_a_parked_call() {
+        let db: Db = Arc::new(Mutex::new(migrated_conn()));
+        let token = CancellationToken::new();
+        let agent = TildoneAgent::new(db, Arc::new(|| {}), token.clone());
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            token.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        agent
+            .list_changes(Parameters(ListChangesParams { since: Some(0), wait_ms: Some(60_000) }))
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancelling the server must free a parked call (took {:?})",
+            started.elapsed()
+        );
+    }
+
+    /// A parked call holds no lock, so the rest of the board keeps working while
+    /// an agent waits. The whole server shares one connection behind a std Mutex —
+    /// holding it across the park would freeze every other tool for 60 seconds.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_parked_call_does_not_block_other_tools() {
+        let (agent, _db) = test_agent_with_db();
+        let parked = agent.clone();
+        let handle = tokio::spawn(async move {
+            parked
+                .list_changes(Parameters(ListChangesParams {
+                    since: Some(0),
+                    wait_ms: Some(60_000),
+                }))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // While that call is parked, an ordinary write must go straight through.
+        let started = std::time::Instant::now();
+        let (is_err, _) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "while you were waiting".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a parked long-poll must not hold the db lock (write took {:?})",
+            started.elapsed()
+        );
+
+        // And that write is exactly what wakes the parked call.
+        let (_, v) = extract(&handle.await.unwrap().unwrap());
+        assert!(!v["changes"].as_array().unwrap().is_empty());
     }
 }
