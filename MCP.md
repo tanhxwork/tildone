@@ -10,6 +10,24 @@ reference; it is safe to paste into an agent's context.
 - The Tildone app must be **running** and **Settings → Agent access** must be
   **On** (off by default). If the connection is refused, ask the user to open
   Tildone and enable it.
+- Start Tildone **before** the agent session. Clients connect to MCP servers
+  once, at startup — a session that began while Tildone was closed (or Agent
+  access was Off) has no tildone tools, and calls fail with "No such tool
+  available" rather than a connection error. Reconnect the server (`/mcp` in
+  Claude Code) or restart the session; the app coming up later is not enough
+  on its own.
+- Beware: `claude mcp list` probes in a **separate process**, so it reports
+  `✔ Connected` even when your own session has no tildone tools. A real tool
+  call is the only reliable check.
+- Once a session is connected, restarting Tildone is safe — the client
+  reconnects on its own within a few seconds (verified across a 2-minute
+  outage). Unknown/expired session ids get a `404`, which is the client's cue
+  to re-initialize.
+- **New tools are the exception to that.** Clients cache the tool list from
+  when they connected, so a Tildone build that *adds* a tool stays invisible to
+  sessions already running — the existing tools keep working and the new one is
+  simply absent, even though the server serves it. Restart the client session
+  after upgrading Tildone if you expect a new tool.
 - Localhost only, no authentication. Requests carrying a browser `Origin`
   header are rejected (403).
 
