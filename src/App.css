@@ -797,6 +797,42 @@ textarea:focus-visible,
   flex-wrap: wrap;
 }
 
+.card-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+/* scaleX rather than width: a subtask tick should not relayout the column.
+   The parent clips, so the full-width bar is scaled from its left edge. */
+.card-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 120ms ease-out;
+}
+
+.board-card.done .card-progress-fill {
+  background: var(--success);
+}
+
+.card-progress-count {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
 /* ---------- Editor panel ---------- */
 
 .editor {

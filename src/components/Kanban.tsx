@@ -214,9 +214,29 @@ function Card({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
 }
 
 function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
+  const subtasks = useStore((s) => s.subtasks);
+  const mine = subtasks.filter((s) => s.task_id === task.id);
+  const done = mine.filter((s) => s.done).length;
+
   return (
     <div className={`board-card ${overlay ? "overlay" : ""} ${task.status === "done" ? "done" : ""}`}>
       <span className="card-title">{task.title}</span>
+      {mine.length > 0 && (
+        <span
+          className="card-progress"
+          title={`${done} of ${mine.length} subtasks done`}
+        >
+          <span className="card-progress-bar">
+            <span
+              className="card-progress-fill"
+              style={{ transform: `scaleX(${done / mine.length})` }}
+            />
+          </span>
+          <span className="card-progress-count">
+            {done}/{mine.length}
+          </span>
+        </span>
+      )}
       <TaskMeta task={task} showProject hideStatus />
     </div>
   );
