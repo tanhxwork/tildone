@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    schemars,
+    service::NotificationContext,
+    tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
-    ErrorData, ServerHandler,
+    ErrorData, RoleServer, ServerHandler,
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -1165,7 +1167,12 @@ impl TildoneAgent {
 #[tool_handler]
 impl ServerHandler for TildoneAgent {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        );
         info.server_info.name = "tildone".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
         info.with_instructions(
@@ -1175,6 +1182,24 @@ impl ServerHandler for TildoneAgent {
              by name. Start with list_projects/list_tasks to see what exists; deleting a project \
              is irreversible, deleted tasks go to a restorable trash.",
         )
+    }
+
+    /// Tildone's tool set is fixed at compile time, so it never changes *within*
+    /// a process — but it does change across an app upgrade, and a client that
+    /// reconnects after one restores its cached tool list without re-listing.
+    /// That is how `append_note` stayed invisible to a live session while the
+    /// server was already serving it. There is no peer to notify at the moment
+    /// the set actually changes (the app is restarting), so the notification
+    /// goes out here instead: once a client is back, tell it to re-list.
+    fn on_initialized(
+        &self,
+        context: NotificationContext<RoleServer>,
+    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+        async move {
+            if let Err(e) = context.peer.notify_tool_list_changed().await {
+                eprintln!("tildone: tools/list_changed notify failed: {e}");
+            }
+        }
     }
 }
 
@@ -1311,6 +1336,24 @@ mod tests {
     fn test_agent_with_db() -> (TildoneAgent, Db) {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         (TildoneAgent::new(db.clone(), Arc::new(|| {})), db)
+    }
+
+    /// We shipped `tools: {}` for months, which tells every client "my tool list
+    /// never changes" — so a spec-abiding client may cache it forever. That is
+    /// the defect behind `append_note` being invisible to a live session while
+    /// the server already served it. Nothing asserted on the declaration, so
+    /// nothing caught it; this is that assertion.
+    #[test]
+    fn declares_tool_list_changed_capability() {
+        let caps = test_agent().get_info().capabilities;
+        let tools = caps.tools.expect("tools capability must be declared");
+        assert_eq!(
+            tools.list_changed,
+            Some(true),
+            "server must advertise tools.listChanged; without it a client is \
+             entitled to cache the tool list across a reconnect and never see \
+             tools added by an app upgrade"
+        );
     }
 
     /// created_at must match completed_at's format. The column DEFAULT
@@ -1896,6 +1939,15 @@ mod tests {
         assert!(session.is_some(), "stateful server must issue a session id");
         let init_body = sse_json(&init.text().await.unwrap());
         assert_eq!(init_body["result"]["serverInfo"]["name"], "tildone");
+        // What the client actually sees. A live probe of the shipped server
+        // returned `"capabilities":{"tools":{}}` — i.e. "my tool list never
+        // changes" — which is how a client justifies caching it across a
+        // reconnect and never seeing a newly added tool.
+        assert_eq!(
+            init_body["result"]["capabilities"]["tools"]["listChanged"],
+            json!(true),
+            "listChanged must reach the wire, not just get_info(): {init_body}"
+        );
 
         let notif = post(
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.into(),
