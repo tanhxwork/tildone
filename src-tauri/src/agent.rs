@@ -23,6 +23,23 @@ pub const AGENT_PORT: u16 = 11502;
 
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 
+/// Dense 0-based ordinal within (project, status), ordered exactly as the Kanban
+/// column sorts: `position`, then `id`. Expressed as "count the tasks that sort
+/// before this one" so it stays the *board* rank even when the caller filters by
+/// tag or search — a window function over the result set would renumber from 0.
+///
+/// `x.project_id IS t.project_id` (not `=`) so the Inbox, where project_id is
+/// NULL, forms one group per status instead of vanishing on NULL comparison.
+///
+/// Only meaningful within one (project, status) group: positions are not
+/// comparable across projects. Requires the outer query to alias tasks as `t`.
+const RANK_SQL: &str = "(SELECT COUNT(*) FROM tasks x
+      WHERE x.deleted_at IS NULL
+        AND x.status = t.status
+        AND x.project_id IS t.project_id
+        AND (x.position < t.position
+             OR (x.position = t.position AND x.id < t.id)))";
+
 // Mirrors COLOR_CHOICES in src/types.ts.
 const COLOR_CHOICES: [&str; 8] = [
     "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#8b5cf6", "#64748b",
@@ -196,6 +213,36 @@ impl TildoneAgent {
         );
     }
 
+    /// `(done, total)` for a task's subtasks — returned by every subtask write so
+    /// the caller gets the new progress without a follow-up `get_task`.
+    fn subtask_progress(conn: &Connection, task_id: i64) -> Result<(i64, i64), rusqlite::Error> {
+        conn.query_row(
+            "SELECT COALESCE(SUM(done), 0), COUNT(*) FROM subtasks WHERE task_id = ?1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
+    /// Resolve a subtask to `(parent task id, parent is trashed)`, or None when the
+    /// subtask does not exist. Subtask writes refuse a trashed parent for the same
+    /// reason `append_note` does: the task is not on the board to be worked.
+    fn parent_task_of(
+        conn: &Connection,
+        subtask_id: i64,
+    ) -> Result<Option<(i64, bool)>, rusqlite::Error> {
+        conn.query_row(
+            "SELECT t.id, t.deleted_at IS NOT NULL FROM subtasks s
+             JOIN tasks t ON t.id = s.task_id WHERE s.id = ?1",
+            [subtask_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+    }
+
     /// Find-or-create tags by name (case-insensitive) and link them to a task.
     fn set_tags(conn: &Connection, task_id: i64, tags: &[String]) -> Result<(), rusqlite::Error> {
         conn.execute("DELETE FROM task_tags WHERE task_id = ?1", [task_id])?;
@@ -259,10 +306,13 @@ impl TildoneAgent {
     fn task_json(conn: &Connection, id: i64) -> Result<Option<Value>, rusqlite::Error> {
         let row = conn
             .query_row(
-                "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
-                        t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name
-                 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-                 WHERE t.id = ?1",
+                &format!(
+                    "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
+                            t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name,
+                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END
+                     FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                     WHERE t.id = ?1"
+                ),
                 [id],
                 |r| {
                     Ok(json!({
@@ -279,6 +329,8 @@ impl TildoneAgent {
                             (Some(pid), Some(pname)) => json!({"id": pid, "name": pname}),
                             _ => Value::Null,
                         },
+                        // null for a trashed task — it has no place on the board.
+                        "rank": r.get::<_, Option<i64>>(11)?,
                     }))
                 },
             )
@@ -471,6 +523,23 @@ struct AppendNoteParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AddSubtaskParams {
+    #[schemars(description = "Id of the parent task")]
+    task_id: i64,
+    title: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetSubtaskParams {
+    #[schemars(description = "Id of the subtask itself, not of its parent task")]
+    id: i64,
+    #[schemars(description = "Tick (true) or untick (false) the subtask")]
+    done: Option<bool>,
+    #[schemars(description = "Rename the subtask")]
+    title: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema, Default)]
 struct ListTasksParams {
     #[schemars(description = "Filter by project name or id, or \"inbox\" for tasks with no project. Omit for all tasks.")]
     project: Option<String>,
@@ -697,13 +766,18 @@ impl TildoneAgent {
             wheres.push(format!("(t.title LIKE ?{n} OR t.notes LIKE ?{n})"));
         }
 
+        // Board order, not due order: the first task an agent sees is the top
+        // card of its column, so "work the top task first" means rank 0. Due
+        // date used to lead here, which made the first result the most overdue
+        // task instead — `due_before` is how a caller asks for that now.
         let sql = format!(
             "SELECT t.id, t.title, t.status, t.priority, t.due_date, t.completed_at, p.name,
                     (SELECT GROUP_CONCAT(tg.name, ', ') FROM tags tg
-                     JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id)
+                     JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id),
+                    {RANK_SQL}
              FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
              WHERE {}
-             ORDER BY t.due_date IS NULL, t.due_date, p.position, t.position, t.id",
+             ORDER BY p.position, t.position, t.id",
             wheres.join(" AND ")
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -718,6 +792,7 @@ impl TildoneAgent {
                     "completed_at": r.get::<_, Option<String>>(5)?,
                     "project": r.get::<_, Option<String>>(6)?,
                     "tags": r.get::<_, Option<String>>(7)?,
+                    "rank": r.get::<_, i64>(8)?,
                 }))
             })
             .map_err(db_err)?
@@ -869,6 +944,158 @@ impl TildoneAgent {
         drop(conn);
         self.notify();
         ok_json(&ack)
+    }
+
+    #[tool(
+        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes."
+    )]
+    fn add_subtask(
+        &self,
+        Parameters(AddSubtaskParams { task_id, title }): Parameters<AddSubtaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Ok(err("Subtask title cannot be empty."));
+        }
+        let conn = self.db.lock().unwrap();
+        let trashed: Option<bool> = conn
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        match trashed {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        let position: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM subtasks WHERE task_id = ?1",
+                [task_id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        conn.execute(
+            "INSERT INTO subtasks (task_id, title, position) VALUES (?1, ?2, ?3)",
+            rusqlite::params![task_id, title, position],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        Self::record_activity(&conn, task_id, &format!("Subtask added: {title}"));
+        let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "title": title,
+            "done": false,
+            "progress": {"done": done, "total": total},
+        }))
+    }
+
+    #[tool(description = "Tick, untick or rename a subtask. Only the provided fields change.")]
+    fn set_subtask(
+        &self,
+        Parameters(SetSubtaskParams { id, done, title }): Parameters<SetSubtaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if done.is_none() && title.is_none() {
+            return Ok(err("Nothing to change — pass done and/or title."));
+        }
+        let conn = self.db.lock().unwrap();
+        let Some((task_id, trashed)) = Self::parent_task_of(&conn, id).map_err(db_err)? else {
+            return Ok(err(format!("No subtask with id {id}.")));
+        };
+        if trashed {
+            return Ok(err(format!(
+                "Subtask {id} belongs to a task in the trash; it can only be restored from the app."
+            )));
+        }
+        if let Some(title) = &title {
+            let title = title.trim();
+            if title.is_empty() {
+                return Ok(err("Subtask title cannot be empty."));
+            }
+            conn.execute(
+                "UPDATE subtasks SET title = ?1 WHERE id = ?2",
+                rusqlite::params![title, id],
+            )
+            .map_err(db_err)?;
+            Self::record_activity(&conn, task_id, &format!("Subtask renamed: {title}"));
+        }
+        if let Some(done) = done {
+            conn.execute(
+                "UPDATE subtasks SET done = ?1 WHERE id = ?2",
+                rusqlite::params![done as i64, id],
+            )
+            .map_err(db_err)?;
+            let current: String = conn
+                .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(db_err)?;
+            Self::record_activity(
+                &conn,
+                task_id,
+                &format!(
+                    "Subtask {}: {current}",
+                    if done { "completed" } else { "reopened" }
+                ),
+            );
+        }
+        let (done_count, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "progress": {"done": done_count, "total": total},
+        }))
+    }
+
+    #[tool(
+        description = "Remove a subtask. This is a hard delete — unlike delete_task there is no trash for subtasks."
+    )]
+    fn delete_subtask(
+        &self,
+        Parameters(IdParams { id }): Parameters<IdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let Some((task_id, trashed)) = Self::parent_task_of(&conn, id).map_err(db_err)? else {
+            return Ok(err(format!("No subtask with id {id}.")));
+        };
+        if trashed {
+            return Ok(err(format!(
+                "Subtask {id} belongs to a task in the trash; it can only be restored from the app."
+            )));
+        }
+        let title: String = conn
+            .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .map_err(db_err)?;
+        conn.execute("DELETE FROM subtasks WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        Self::record_activity(&conn, task_id, &format!("Subtask removed: {title}"));
+        let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "task_id": task_id,
+            "deleted": id,
+            "progress": {"done": done, "total": total},
+        }))
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -1381,6 +1608,204 @@ mod tests {
             )
             .unwrap();
         assert!(n >= 2, "expected creation + status activity, got {n}");
+    }
+
+    /// The subtask lifecycle an agent drives: add, tick, read back, delete —
+    /// and refuse once the parent is trashed, the rule append_note set.
+    #[test]
+    fn subtask_writes_and_progress() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let task_id = task["id"].as_i64().unwrap();
+
+        let mut ids = Vec::new();
+        for title in ["write test", "implement", "verify"] {
+            let (is_err, out) = extract(
+                &agent
+                    .add_subtask(Parameters(AddSubtaskParams {
+                        task_id,
+                        title: title.into(),
+                    }))
+                    .unwrap(),
+            );
+            assert!(!is_err, "add_subtask failed: {out}");
+            ids.push(out["id"].as_i64().unwrap());
+        }
+
+        let (_, out) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[0],
+                    done: Some(true),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["done"], 1);
+        assert_eq!(out["progress"]["total"], 3);
+
+        // Order is insertion order, and the tick is visible to the next reader.
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id: task_id })).unwrap());
+        let subs = full["subtasks"].as_array().unwrap();
+        assert_eq!(subs.len(), 3);
+        assert_eq!(subs[0]["title"], "write test");
+        assert_eq!(subs[0]["done"], true);
+        assert_eq!(subs[2]["title"], "verify");
+
+        let (_, out) = extract(
+            &agent
+                .delete_subtask(Parameters(IdParams { id: ids[2] }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["total"], 2);
+
+        // Untick walks progress back down.
+        let (_, out) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[0],
+                    done: Some(false),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["progress"]["done"], 0);
+
+        agent
+            .delete_task(Parameters(IdParams { id: task_id }))
+            .unwrap();
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask(Parameters(SetSubtaskParams {
+                    id: ids[1],
+                    done: Some(true),
+                    title: None,
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "a trashed parent must refuse subtask writes");
+    }
+
+    /// The board is the queue: list_tasks must return what the user sees, so a
+    /// task ranked top comes first even when a lower one is years overdue. Due
+    /// date led this ORDER BY until now, which made "the top task" the most
+    /// overdue one instead of the top card.
+    #[test]
+    fn list_tasks_returns_board_order_not_due_order() {
+        let agent = test_agent();
+        for (title, due) in [("top", "2099-01-01"), ("bottom", "2000-01-01")] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: Some(due.into()),
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks[0]["title"], "top", "board order must beat due date");
+        assert_eq!(tasks[0]["rank"], 0);
+        assert_eq!(tasks[1]["title"], "bottom");
+        assert_eq!(tasks[1]["rank"], 1);
+
+        // due_before is how a caller asks for overdue work now.
+        let (_, overdue) = extract(
+            &agent
+                .list_tasks(Parameters(ListTasksParams {
+                    due_before: Some("2026-07-16".into()),
+                    ..Default::default()
+                }))
+                .unwrap(),
+        );
+        assert_eq!(overdue["count"], 1);
+        assert_eq!(overdue["tasks"][0]["title"], "bottom");
+    }
+
+    /// Rank is the task's place on the board, not its index in the response.
+    /// Filter down to the last card and it must still report rank 2 — an agent
+    /// that reads rank 0 there would think it was working the top task.
+    #[test]
+    fn rank_is_true_rank_under_filtering() {
+        let agent = test_agent();
+        for title in ["a", "b", "c"] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: (title == "c").then(|| vec!["find-me".to_string()]),
+                    status: None,
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(
+            &agent
+                .list_tasks(Parameters(ListTasksParams {
+                    tag: Some("find-me".into()),
+                    ..Default::default()
+                }))
+                .unwrap(),
+        );
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["tasks"][0]["rank"], 2, "rank must survive filtering");
+    }
+
+    /// Rank is scoped per (project, status) — every group starts at 0, and
+    /// ranks from different groups are not comparable.
+    #[test]
+    fn rank_is_scoped_per_project_and_status() {
+        let agent = test_agent();
+        agent
+            .create_project(Parameters(CreateProjectParams {
+                name: "Work".into(),
+                color: None,
+            }))
+            .unwrap();
+        for (title, project, status) in [
+            ("inbox-todo", None, None),
+            ("work-todo", Some("Work"), None),
+            ("work-doing", Some("Work"), Some("doing")),
+        ] {
+            agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: project.map(Into::into),
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: status.map(Into::into),
+                }))
+                .unwrap();
+        }
+        let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        for task in tasks {
+            assert_eq!(
+                task["rank"], 0,
+                "each (project, status) group starts at 0: {task}"
+            );
+        }
     }
 
     #[test]

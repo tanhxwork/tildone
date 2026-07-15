@@ -48,6 +48,7 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 | Concept | Details |
 |---|---|
 | **Task** | `title`, `notes`, `status` (`todo` / `doing` / `done`), `priority` (0 none, 1 low, 2 medium, 3 high), `due_date` (`YYYY-MM-DD` or null), optional project, tag names |
+| **Subtask** | A task's checklist item: `title`, `done`, kept in insertion order. Returned by `get_task`. The board card renders them as a live progress bar — **put your plan checklist here, not in `notes`**, and tick items as you go so the user can watch progress. Every subtask write returns `progress: {done, total}`. |
 | **Project** | Named container with a color. Deleting a project permanently deletes its tasks. |
 | **Inbox** | Where tasks without a project live. Pass `"inbox"` (or omit `project`) to target it. |
 | **Tags** | Case-insensitive names. Unknown tag names are **created automatically** when used on a task. |
@@ -62,6 +63,14 @@ Conventions:
 - Clearing fields on update: `due_date: ""` clears the due date,
   `priority: 0` clears priority, `project: "inbox"` moves the task out of
   any project.
+- **Order is the board.** `list_tasks` returns tasks in the order the user sees
+  them, so `list_tasks(project: "X", status: "todo")` starts at the top card of
+  that column — *"work the top task first"* means **rank 0**. `rank` is a dense
+  0-based ordinal within a **(project, status)** group. It is **not** comparable
+  across projects, and it is `null` for a trashed task.
+- **Rank is read-only** — only the user reorders, by dragging. No tool takes a
+  rank or position, by design: the board is theirs.
+- Tasks are **not** sorted by due date. Use `due_before` to ask for overdue work.
 - Tool errors (unknown id, bad date, unknown project…) come back as MCP tool
   errors with a human-readable message — read it, it usually says what to do.
 - All writes are visible in the user's open app immediately.
@@ -74,8 +83,8 @@ Conventions:
 |---|---|---|
 | `list_projects` | — | `[{id, name, color, open_tasks, done_tasks}]` |
 | `list_tags` | — | `[{id, name, color, task_count}]` |
-| `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags}]}` |
-| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at` |
+| `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags, rank}]}` |
+| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at`, `rank` |
 
 By default `list_tasks` excludes completed tasks; pass `include_done: true`
 or `status: "done"` to see them. Trashed tasks are never listed.
@@ -94,6 +103,9 @@ Writes return a **receipt, not the row**: `{id, title, status}` (plus
 `completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
 — that doubled the cost of every update. Call `get_task` when you genuinely need
 the full task after a write.
+| `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
+| `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. |
+| `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |
@@ -110,6 +122,10 @@ the full task after a write.
 
 // Everything overdue or due today, any project
 { "name": "list_tasks", "arguments": { "due_before": "2026-07-06" } }
+
+// The top card of a project's To Do column — the one to work first
+{ "name": "list_tasks", "arguments": { "project": "Work", "status": "todo" } }
+// -> {"count": 3, "tasks": [{"id": 31, "rank": 0, ...}, {"rank": 1}, {"rank": 2}]}
 
 // Move a task to another project and bump priority
 { "name": "update_task", "arguments": { "id": 42, "project": "Home", "priority": 3 } }

@@ -1,8 +1,27 @@
 import { useStore } from "../store";
-import type { Task } from "../types";
-import { PRIORITY_COLORS, PRIORITY_LABELS, STATUS_LABELS } from "../types";
+import type { ReservedTag, Tag, Task } from "../types";
+import {
+  PRIORITY_COLORS,
+  PRIORITY_LABELS,
+  RESERVED_TAGS,
+  RESERVED_TAG_LABELS,
+  STATUS_LABELS,
+} from "../types";
 import { dueLabel, isOverdue } from "../utils/dates";
 import { IconCheck, IconFlag } from "./Icons";
+
+const isReserved = (name: string): name is ReservedTag =>
+  (RESERVED_TAGS as readonly string[]).includes(name.toLowerCase());
+
+/** The reserved state a task is in, or null. Blocked outranks needs-review. */
+export function reservedState(task: Task, tags: Tag[]): ReservedTag | null {
+  const names = new Set(
+    tags
+      .filter((t) => task.tag_ids.includes(t.id))
+      .map((t) => t.name.toLowerCase()),
+  );
+  return RESERVED_TAGS.find((r) => names.has(r)) ?? null;
+}
 
 export function TaskMeta({
   task,
@@ -17,16 +36,28 @@ export function TaskMeta({
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
-  const taskTags = tags.filter((t) => task.tag_ids.includes(t.id));
+  // Reserved tags leave the chip list — they read as a state pill instead.
+  const state = reservedState(task, tags);
+  const taskTags = tags.filter(
+    (t) => task.tag_ids.includes(t.id) && !isReserved(t.name),
+  );
   const overdue = isOverdue(task);
 
   const showDoing = task.status === "doing" && !hideStatus;
   const hasMeta =
-    task.due_date || task.priority > 0 || taskTags.length > 0 || project || showDoing;
+    task.due_date ||
+    task.priority > 0 ||
+    taskTags.length > 0 ||
+    project ||
+    showDoing ||
+    state;
   if (!hasMeta) return null;
 
   return (
     <span className="task-meta">
+      {state && (
+        <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
+      )}
       {showDoing && <span className="status-pill">{STATUS_LABELS.doing}</span>}
       {task.due_date && (
         <span className={`due-chip ${overdue ? "overdue" : ""}`}>

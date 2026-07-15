@@ -18,6 +18,11 @@
   --danger: #e03131;
   --success: #1aae39;
   --doing: #dd5b00;
+  /* Board states. Defined only here on purpose: custom properties resolve at
+     the point of use, so when [data-theme="dark"] redefines --danger/--doing
+     these follow automatically and must not be duplicated there. */
+  --blocked: var(--danger);
+  --review: var(--doing);
   --shadow-card: 0 1px 2px rgba(15, 15, 15, 0.06), 0 1px 1px rgba(15, 15, 15, 0.03);
   --shadow-pop: 0 8px 30px rgba(15, 15, 15, 0.18);
   --radius: 8px;
@@ -638,6 +643,28 @@ textarea:focus-visible,
   padding: 0 6px;
 }
 
+/* Reserved-tag states. Same shape as .status-pill — these read as states, not
+   as one more tag chip, which is the whole point of pulling them out. */
+.state-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.state-pill.blocked {
+  color: var(--blocked);
+  border: 1px solid color-mix(in srgb, var(--blocked) 45%, transparent);
+  background: color-mix(in srgb, var(--blocked) 10%, transparent);
+}
+
+.state-pill.needs-review {
+  color: var(--review);
+  border: 1px solid color-mix(in srgb, var(--review) 45%, transparent);
+  background: color-mix(in srgb, var(--review) 10%, transparent);
+}
+
 .due-chip {
   font-size: 11px;
   color: var(--text-muted);
@@ -787,6 +814,30 @@ textarea:focus-visible,
   text-decoration: line-through;
 }
 
+/* The card itself carries the state — a chip among chips was too easy to miss,
+   and these two are exactly the ones the user needs to catch at a glance.
+   A tint, not a thick side border: tinted cards are how the Notion system marks
+   a card (docs/design/notion-DESIGN.md card-tint-*), and the only border-lefts
+   in this file are 1px structural dividers. color-mix against the theme's own
+   tokens so both themes stay legible without a dark-mode override. */
+.board-card.state-blocked {
+  background: color-mix(in srgb, var(--blocked) 7%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--blocked) 35%, var(--border));
+}
+
+.board-card.state-blocked:hover {
+  border-color: color-mix(in srgb, var(--blocked) 55%, var(--border));
+}
+
+.board-card.state-needs-review {
+  background: color-mix(in srgb, var(--review) 7%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--review) 35%, var(--border));
+}
+
+.board-card.state-needs-review:hover {
+  border-color: color-mix(in srgb, var(--review) 55%, var(--border));
+}
+
 .card-title {
   font-weight: 500;
   overflow-wrap: anywhere;
@@ -795,6 +846,42 @@ textarea:focus-visible,
 .board-card .task-meta {
   margin-left: 0;
   flex-wrap: wrap;
+}
+
+.card-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+/* scaleX rather than width: a subtask tick should not relayout the column.
+   The parent clips, so the full-width bar is scaled from its left edge. */
+.card-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 120ms ease-out;
+}
+
+.board-card.done .card-progress-fill {
+  background: var(--success);
+}
+
+.card-progress-count {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
 }
 
 /* ---------- Editor panel ---------- */

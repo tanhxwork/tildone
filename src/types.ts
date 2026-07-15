@@ -85,6 +85,25 @@ export const PRIORITY_COLORS: Record<number, string> = {
   3: "#e03131",
 };
 
+/**
+ * Tag names the board renders as states rather than labels.
+ *
+ * They are tags and not status values on purpose: status is a CHECK constraint,
+ * and widening it needs a table rebuild that cannot run inside a plugin-sql
+ * migration — see docs/decisions/2026-07-16-sqlite-migration-safety.md. The
+ * three columns stay; these two carry the card instead.
+ *
+ * Order is precedence: the first match wins, so blocked outranks needs-review.
+ * Matched case-insensitively.
+ */
+export const RESERVED_TAGS = ["blocked", "needs-review"] as const;
+export type ReservedTag = (typeof RESERVED_TAGS)[number];
+
+export const RESERVED_TAG_LABELS: Record<ReservedTag, string> = {
+  blocked: "Blocked",
+  "needs-review": "Needs review",
+};
+
 export const COLOR_CHOICES = [
   "#5645d4",
   "#0075de",
