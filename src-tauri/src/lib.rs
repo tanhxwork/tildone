@@ -55,6 +55,7 @@ pub fn run() {
             agent::agent_server_start,
             agent::agent_server_stop,
             agent::agent_server_status,
+            agent::agent_server_endpoint,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

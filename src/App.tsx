@@ -61,7 +61,12 @@ function App() {
     // Agent access: start the MCP server if enabled, and refresh the store
     // whenever an external agent writes to the database.
     if (useSettings.getState().agentServer) {
-      invoke("agent_server_start").catch(() => {});
+      // Never swallow this. The Rust side returns a precise reason (e.g. the port
+      // is already taken), and discarding it is what let the board sit silently
+      // dead while Settings still reported "on" — an agent has no way to notice.
+      invoke("agent_server_start").catch((err) => {
+        console.error("tildone: MCP server failed to start:", err);
+      });
     }
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();
