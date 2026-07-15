@@ -66,10 +66,16 @@ or `status: "done"` to see them. Trashed tasks are never listed.
 
 | Tool | Arguments | Notes |
 |---|---|---|
-| `create_task` | `title` (required); optional `project`, `notes`, `due_date`, `priority`, `tags` (array), `status` | Omit `project` → Inbox. Returns the created task. |
-| `update_task` | `id` (required); any of `title`, `notes`, `status`, `priority`, `due_date`, `project`, `tags` | Only provided fields change. `tags` **replaces** the whole tag list. |
+| `create_task` | `title` (required); optional `project`, `notes`, `due_date`, `priority`, `tags` (array), `status` | Omit `project` → Inbox. |
+| `update_task` | `id` (required); any of `title`, `notes`, `status`, `priority`, `due_date`, `project`, `tags` | Only provided fields change, but a provided field **replaces** wholesale — `notes` and `tags` included. Read before you write, or use `append_note`. |
+| `append_note` | `id`, `text` | Appends to `notes` (newline-separated). **Prefer this for progress logs** — it cannot destroy existing notes, and costs the same however long the notes are. Returns a `notes_chars` size hint. |
 | `complete_task` | `id` | Shorthand for `status: "done"`; sets the completion timestamp. |
 | `delete_task` | `id` | Soft delete to the app's trash (restorable by the user). |
+
+Writes return a **receipt, not the row**: `{id, title, status}` (plus
+`completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
+— that doubled the cost of every update. Call `get_task` when you genuinely need
+the full task after a write.
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |

@@ -233,6 +233,29 @@ impl TildoneAgent {
         Ok(())
     }
 
+    /// Receipt for a write: the id, plus the fields the caller could not have
+    /// known before the write landed. Deliberately *not* the whole task —
+    /// echoing back the notes blob the caller just sent doubled the cost of
+    /// every update (one session: 46 writes sent 59KB and got 108KB back).
+    /// `get_task` is the escape hatch when the full row is genuinely wanted.
+    fn task_ack(conn: &Connection, id: i64) -> Result<Value, rusqlite::Error> {
+        conn.query_row(
+            "SELECT id, title, status, completed_at FROM tasks WHERE id = ?1",
+            [id],
+            |r| {
+                let mut ack = json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "title": r.get::<_, String>(1)?,
+                    "status": r.get::<_, String>(2)?,
+                });
+                if let Some(completed) = r.get::<_, Option<String>>(3)? {
+                    ack["completed_at"] = json!(completed);
+                }
+                Ok(ack)
+            },
+        )
+    }
+
     fn task_json(conn: &Connection, id: i64) -> Result<Option<Value>, rusqlite::Error> {
         let row = conn
             .query_row(
@@ -408,10 +431,10 @@ impl TildoneAgent {
         for label in &activity {
             Self::record_activity(&conn, id, label);
         }
-        let task = Self::task_json(&conn, id).map_err(db_err)?;
+        let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
         self.notify();
-        ok_json(&task.unwrap_or(Value::Null))
+        ok_json(&ack)
     }
 }
 
@@ -438,6 +461,13 @@ struct UpdateProjectParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct IdParams {
     id: i64,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AppendNoteParams {
+    id: i64,
+    #[schemars(description = "Text to append. A newline is inserted first when the notes are not already empty or newline-terminated.")]
+    text: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -777,10 +807,10 @@ impl TildoneAgent {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
         Self::record_activity(&conn, id, "Task created");
-        let task = Self::task_json(&conn, id).map_err(db_err)?;
+        let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
         self.notify();
-        ok_json(&task.unwrap_or(Value::Null))
+        ok_json(&ack)
     }
 
     #[tool(description = "Update fields of a task. Only the provided fields change.")]
@@ -791,6 +821,54 @@ impl TildoneAgent {
         self.apply_task_update(
             p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags,
         )
+    }
+
+    #[tool(
+        description = "Append text to a task's notes. Prefer this over update_task for progress logs: it cannot destroy existing notes, and it costs the same no matter how long the notes already are."
+    )]
+    fn append_note(
+        &self,
+        Parameters(AppendNoteParams { id, text }): Parameters<AppendNoteParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let current = conn
+            .query_row(
+                "SELECT notes, deleted_at FROM tasks WHERE id = ?1",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let Some((notes, deleted_at)) = current else {
+            return Ok(err(format!("No task with id {id}.")));
+        };
+        if deleted_at.is_some() {
+            return Ok(err(format!(
+                "Task {id} is in the trash; it can only be restored from the app."
+            )));
+        }
+        let separator = if notes.is_empty() || notes.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let updated = format!("{notes}{separator}{text}");
+        conn.execute(
+            "UPDATE tasks SET notes = ?1 WHERE id = ?2",
+            rusqlite::params![updated, id],
+        )
+        .map_err(db_err)?;
+        let mut ack = Self::task_ack(&conn, id).map_err(db_err)?;
+        // Size hint instead of the notes themselves — confirms the append
+        // landed without shipping the blob back.
+        ack["notes_chars"] = json!(updated.chars().count());
+        drop(conn);
+        self.notify();
+        ok_json(&ack)
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -1048,6 +1126,75 @@ mod tests {
         }
     }
 
+    /// append_note exists so a progress log costs the same whether the notes
+    /// are empty or 4KB, and so it *cannot* clobber history the way a blind
+    /// update_task can.
+    #[test]
+    fn append_note_appends_and_never_clobbers() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Logged work".into(),
+                    project: None,
+                    notes: Some("Goal: ship it".into()),
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        let (is_err, ack) = extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams {
+                    id,
+                    text: "- 00:01 started".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "append_note failed: {ack}");
+        // Receipt carries a size hint, never the notes themselves.
+        assert!(ack.get("notes").is_none(), "append must not echo notes: {ack}");
+        assert_eq!(ack["notes_chars"], "Goal: ship it\n- 00:01 started".chars().count());
+
+        extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams {
+                    id,
+                    text: "- 00:02 done".into(),
+                }))
+                .unwrap(),
+        );
+
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(
+            full["notes"], "Goal: ship it\n- 00:01 started\n- 00:02 done",
+            "earlier notes must survive verbatim"
+        );
+
+        // Unknown and trashed ids are tool errors, not silent no-ops.
+        let (is_err, msg) = extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams {
+                    id: 9999,
+                    text: "x".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "unknown id must error: {msg}");
+
+        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, msg) = extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams { id, text: "x".into() }))
+                .unwrap(),
+        );
+        assert!(is_err && msg.as_str().unwrap().contains("trash"), "{msg}");
+    }
+
     /// Rows written before 004 carry SQLite's "YYYY-MM-DD HH:MM:SS"; the
     /// migration must rewrite them in place without touching valid rows.
     #[test]
@@ -1130,10 +1277,17 @@ mod tests {
                 .unwrap(),
         );
         assert!(!is_err, "create_task failed: {task}");
-        assert_eq!(task["project"]["name"], "Work");
-        assert_eq!(task["tags"][0], "release");
-        assert_eq!(task["priority"], 3);
+        assert_eq!(task["title"], "Ship it");
+        assert_eq!(task["status"], "todo");
         let id = task["id"].as_i64().unwrap();
+
+        // The write returns a receipt, not the row — so verify what actually
+        // persisted via get_task rather than trusting the response echo.
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(full["project"]["name"], "Work");
+        assert_eq!(full["tags"][0], "release");
+        assert_eq!(full["priority"], 3);
+        assert_eq!(full["notes"], "the big one");
 
         // Inbox task (no project) gets position 0 in its own group.
         let (_, inbox_task) = extract(
@@ -1363,7 +1517,14 @@ mod tests {
         let text = call_body["result"]["content"][0]["text"].as_str().unwrap();
         let task: Value = serde_json::from_str(text).unwrap();
         assert_eq!(task["title"], "From MCP");
-        assert_eq!(task["priority"], 2);
+        assert_eq!(task["status"], "todo");
+        assert!(task["id"].as_i64().is_some(), "ack must carry the new id: {task}");
+        // The whole point of the receipt: a write must not ship the notes blob
+        // (or the rest of the row) back over the wire.
+        assert!(
+            task.get("notes").is_none() && task.get("priority").is_none(),
+            "write ack must stay minimal, got: {task}"
+        );
 
         // Drive-by hardening: browser-originated requests (Origin header set)
         // must be rejected before reaching the protocol layer.
