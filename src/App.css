@@ -335,10 +335,10 @@ textarea:focus-visible,
   flex-wrap: wrap;
   gap: 5px;
   padding: 2px 8px;
-  /* Cap the cloud so a growing tag list stays a scannable block instead of
-     shoving projects and the footer around. Its own scroll past the cap. */
-  max-height: 168px;
-  overflow-y: auto;
+  /* No internal cap/scroll: the tags flow in the single .sidebar-scroll region.
+     An inner overflow here would stack a second scrollbar inside the sidebar's
+     own. Collapsing the section is the control for a long list; the footer
+     stays pinned regardless. */
 }
 
 .tag-chip {
