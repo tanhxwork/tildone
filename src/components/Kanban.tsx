@@ -45,7 +45,7 @@ export function Kanban() {
     search,
     activeTagIds,
     priorityFilter,
-    applyPositions,
+    applyDrag,
     openEditor,
   } = useStore();
 
@@ -123,11 +123,8 @@ export function Kanban() {
         }
       }
     }
-    const updates = STATUSES.flatMap((status) =>
-      next[status].map((id, index) => ({ id, status, position: index })),
-    );
     setActiveId(null);
-    void applyPositions(updates);
+    void applyDrag(active.id as number, next);
   }
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;

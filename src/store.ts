@@ -11,6 +11,7 @@ import type {
   ViewMode,
 } from "./types";
 import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
+import { computeDragUpdates } from "./reorder";
 import { dueLabel, toIsoUtc } from "./utils/dates";
 
 export interface ImportedTask {
@@ -78,8 +79,9 @@ interface Store {
   restoreTask: (id: number) => Promise<void>;
   destroyTask: (id: number) => Promise<void>;
   emptyTrash: () => Promise<void>;
-  applyPositions: (
-    updates: { id: number; status: Status; position: number }[],
+  applyDrag: (
+    activeId: number,
+    columns: Record<Status, number[]>,
   ) => Promise<void>;
 
   addSubtask: (taskId: number, title: string) => Promise<void>;
@@ -361,41 +363,39 @@ export const useStore = create<Store>()((set, get) => ({
     });
   },
 
-  applyPositions: async (updates) => {
+  applyDrag: async (activeId, columns) => {
     const now = new Date().toISOString();
+    const updates = computeDragUpdates(
+      get().tasks,
+      get().selection,
+      activeId,
+      columns,
+      now,
+    );
+    if (updates.length === 0) return;
+
     const byId = new Map(get().tasks.map((t) => [t.id, t]));
-    const resolved = updates
-      .filter((u) => byId.has(u.id))
-      .map((u) => {
-        const prev = byId.get(u.id)!;
-        const completed_at =
-          u.status === prev.status
-            ? prev.completed_at
-            : u.status === "done"
-              ? now
-              : null;
-        // `changed` gates the DB write; the in-memory update below always runs.
-        const changed =
-          u.status !== prev.status ||
-          u.position !== prev.position ||
-          completed_at !== prev.completed_at;
-        return { ...u, completed_at, changed };
-      });
     set((s) => ({
       tasks: s.tasks.map((t) => {
-        const u = resolved.find((x) => x.id === t.id);
+        const u = updates.find((x) => x.id === t.id);
         return u
           ? { ...t, status: u.status, position: u.position, completed_at: u.completed_at }
           : t;
       }),
     }));
-    // A drag recomputes the index of every card in the column, but a within-column
-    // move only actually shifts the cards between source and destination — the rest
-    // keep their index. Writing the unchanged ones costs a SQL round-trip each (the
-    // change-feed trigger's WHEN guard already suppresses the no-op *feed* row, but
-    // not the UPDATE that fires it). Skip them.
-    for (const u of resolved) {
-      if (!u.changed) continue;
+    // Only write rows that actually changed. A precise reorder dense-renumbers a whole
+    // group in memory but usually shifts only the cards between source and destination;
+    // the change-feed trigger already suppresses the no-op feed row, this skips the
+    // UPDATE that would have fired it.
+    for (const u of updates) {
+      const prev = byId.get(u.id)!;
+      if (
+        u.status === prev.status &&
+        u.position === prev.position &&
+        u.completed_at === prev.completed_at
+      ) {
+        continue;
+      }
       await db.updateTask(u.id, {
         status: u.status,
         position: u.position,
