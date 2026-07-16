@@ -36,6 +36,12 @@ pub fn run() {
             sql: include_str!("../migrations/005_changes.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "add_activity_actor",
+            sql: include_str!("../migrations/006_activity_actor.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

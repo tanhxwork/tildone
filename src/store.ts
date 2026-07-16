@@ -33,6 +33,13 @@ interface Store {
   subtasks: Subtask[];
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
+  /**
+   * Newest agent activity per task_id — this is presence. Derived from
+   * task_activity on every load, never stored: a dead session stops writing and
+   * its entry simply ages, so nothing is ever cleared. `at` is an ISO timestamp;
+   * the card decides how fresh is fresh.
+   */
+  presence: Record<number, { name: string | null; at: string }>;
 
   selection: Selection;
   viewMode: ViewMode;
@@ -112,6 +119,7 @@ export const useStore = create<Store>()((set, get) => ({
   tags: [],
   subtasks: [],
   activity: [],
+  presence: {},
 
   selection: { type: "today" },
   viewMode: "list",

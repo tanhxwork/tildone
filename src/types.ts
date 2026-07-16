@@ -49,6 +49,11 @@ export interface ActivityEntry {
   task_id: number;
   label: string;
   created_at: string;
+  // 'user' | 'agent' | null. null on rows written before migration 006 — genuinely
+  // unknown, rendered as neither rather than guessed.
+  actor_kind: string | null;
+  // The agent's own MCP client name (e.g. 'claude-code'); null for user and legacy rows.
+  actor_name: string | null;
 }
 
 export type Selection =

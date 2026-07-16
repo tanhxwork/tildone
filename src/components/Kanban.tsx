@@ -24,6 +24,7 @@ import { useStore } from "../store";
 import type { Status, Task } from "../types";
 import { STATUSES, STATUS_LABELS } from "../types";
 import { TaskMeta, reservedState } from "./TaskRow";
+import { AgentPresence } from "../agents";
 
 type Columns = Record<Status, number[]>;
 
@@ -249,6 +250,7 @@ function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
         </span>
       )}
       <TaskMeta task={task} showProject hideStatus />
+      <AgentPresence taskId={task.id} />
     </div>
   );
 }
