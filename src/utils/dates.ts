@@ -121,3 +121,21 @@ export function isRecentPresence(timestamp: string): boolean {
   if (isNaN(t)) return false;
   return Date.now() - t < PRESENCE_WINDOW_MS;
 }
+
+/**
+ * A much shorter window than PRESENCE_WINDOW: "an agent is writing right now",
+ * used only to animate the presence mark (spin + pulse), never to gate whether
+ * presence shows at all.
+ *
+ * Kept short and honest. An MCP agent has no heartbeat, so this can only ever
+ * *under*-claim: a long silent build ages out of the window and the mark settles
+ * to static, while a dead session never keeps spinning — it simply stops producing
+ * the fresh writes that would renew the window. It cannot invent a live state.
+ */
+export const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
+
+export function isActivelyWorking(timestamp: string): boolean {
+  const t = new Date(toIsoUtc(timestamp)).getTime();
+  if (isNaN(t)) return false;
+  return Date.now() - t < ACTIVE_WINDOW_MS;
+}

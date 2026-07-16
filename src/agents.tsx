@@ -10,7 +10,7 @@
 
 import type { ReactElement, SVGProps } from "react";
 import { useStore } from "./store";
-import { isRecentPresence, timeAgo } from "./utils/dates";
+import { isActivelyWorking, isRecentPresence, timeAgo } from "./utils/dates";
 
 type MarkProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -124,13 +124,17 @@ export function AgentPresence({ taskId }: { taskId: number }) {
   const entry = useStore((s) => s.presence[taskId]);
   if (!entry || !isRecentPresence(entry.at)) return null;
   const { label, color, Mark } = agentIdentity(entry.name);
+  // Spin + pulse only while the agent is actively writing (a fresh row within the
+  // active window); it settles to static as the timestamp ages. Event-driven off
+  // the same reload every write already triggers — no heartbeat, no timer.
+  const working = isActivelyWorking(entry.at);
   return (
     <span
       className="card-presence"
       style={{ ["--agent-color" as string]: color }}
-      title={`${label} · last active ${timeAgo(entry.at)}`}
+      title={`${label} · ${working ? "working now · " : ""}last active ${timeAgo(entry.at)}`}
     >
-      <Mark className="card-presence-mark" size={13} />
+      <Mark className={`card-presence-mark${working ? " working" : ""}`} size={13} />
       <span className="card-presence-name">{label}</span>
       <span className="card-presence-dot" aria-hidden="true">
         ·
