@@ -18,11 +18,12 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Status, Task } from "../types";
 import { STATUSES, STATUS_LABELS } from "../types";
+import { CompletionFlourish } from "./Brand";
 import { TaskMeta, reservedState } from "./TaskRow";
 
 type Columns = Record<Status, number[]>;
@@ -65,6 +66,11 @@ export function Kanban() {
 
   const [columns, setColumns] = useState<Columns>({ todo: [], doing: [], done: [] });
   const [activeId, setActiveId] = useState<number | null>(null);
+  // A card that just landed in Done, to overlay the wave-to-check flourish on.
+  // `key` bumps per completion so re-completing the same card replays it.
+  const [celebrate, setCelebrate] = useState<{ id: number; key: number } | null>(null);
+  const dragFromStatus = useRef<Status | null>(null);
+  const flourishSeq = useRef(0);
 
   useEffect(() => {
     if (activeId === null) {
@@ -87,7 +93,11 @@ export function Kanban() {
   }
 
   function onDragStart(event: DragStartEvent) {
-    setActiveId(event.active.id as number);
+    const id = event.active.id as number;
+    // Remember where the card started so onDragEnd can tell a genuine
+    // completion (moved into Done) from a reorder within Done.
+    dragFromStatus.current = taskById.get(id)?.status ?? null;
+    setActiveId(id);
   }
 
   function onDragOver(event: DragOverEvent) {
@@ -123,6 +133,16 @@ export function Kanban() {
         }
       }
     }
+    // Fire the flourish only on a real completion: the card ended in Done and
+    // did not start there.
+    const landedId = active.id as number;
+    const landedDone = next.done.includes(landedId);
+    if (landedDone && dragFromStatus.current !== "done") {
+      flourishSeq.current += 1;
+      setCelebrate({ id: landedId, key: flourishSeq.current });
+    }
+    dragFromStatus.current = null;
+
     setActiveId(null);
     void applyDrag(active.id as number, next);
   }
@@ -146,6 +166,8 @@ export function Kanban() {
             ids={columns[status]}
             taskById={taskById}
             onOpen={openEditor}
+            celebrate={celebrate}
+            onFlourishDone={() => setCelebrate(null)}
           />
         ))}
       </div>
@@ -161,11 +183,15 @@ function Column({
   ids,
   taskById,
   onOpen,
+  celebrate,
+  onFlourishDone,
 }: {
   status: Status;
   ids: number[];
   taskById: Map<number, Task>;
   onOpen: (id: number) => void;
+  celebrate: { id: number; key: number } | null;
+  onFlourishDone: () => void;
 }) {
   const { setNodeRef } = useDroppable({ id: status });
 
@@ -180,7 +206,15 @@ function Column({
         <div ref={setNodeRef} className="column-body">
           {ids.map((id) => {
             const task = taskById.get(id);
-            return task ? <Card key={id} task={task} onOpen={onOpen} /> : null;
+            return task ? (
+              <Card
+                key={id}
+                task={task}
+                onOpen={onOpen}
+                flourishKey={celebrate?.id === id ? celebrate.key : null}
+                onFlourishDone={onFlourishDone}
+              />
+            ) : null;
           })}
           {ids.length === 0 && <div className="column-empty">Drop tasks here</div>}
         </div>
@@ -189,7 +223,17 @@ function Column({
   );
 }
 
-function Card({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
+function Card({
+  task,
+  onOpen,
+  flourishKey,
+  onFlourishDone,
+}: {
+  task: Task;
+  onOpen: (id: number) => void;
+  flourishKey: number | null;
+  onFlourishDone: () => void;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: task.id });
 
@@ -205,12 +249,22 @@ function Card({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
       {...listeners}
       onClick={() => onOpen(task.id)}
     >
-      <CardContent task={task} />
+      <CardContent task={task} flourishKey={flourishKey} onFlourishDone={onFlourishDone} />
     </div>
   );
 }
 
-function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
+function CardContent({
+  task,
+  overlay,
+  flourishKey = null,
+  onFlourishDone,
+}: {
+  task: Task;
+  overlay?: boolean;
+  flourishKey?: number | null;
+  onFlourishDone?: () => void;
+}) {
   const subtasks = useStore((s) => s.subtasks);
   const tags = useStore((s) => s.tags);
   const mine = subtasks.filter((s) => s.task_id === task.id);
@@ -246,6 +300,9 @@ function CardContent({ task, overlay }: { task: Task; overlay?: boolean }) {
         </span>
       )}
       <TaskMeta task={task} showProject hideStatus />
+      {flourishKey !== null && (
+        <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
+      )}
     </div>
   );
 }

@@ -114,6 +114,7 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       >
         {done && <IconCheck size={11} />}
       </button>
+      <span className="task-id" aria-hidden="true">#{task.id}</span>
       <span className="task-title">{task.title}</span>
       <TaskMeta task={task} showProject={showProject} />
     </div>
