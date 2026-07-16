@@ -851,11 +851,11 @@ textarea:focus-visible,
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 1;
-  /* Accelerating draw: the mark starts slow and speeds up into the check, so it
-     reads as gathering momentum rather than easing to a stop. */
+  /* Hard-accelerating draw: the mark barely moves at first, then snaps into the
+     check — a dramatic slow-to-fast gathering of momentum. */
   animation:
-    flourish-draw 0.55s cubic-bezier(0.7, 0, 0.84, 0) both,
-    flourish-fade 0.35s ease-in 0.55s both;
+    flourish-draw 0.6s cubic-bezier(0.9, 0, 0.95, 0.2) both,
+    flourish-fade 0.35s ease-in 0.6s both;
 }
 
 @keyframes flourish-draw {
