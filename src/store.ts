@@ -176,6 +176,9 @@ export const useStore = create<Store>()((set, get) => ({
       Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
     await db.purgeTrashedBefore(cutoff);
+    // Give pre-migration-010 projects/tasks their code/number/ref before the first
+    // read, so nothing ever renders the raw #id fallback. Idempotent.
+    await db.backfillRefs();
     const data = await db.fetchAll();
     set({ ...data, loaded: true });
   },
@@ -208,9 +211,9 @@ export const useStore = create<Store>()((set, get) => ({
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
 
   addProject: async (name, color) => {
-    const id = await db.insertProject(name, color);
+    const { id, code } = await db.insertProject(name, color);
     set((s) => ({
-      projects: [...s.projects, { id, name, color, position: s.projects.length }],
+      projects: [...s.projects, { id, name, color, position: s.projects.length, code }],
       selection: { type: "project", projectId: id },
     }));
   },
@@ -257,7 +260,7 @@ export const useStore = create<Store>()((set, get) => ({
     const { tasks } = get();
     const position = groupSlot(tasks, project_id, "todo");
     const created_at = new Date().toISOString();
-    const id = await db.insertTask({
+    const { id, number, ref } = await db.insertTask({
       project_id,
       title,
       due_date,
@@ -281,6 +284,8 @@ export const useStore = create<Store>()((set, get) => ({
       completed_at: null,
       deleted_at: null,
       archived_at: null,
+      number,
+      ref,
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -578,14 +583,14 @@ export const useStore = create<Store>()((set, get) => ({
     for (const p of incomingProjects) {
       const key = p.name.trim().toLowerCase();
       if (!key || projectIdByName.has(key)) continue;
-      const id = await db.insertProject(p.name.trim(), p.color ?? colorForName(p.name));
+      const { id } = await db.insertProject(p.name.trim(), p.color ?? colorForName(p.name));
       projectIdByName.set(key, id);
     }
     // Project names referenced only by tasks are created on the fly too.
     for (const t of incomingTasks) {
       const name = t.project?.trim();
       if (name && !projectIdByName.has(name.toLowerCase())) {
-        const id = await db.insertProject(name, colorForName(name));
+        const { id } = await db.insertProject(name, colorForName(name));
         projectIdByName.set(name.toLowerCase(), id);
       }
     }
@@ -599,7 +604,7 @@ export const useStore = create<Store>()((set, get) => ({
         : null;
       const status: Status =
         t.status === "done" || t.status === "doing" ? t.status : "todo";
-      const id = await db.insertTask({
+      const { id } = await db.insertTask({
         project_id,
         title,
         due_date: t.due_date ?? null,

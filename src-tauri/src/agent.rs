@@ -457,13 +457,14 @@ impl TildoneAgent {
     /// `get_task` is the escape hatch when the full row is genuinely wanted.
     fn task_ack(conn: &Connection, id: i64) -> Result<Value, rusqlite::Error> {
         conn.query_row(
-            "SELECT id, title, status, completed_at FROM tasks WHERE id = ?1",
+            "SELECT id, title, status, completed_at, ref FROM tasks WHERE id = ?1",
             [id],
             |r| {
                 let mut ack = json!({
                     "id": r.get::<_, i64>(0)?,
                     "title": r.get::<_, String>(1)?,
                     "status": r.get::<_, String>(2)?,
+                    "ref": r.get::<_, Option<String>>(4)?,
                 });
                 if let Some(completed) = r.get::<_, Option<String>>(3)? {
                     ack["completed_at"] = json!(completed);
@@ -479,7 +480,7 @@ impl TildoneAgent {
                 &format!(
                     "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
                             t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name,
-                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END
+                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END, t.ref
                      FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
                      WHERE t.id = ?1"
                 ),
@@ -487,6 +488,7 @@ impl TildoneAgent {
                 |r| {
                     Ok(json!({
                         "id": r.get::<_, i64>(0)?,
+                        "ref": r.get::<_, Option<String>>(12)?,
                         "title": r.get::<_, String>(1)?,
                         "notes": r.get::<_, String>(2)?,
                         "status": r.get::<_, String>(3)?,
@@ -526,7 +528,7 @@ impl TildoneAgent {
     #[allow(clippy::too_many_arguments)]
     fn apply_task_update(
         &self,
-        id: i64,
+        task_ref: TaskRef,
         title: Option<String>,
         notes: Option<String>,
         status: Option<String>,
@@ -537,6 +539,9 @@ impl TildoneAgent {
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
+        let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         let current: Option<(String, Option<i64>, Option<String>)> = conn
             .query_row(
                 "SELECT status, project_id, deleted_at FROM tasks WHERE id = ?1",
@@ -687,6 +692,165 @@ impl TildoneAgent {
 }
 
 // ---------------------------------------------------------------------------
+// Task references — CODE-N (e.g. "TIL-3"). See docs/specs/2026-07-16-per-project-task-ref.md.
+//
+// The code-derivation here mirrors src/utils/ref.ts byte-for-byte: the frontend
+// store and this MCP server both create projects/tasks straight into SQLite, so an
+// identical code must come out either way. Keep the two in lockstep.
+
+/// Reserved code for tasks with no project (the Inbox).
+const INBOX_CODE: &str = "INBOX";
+
+/// A task identifier from an MCP client: the numeric DB id (back-compat) or the
+/// frozen "CODE-N" reference string. Untagged so a JSON number deserialises to
+/// `Id` and a JSON string to `Ref`; the derived JsonSchema advertises both.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum TaskRef {
+    Id(i64),
+    Ref(String),
+}
+
+impl std::fmt::Display for TaskRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskRef::Id(n) => write!(f, "{n}"),
+            TaskRef::Ref(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl From<i64> for TaskRef {
+    fn from(n: i64) -> Self {
+        TaskRef::Id(n)
+    }
+}
+
+/// One row-id lookup that maps QueryReturnedNoRows to None (the codebase's
+/// established pattern, avoiding an OptionalExtension import).
+fn task_id_by(
+    conn: &Connection,
+    sql: &str,
+    param: &dyn rusqlite::types::ToSql,
+) -> Result<Option<i64>, rusqlite::Error> {
+    conn.query_row(sql, [param], |row| row.get::<_, i64>(0))
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+}
+
+/// Resolve a client identifier to a task row id (None when nothing matches). A
+/// string of pure digits is still treated as an id, so a client that quotes the
+/// numeric id as a string keeps working.
+fn resolve_task_ref(conn: &Connection, r: &TaskRef) -> Result<Option<i64>, rusqlite::Error> {
+    match r {
+        TaskRef::Id(n) => task_id_by(conn, "SELECT id FROM tasks WHERE id = ?1", n),
+        TaskRef::Ref(s) => {
+            let t = s.trim();
+            match t.parse::<i64>() {
+                Ok(n) => task_id_by(conn, "SELECT id FROM tasks WHERE id = ?1", &n),
+                Err(_) => task_id_by(conn, "SELECT id FROM tasks WHERE ref = ?1 COLLATE NOCASE", &t),
+            }
+        }
+    }
+}
+
+/// Uppercase alphanumeric words of a project name. Mirrors `words` in ref.ts.
+fn code_words(name: &str) -> Vec<String> {
+    name.to_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Base (pre-uniqueness) code: initials for a multi-word name, the first three
+/// characters for a single word, "PRJ" for a name with no alphanumerics. Mirrors
+/// `baseProjectCode` in ref.ts.
+fn base_project_code(name: &str) -> String {
+    let ws = code_words(name);
+    if ws.is_empty() {
+        return "PRJ".to_string();
+    }
+    if ws.len() == 1 {
+        return ws[0].chars().take(3).collect();
+    }
+    ws.iter().filter_map(|w| w.chars().next()).take(4).collect()
+}
+
+/// A unique code for `name` given the codes already taken (uppercase). On collision,
+/// append the smallest integer suffix that is free. Mirrors `deriveProjectCode`.
+fn derive_project_code(name: &str, taken: &std::collections::HashSet<String>) -> String {
+    let base = base_project_code(name);
+    if !taken.contains(&base) {
+        return base;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}{n}");
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Codes already in use (plus the reserved INBOX_CODE) — the authoritative set the
+/// UNIQUE index on projects.code backs up.
+fn taken_project_codes(
+    conn: &Connection,
+) -> Result<std::collections::HashSet<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT code FROM projects WHERE code IS NOT NULL")?;
+    let mut set: std::collections::HashSet<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    set.insert(INBOX_CODE.to_string());
+    Ok(set)
+}
+
+/// The code that mints refs for a task in `project_id` (INBOX_CODE for the Inbox).
+/// A project still lacking a code — a race ahead of the frontend backfill — gets one
+/// minted and persisted here so its tasks never fall back to the raw id.
+fn code_for_project(conn: &Connection, project_id: Option<i64>) -> Result<String, rusqlite::Error> {
+    let Some(pid) = project_id else {
+        return Ok(INBOX_CODE.to_string());
+    };
+    let row: Option<(String, Option<String>)> = conn
+        .query_row("SELECT name, code FROM projects WHERE id = ?1", [pid], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let Some((name, code)) = row else {
+        return Ok(INBOX_CODE.to_string());
+    };
+    if let Some(code) = code {
+        return Ok(code);
+    }
+    let taken = taken_project_codes(conn)?;
+    let code = derive_project_code(&name, &taken);
+    conn.execute("UPDATE projects SET code = ?1 WHERE id = ?2", rusqlite::params![code, pid])?;
+    Ok(code)
+}
+
+/// Next per-code counter: one past the highest `number` any task with this code's
+/// ref prefix has ever held (trashed rows included). Scoped by the frozen ref, not
+/// project_id, so a task moved between projects keeps counting against its birth code.
+fn next_task_number(conn: &Connection, code: &str) -> Result<i64, rusqlite::Error> {
+    let max: Option<i64> = conn.query_row(
+        "SELECT MAX(number) FROM tasks WHERE ref LIKE ?1",
+        [format!("{code}-%")],
+        |r| r.get(0),
+    )?;
+    Ok(max.unwrap_or(0) + 1)
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter types
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -711,17 +875,25 @@ struct IdParams {
     id: i64,
 }
 
+/// A task identifier for a task-scoped tool: the numeric id or a "CODE-N" ref.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TaskIdParams {
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
+    id: TaskRef,
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AppendNoteParams {
-    id: i64,
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
+    id: TaskRef,
     #[schemars(description = "Text to append. A newline is inserted first when the notes are not already empty or newline-terminated.")]
     text: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddSubtaskParams {
-    #[schemars(description = "Id of the parent task")]
-    task_id: i64,
+    #[schemars(description = "Parent task id (number) or reference like \"TIL-3\"")]
+    task_id: TaskRef,
     title: String,
 }
 
@@ -739,8 +911,8 @@ struct ListChangesParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct LogProgressParams {
-    #[schemars(description = "Id of the task")]
-    task_id: i64,
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
+    task_id: TaskRef,
     #[schemars(
         description = "One short, factual line in the present tense — e.g. \"tests written (RED, 5 failing)\""
     )]
@@ -792,7 +964,8 @@ struct CreateTaskParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct UpdateTaskParams {
-    id: i64,
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
+    id: TaskRef,
     title: Option<String>,
     notes: Option<String>,
     #[schemars(description = "todo, doing or done")]
@@ -809,8 +982,8 @@ struct UpdateTaskParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddLinkParams {
-    #[schemars(description = "Id of the task to attach the link to")]
-    task_id: i64,
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\" to attach the link to")]
+    task_id: TaskRef,
     #[schemars(description = "The URL to open. Must be http(s) — other schemes are refused.")]
     url: String,
     #[schemars(
@@ -874,16 +1047,18 @@ impl TildoneAgent {
             return Ok(err(format!("A project named \"{name}\" already exists.")));
         }
         let color = color.unwrap_or_else(|| color_for_name(&name).to_string());
+        let taken = taken_project_codes(&conn).map_err(db_err)?;
+        let code = derive_project_code(&name, &taken);
         conn.execute(
-            "INSERT INTO projects (name, color, position, created_at)
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects), ?3)",
-            rusqlite::params![name, color, now_iso()],
+            "INSERT INTO projects (name, color, position, created_at, code)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects), ?3, ?4)",
+            rusqlite::params![name, color, now_iso(), code],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
         drop(conn);
         self.notify();
-        ok_json(&json!({"id": id, "name": name, "color": color}))
+        ok_json(&json!({"id": id, "name": name, "color": color, "code": code}))
     }
 
     #[tool(description = "Rename a project or change its color.")]
@@ -1006,7 +1181,7 @@ impl TildoneAgent {
             "SELECT t.id, t.title, t.status, t.priority, t.due_date, t.completed_at, p.name,
                     (SELECT GROUP_CONCAT(tg.name, ', ') FROM tags tg
                      JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id),
-                    {RANK_SQL}
+                    {RANK_SQL}, t.ref
              FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
              WHERE {}
              ORDER BY p.position, t.position, t.id",
@@ -1017,6 +1192,7 @@ impl TildoneAgent {
             .query_map(rusqlite::params_from_iter(params.iter()), |r| {
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?,
+                    "ref": r.get::<_, Option<String>>(9)?,
                     "title": r.get::<_, String>(1)?,
                     "status": r.get::<_, String>(2)?,
                     "priority": r.get::<_, i64>(3)?,
@@ -1036,11 +1212,14 @@ impl TildoneAgent {
     #[tool(description = "Get one task with full details (notes, tags, subtasks).")]
     fn get_task(
         &self,
-        Parameters(IdParams { id }): Parameters<IdParams>,
+        Parameters(TaskIdParams { id: task_ref }): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
+        let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         let Some(mut task) = Self::task_json(&conn, id).map_err(db_err)? else {
-            return Ok(err(format!("No task with id {id}.")));
+            return Ok(err(format!("No task with reference {task_ref}.")));
         };
         let mut stmt = conn
             .prepare("SELECT id, title, done FROM subtasks WHERE task_id = ?1 ORDER BY position, id")
@@ -1118,9 +1297,14 @@ impl TildoneAgent {
         };
         let position = Self::group_slot(&conn, project_id, &status).map_err(db_err)?;
         let completed_at: Option<String> = (status == "done").then(now_iso);
+        // Mint the frozen ref from the task's project code; the counter is scoped to
+        // that code, so numbers stay small and per-project. See code_for_project.
+        let code = code_for_project(&conn, project_id).map_err(db_err)?;
+        let number = next_task_number(&conn, &code).map_err(db_err)?;
+        let task_ref = format!("{code}-{number}");
         conn.execute(
-            "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 project_id,
                 title,
@@ -1130,7 +1314,9 @@ impl TildoneAgent {
                 due_date,
                 position,
                 completed_at,
-                now_iso()
+                now_iso(),
+                number,
+                task_ref
             ],
         )
         .map_err(db_err)?;
@@ -1169,9 +1355,12 @@ impl TildoneAgent {
     )]
     fn append_note(
         &self,
-        Parameters(AppendNoteParams { id, text }): Parameters<AppendNoteParams>,
+        Parameters(AppendNoteParams { id: task_ref, text }): Parameters<AppendNoteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
+        let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         let current = conn
             .query_row(
                 "SELECT notes, deleted_at FROM tasks WHERE id = ?1",
@@ -1185,11 +1374,11 @@ impl TildoneAgent {
             })
             .map_err(db_err)?;
         let Some((notes, deleted_at)) = current else {
-            return Ok(err(format!("No task with id {id}.")));
+            return Ok(err(format!("No task with reference {task_ref}.")));
         };
         if deleted_at.is_some() {
             return Ok(err(format!(
-                "Task {id} is in the trash; it can only be restored from the app."
+                "Task {task_ref} is in the trash; it can only be restored from the app."
             )));
         }
         let separator = if notes.is_empty() || notes.ends_with('\n') {
@@ -1225,7 +1414,7 @@ impl TildoneAgent {
 
     fn add_subtask_as(
         &self,
-        AddSubtaskParams { task_id, title }: AddSubtaskParams,
+        AddSubtaskParams { task_id: task_ref, title }: AddSubtaskParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let title = title.trim().to_string();
@@ -1233,11 +1422,14 @@ impl TildoneAgent {
             return Ok(err("Subtask title cannot be empty."));
         }
         let conn = self.db.lock().unwrap();
+        let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         match Self::task_trashed(&conn, task_id).map_err(db_err)? {
-            None => return Ok(err(format!("No task with id {task_id}."))),
+            None => return Ok(err(format!("No task with reference {task_ref}."))),
             Some(true) => {
                 return Ok(err(format!(
-                    "Task {task_id} is in the trash; it can only be restored from the app."
+                    "Task {task_ref} is in the trash; it can only be restored from the app."
                 )))
             }
             Some(false) => {}
@@ -1393,7 +1585,7 @@ impl TildoneAgent {
 
     fn log_progress_as(
         &self,
-        LogProgressParams { task_id, text }: LogProgressParams,
+        LogProgressParams { task_id: task_ref, text }: LogProgressParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let text = text.trim().to_string();
@@ -1401,11 +1593,14 @@ impl TildoneAgent {
             return Ok(err("Log text cannot be empty."));
         }
         let conn = self.db.lock().unwrap();
+        let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         match Self::task_trashed(&conn, task_id).map_err(db_err)? {
-            None => return Ok(err(format!("No task with id {task_id}."))),
+            None => return Ok(err(format!("No task with reference {task_ref}."))),
             Some(true) => {
                 return Ok(err(format!(
-                    "Task {task_id} is in the trash; it can only be restored from the app."
+                    "Task {task_ref} is in the trash; it can only be restored from the app."
                 )))
             }
             Some(false) => {}
@@ -1421,7 +1616,7 @@ impl TildoneAgent {
     #[tool(description = "Mark a task as done.")]
     fn complete_task(
         &self,
-        Parameters(p): Parameters<IdParams>,
+        Parameters(p): Parameters<TaskIdParams>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         self.complete_task_as(p, Self::client_name(&ctx).as_deref())
@@ -1429,7 +1624,7 @@ impl TildoneAgent {
 
     fn complete_task_as(
         &self,
-        IdParams { id }: IdParams,
+        TaskIdParams { id }: TaskIdParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         self.apply_task_update(
@@ -1448,9 +1643,12 @@ impl TildoneAgent {
     #[tool(description = "Move a task to the trash (restorable in the app for 30 days).")]
     fn delete_task(
         &self,
-        Parameters(IdParams { id }): Parameters<IdParams>,
+        Parameters(TaskIdParams { id: task_ref }): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
+        let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         let changed = conn
             .execute(
                 "UPDATE tasks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
@@ -1459,10 +1657,10 @@ impl TildoneAgent {
             .map_err(db_err)?;
         drop(conn);
         if changed == 0 {
-            return Ok(err(format!("No active task with id {id}.")));
+            return Ok(err(format!("Task {task_ref} is already in the trash.")));
         }
         self.notify();
-        ok_text(format!("Task {id} moved to trash."))
+        ok_text(format!("Task {task_ref} moved to trash."))
     }
 
     #[tool(description = "List all tags with the number of active tasks using each.")]
@@ -1505,7 +1703,7 @@ impl TildoneAgent {
     fn add_link_as(
         &self,
         AddLinkParams {
-            task_id,
+            task_id: task_ref,
             url,
             label,
             kind,
@@ -1531,11 +1729,14 @@ impl TildoneAgent {
             .unwrap_or_else(|| link_label_from_url(&url));
 
         let conn = self.db.lock().unwrap();
+        let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
         match Self::task_trashed(&conn, task_id).map_err(db_err)? {
-            None => return Ok(err(format!("No task with id {task_id}."))),
+            None => return Ok(err(format!("No task with reference {task_ref}."))),
             Some(true) => {
                 return Ok(err(format!(
-                    "Task {task_id} is in the trash; it can only be restored from the app."
+                    "Task {task_ref} is in the trash; it can only be restored from the app."
                 )))
             }
             Some(false) => {}
@@ -1873,6 +2074,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/007_archived_at.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/008_task_links.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/009_activity_actor.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/010_task_ref.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -1923,7 +2125,7 @@ mod tests {
         extract(
             &agent
                 .add_link_as(AddLinkParams {
-                    task_id,
+                    task_id: task_id.into(),
                     url: url.into(),
                     label: label.map(Into::into),
                     kind: kind.map(Into::into),
@@ -1947,7 +2149,7 @@ mod tests {
         assert_eq!(link["label"], "PR #12");
         assert_eq!(link["kind"], "pr");
 
-        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let links = task["links"].as_array().unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["url"], "https://github.com/tanhxwork/tildone/pull/12");
@@ -1982,7 +2184,7 @@ mod tests {
     fn add_link_on_a_trashed_task_is_refused() {
         let agent = test_agent();
         let id = a_task(&agent, "doomed");
-        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        extract(&agent.delete_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let (is_err, _) = attach(&agent, id, "https://example.com/x", None, None);
         assert!(is_err, "a link on a trashed task must be refused");
     }
@@ -2050,7 +2252,7 @@ mod tests {
         let (is_err, _) =
             extract(&agent.delete_link_as(IdParams { id: link_id }, None).unwrap());
         assert!(!is_err);
-        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert_eq!(task["links"].as_array().unwrap().len(), 0);
         let (missing, _) = extract(&agent.delete_link_as(IdParams { id: 9999 }, None).unwrap());
         assert!(missing, "deleting a non-existent link errors, not panics");
@@ -2193,7 +2395,7 @@ mod tests {
         let (is_err, ack) = extract(
             &agent
                 .append_note(Parameters(AppendNoteParams {
-                    id,
+                    id: id.into(),
                     text: "- 00:01 started".into(),
                 }))
                 .unwrap(),
@@ -2206,13 +2408,13 @@ mod tests {
         extract(
             &agent
                 .append_note(Parameters(AppendNoteParams {
-                    id,
+                    id: id.into(),
                     text: "- 00:02 done".into(),
                 }))
                 .unwrap(),
         );
 
-        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert_eq!(
             full["notes"], "Goal: ship it\n- 00:01 started\n- 00:02 done",
             "earlier notes must survive verbatim"
@@ -2222,17 +2424,17 @@ mod tests {
         let (is_err, msg) = extract(
             &agent
                 .append_note(Parameters(AppendNoteParams {
-                    id: 9999,
+                    id: 9999_i64.into(),
                     text: "x".into(),
                 }))
                 .unwrap(),
         );
         assert!(is_err, "unknown id must error: {msg}");
 
-        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        extract(&agent.delete_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let (is_err, msg) = extract(
             &agent
-                .append_note(Parameters(AppendNoteParams { id, text: "x".into() }))
+                .append_note(Parameters(AppendNoteParams { id: id.into(), text: "x".into() }))
                 .unwrap(),
         );
         assert!(is_err && msg.as_str().unwrap().contains("trash"), "{msg}");
@@ -2326,7 +2528,7 @@ mod tests {
 
         // The write returns a receipt, not the row — so verify what actually
         // persisted via get_task rather than trusting the response echo.
-        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert_eq!(full["project"]["name"], "Work");
         assert_eq!(full["tags"][0], "release");
         assert_eq!(full["priority"], 3);
@@ -2366,7 +2568,7 @@ mod tests {
 
         // complete_task sets completed_at; done tasks drop out of default list.
         let (is_err, done) = extract(
-            &agent.complete_task_as(IdParams { id }, None).unwrap(),
+            &agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap(),
         );
         assert!(!is_err);
         assert_eq!(done["status"], "done");
@@ -2389,7 +2591,7 @@ mod tests {
         let (_, updated) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
-                    id,
+                    id: id.into(),
                     title: None,
                     notes: None,
                     status: Some("todo".into()),
@@ -2406,10 +2608,10 @@ mod tests {
         assert_eq!(updated["project"], Value::Null);
 
         // delete_task is a soft delete; further updates are refused.
-        let (is_err, msg) = extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, msg) = extract(&agent.delete_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert!(!is_err, "{msg}");
         let (is_err, msg) = extract(
-            &agent.complete_task_as(IdParams { id }, None).unwrap(),
+            &agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap(),
         );
         assert!(is_err);
         assert!(msg.as_str().unwrap().contains("trash"));
@@ -2465,13 +2667,13 @@ mod tests {
         extract(
             &agent
                 .append_note(Parameters(AppendNoteParams {
-                    id,
+                    id: id.into(),
                     text: "- 14:32 tests written (RED, 5 failing)".into(),
                 }))
                 .unwrap(),
         );
 
-        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let notes = full["notes"].as_str().unwrap();
         let evidence_at = notes.find("## Evidence").unwrap();
         let appended_at = notes.find("- 14:32 tests written").unwrap();
@@ -2506,7 +2708,7 @@ mod tests {
         let (is_err, ack) = extract(
             &agent
                 .log_progress_as(LogProgressParams {
-                    task_id: id,
+                    task_id: id.into(),
                     text: "  tests written (RED, 5 failing)  ".into(),
                 }, None)
                 .unwrap(),
@@ -2528,7 +2730,7 @@ mod tests {
         assert_eq!(logged, "tests written (RED, 5 failing)");
 
         // notes are byte-identical: the log cost nothing in notes traffic.
-        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert_eq!(full["notes"].as_str().unwrap(), CANONICAL_NOTES);
     }
 
@@ -2553,7 +2755,7 @@ mod tests {
         let (is_err, _) = extract(
             &agent
                 .log_progress_as(LogProgressParams {
-                    task_id: id,
+                    task_id: id.into(),
                     text: "   ".into(),
                 }, None)
                 .unwrap(),
@@ -2563,7 +2765,7 @@ mod tests {
         let (is_err, _) = extract(
             &agent
                 .log_progress_as(LogProgressParams {
-                    task_id: 999_999,
+                    task_id: 999_999_i64.into(),
                     text: "ghost".into(),
                 }, None)
                 .unwrap(),
@@ -2571,11 +2773,11 @@ mod tests {
         assert!(is_err, "unknown task must be refused");
 
         // Same rule the subtask writes follow: a trashed task takes no writes.
-        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        extract(&agent.delete_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let (is_err, out) = extract(
             &agent
                 .log_progress_as(LogProgressParams {
-                    task_id: id,
+                    task_id: id.into(),
                     text: "still going".into(),
                 }, None)
                 .unwrap(),
@@ -2608,7 +2810,7 @@ mod tests {
             let (is_err, out) = extract(
                 &agent
                     .add_subtask_as(AddSubtaskParams {
-                        task_id,
+                        task_id: task_id.into(),
                         title: title.into(),
                     }, None)
                     .unwrap(),
@@ -2630,7 +2832,7 @@ mod tests {
         assert_eq!(out["progress"]["total"], 3);
 
         // Order is insertion order, and the tick is visible to the next reader.
-        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id: task_id })).unwrap());
+        let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: task_id.into() })).unwrap());
         let subs = full["subtasks"].as_array().unwrap();
         assert_eq!(subs.len(), 3);
         assert_eq!(subs[0]["title"], "write test");
@@ -2657,7 +2859,7 @@ mod tests {
         assert_eq!(out["progress"]["done"], 0);
 
         agent
-            .delete_task(Parameters(IdParams { id: task_id }))
+            .delete_task(Parameters(TaskIdParams { id: task_id.into() }))
             .unwrap();
         let (is_err, _) = extract(
             &agent
@@ -2861,7 +3063,7 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
-                    id,
+                    id: id.into(),
                     title: None,
                     notes: None,
                     status: Some(status.into()),
@@ -2888,7 +3090,7 @@ mod tests {
         let c = new_task(&agent, "c");
 
         for id in [a, b, c] {
-            let (is_err, v) = extract(&agent.complete_task_as(IdParams { id }, None).unwrap());
+            let (is_err, v) = extract(&agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap());
             assert!(!is_err, "{v}");
         }
 
@@ -2908,7 +3110,7 @@ mod tests {
         let agent = test_agent();
         let ids: Vec<i64> = (0..5).map(|i| new_task(&agent, &format!("t{i}"))).collect();
         for id in &ids[..4] {
-            agent.complete_task_as(IdParams { id: *id }, None).unwrap();
+            agent.complete_task_as(TaskIdParams { id: (*id).into() }, None).unwrap();
         }
 
         let before: Vec<(i64, i64)> = {
@@ -2924,7 +3126,7 @@ mod tests {
             v
         };
 
-        agent.complete_task_as(IdParams { id: ids[4] }, None).unwrap();
+        agent.complete_task_as(TaskIdParams { id: ids[4].into() }, None).unwrap();
 
         let conn = agent.db.lock().unwrap();
         for (id, pos) in before {
@@ -2983,7 +3185,7 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
-                    id: inbox_task,
+                    id: inbox_task.into(),
                     title: None,
                     notes: None,
                     status: None,
@@ -3017,7 +3219,7 @@ mod tests {
         };
         agent
             .update_task_as(UpdateTaskParams {
-                id: a,
+                id: a.into(),
                 title: Some("renamed".into()),
                 notes: None,
                 status: None,
@@ -3451,7 +3653,7 @@ mod tests {
 
         agent
             .update_task_as(UpdateTaskParams {
-                id,
+                id: id.into(),
                 title: None,
                 notes: None,
                 status: Some("doing".into()),
@@ -3724,7 +3926,7 @@ mod tests {
         extract(
             &agent
                 .log_progress_as(
-                    LogProgressParams { task_id: id, text: "tests green".into() },
+                    LogProgressParams { task_id: id.into(), text: "tests green".into() },
                     Some("claude-code"),
                 )
                 .unwrap(),
@@ -3789,7 +3991,7 @@ mod tests {
         let id = task["id"].as_i64().unwrap();
 
         // Agent completes the task -> "Status changed to Done", actor agent/codex.
-        extract(&agent.complete_task_as(IdParams { id }, Some("codex")).unwrap());
+        extract(&agent.complete_task_as(TaskIdParams { id: id.into() }, Some("codex")).unwrap());
 
         // The UI writer (src/db.ts insertActivity) hard-codes 'user' and no name.
         // Simulate its exact INSERT so both rows share the label but not the actor.
@@ -3855,5 +4057,140 @@ mod tests {
             )
             .unwrap();
         assert_eq!((kind, name), (None, None));
+    }
+
+    // ---- per-project task reference (CODE-N) ----
+
+    fn new_project(agent: &TildoneAgent, name: &str) -> String {
+        let (is_err, p) = extract(
+            &agent
+                .create_project(Parameters(CreateProjectParams { name: name.into(), color: None }))
+                .unwrap(),
+        );
+        assert!(!is_err, "create_project failed: {p}");
+        p["code"].as_str().unwrap().to_string()
+    }
+
+    fn ref_task(agent: &TildoneAgent, project: Option<&str>, title: &str) -> Value {
+        let (is_err, t) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: title.into(),
+                        project: project.map(Into::into),
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        status: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {t}");
+        t
+    }
+
+    #[test]
+    fn task_ref_is_per_project_sequential_and_independent() {
+        let agent = test_agent();
+        let til = new_project(&agent, "Tildone");
+        let zl = new_project(&agent, "Zeno Logistics");
+        assert_eq!(til, "TIL");
+        assert_eq!(zl, "ZL"); // multi-word → initials
+
+        assert_eq!(ref_task(&agent, Some("Tildone"), "a")["ref"], "TIL-1");
+        assert_eq!(ref_task(&agent, Some("Tildone"), "b")["ref"], "TIL-2");
+        // A second project counts from its own 1, not continuing TIL's sequence.
+        assert_eq!(ref_task(&agent, Some("Zeno Logistics"), "c")["ref"], "ZL-1");
+        assert_eq!(ref_task(&agent, Some("Tildone"), "d")["ref"], "TIL-3");
+    }
+
+    #[test]
+    fn inbox_task_ref_uses_inbox_code() {
+        let agent = test_agent();
+        assert_eq!(ref_task(&agent, None, "loose")["ref"], "INBOX-1");
+        assert_eq!(ref_task(&agent, None, "loose 2")["ref"], "INBOX-2");
+    }
+
+    #[test]
+    fn task_resolves_by_ref_and_by_numeric_id() {
+        let agent = test_agent();
+        new_project(&agent, "Tildone");
+        let created = ref_task(&agent, Some("Tildone"), "resolve me");
+        let id = created["id"].as_i64().unwrap();
+        assert_eq!(created["ref"], "TIL-1");
+
+        // By the CODE-N ref (case-insensitive).
+        let (err_ref, by_ref) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: TaskRef::Ref("til-1".into()) })).unwrap());
+        assert!(!err_ref, "get_task by ref errored: {by_ref}");
+        assert_eq!(by_ref["id"].as_i64().unwrap(), id);
+
+        // By the raw numeric id (back-compat).
+        let (err_id, by_id) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert!(!err_id, "get_task by id errored: {by_id}");
+        assert_eq!(by_id["ref"], "TIL-1");
+
+        // An unknown ref is a clean error, not a panic or wrong task.
+        let (missing, msg) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: TaskRef::Ref("TIL-999".into()) })).unwrap());
+        assert!(missing, "expected error for unknown ref, got {msg}");
+    }
+
+    #[test]
+    fn trashed_number_is_not_reused_within_a_code() {
+        let agent = test_agent();
+        new_project(&agent, "Tildone");
+        let _a = ref_task(&agent, Some("Tildone"), "a"); // TIL-1
+        let b = ref_task(&agent, Some("Tildone"), "b"); // TIL-2
+        let b_id = b["id"].as_i64().unwrap();
+
+        extract(&agent.delete_task(Parameters(TaskIdParams { id: b_id.into() })).unwrap());
+
+        // The next task must not re-mint TIL-2 even though that row is trashed.
+        assert_eq!(ref_task(&agent, Some("Tildone"), "c")["ref"], "TIL-3");
+    }
+
+    #[test]
+    fn moving_a_task_keeps_its_ref_and_leaves_destination_counter_intact() {
+        let agent = test_agent();
+        new_project(&agent, "Tildone");
+        new_project(&agent, "Zeno Logistics");
+        let a = ref_task(&agent, Some("Tildone"), "born in tildone"); // TIL-1
+        let a_id = a["id"].as_i64().unwrap();
+        assert_eq!(ref_task(&agent, Some("Zeno Logistics"), "z1")["ref"], "ZL-1");
+
+        // Move TIL-1 into the Zeno project.
+        let (moved_err, _moved) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: a_id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: Some("Zeno Logistics".into()),
+                        tags: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!moved_err);
+
+        // Ref stays frozen at its birth code, and still resolves.
+        let (_e, after) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: TaskRef::Ref("TIL-1".into()) })).unwrap());
+        assert_eq!(after["id"].as_i64().unwrap(), a_id);
+        assert_eq!(after["ref"], "TIL-1");
+
+        // The destination's counter is owned by its code, unaffected by the move:
+        // the next Zeno task is ZL-2 (not skipped, not colliding with the moved-in task).
+        assert_eq!(ref_task(&agent, Some("Zeno Logistics"), "z2")["ref"], "ZL-2");
     }
 }
