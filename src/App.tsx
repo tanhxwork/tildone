@@ -64,9 +64,15 @@ function App() {
       // Never swallow this. The Rust side returns a precise reason (e.g. the port
       // is already taken), and discarding it is what let the board sit silently
       // dead while Settings still reported "on" — an agent has no way to notice.
-      invoke("agent_server_start").catch((err) => {
-        console.error("tildone: MCP server failed to start:", err);
-      });
+      invoke("agent_server_start")
+        // The notify flag lives in the Rust process (defaults on); push the persisted
+        // preference once the server is up so a muted setting survives a restart.
+        .then(() =>
+          invoke("agent_set_notify", { enabled: useSettings.getState().agentNotify }),
+        )
+        .catch((err) => {
+          console.error("tildone: MCP server failed to start:", err);
+        });
     }
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();

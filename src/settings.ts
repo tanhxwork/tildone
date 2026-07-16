@@ -8,6 +8,9 @@ interface SettingsState {
   weekStart: WeekStart;
   defaultProjectId: number | null;
   agentServer: boolean;
+  /** Raise a native notification when an agent completes / blocks / needs-review a
+   * task. Default on. Only meaningful while agentServer is on. */
+  agentNotify: boolean;
   tagsCollapsed: boolean;
   settingsOpen: boolean;
 
@@ -15,6 +18,7 @@ interface SettingsState {
   setWeekStart: (weekStart: WeekStart) => void;
   setDefaultProjectId: (id: number | null) => void;
   setAgentServer: (enabled: boolean) => void;
+  setAgentNotify: (enabled: boolean) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
   openSettings: () => void;
   closeSettings: () => void;
@@ -24,13 +28,14 @@ const STORAGE_KEY = "tildone-settings";
 
 function loadPersisted(): Pick<
   SettingsState,
-  "theme" | "weekStart" | "defaultProjectId" | "agentServer" | "tagsCollapsed"
+  "theme" | "weekStart" | "defaultProjectId" | "agentServer" | "agentNotify" | "tagsCollapsed"
 > {
   const defaults = {
     theme: "auto" as Theme,
     weekStart: "monday" as WeekStart,
     defaultProjectId: null,
     agentServer: false,
+    agentNotify: true,
     tagsCollapsed: false,
   };
   try {
@@ -45,6 +50,8 @@ function loadPersisted(): Pick<
       defaultProjectId:
         typeof parsed.defaultProjectId === "number" ? parsed.defaultProjectId : null,
       agentServer: parsed.agentServer === true,
+      // Default on: absent (older settings) or any non-false value means notify.
+      agentNotify: parsed.agentNotify !== false,
       tagsCollapsed: parsed.tagsCollapsed === true,
     };
   } catch {
@@ -60,6 +67,7 @@ function persist(state: SettingsState) {
       weekStart: state.weekStart,
       defaultProjectId: state.defaultProjectId,
       agentServer: state.agentServer,
+      agentNotify: state.agentNotify,
       tagsCollapsed: state.tagsCollapsed,
     }),
   );
@@ -84,6 +92,10 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   },
   setAgentServer: (agentServer) => {
     set({ agentServer });
+    persist(get());
+  },
+  setAgentNotify: (agentNotify) => {
+    set({ agentNotify });
     persist(get());
   },
   setTagsCollapsed: (tagsCollapsed) => {

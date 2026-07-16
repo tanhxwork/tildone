@@ -171,6 +171,12 @@ Writes return a **receipt, not the row**: `{id, title, status}` (plus
 — that doubled the cost of every update. Call `get_task` when you genuinely need
 the full task after a write. Subtask writes also return `progress: {done, total}`.
 
+**Three of your writes reach the user directly**, as a native notification (if they
+have them on): completing a task, tagging one `blocked`, and tagging one
+`needs-review` — the moments you need a human and they may not be watching the board.
+Only the *transition* fires, so re-tagging an already-blocked task is silent, and
+only *your* writes do — the user's own drag to Done never pings them.
+
 ### Examples
 
 ```jsonc

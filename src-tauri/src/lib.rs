@@ -117,6 +117,7 @@ pub fn run() {
             agent::agent_server_stop,
             agent::agent_server_status,
             agent::agent_server_endpoint,
+            agent::agent_set_notify,
             icons::discover_project_icon,
         ])
         .build(tauri::generate_context!())
