@@ -53,6 +53,13 @@ const COLOR_CHOICES: [&str; 8] = [
 #[derive(Default)]
 pub struct AgentServer(Mutex<Option<(CancellationToken, String)>>);
 
+/// Holds the menu-bar tray icon while the agent server is running. Dropping the
+/// `TrayIcon` un-installs it from the menu bar, so `agent_server_stop` just clears
+/// this. The tray is the only way back to the window once a close has hidden it,
+/// so it lives exactly as long as the server does.
+#[derive(Default)]
+pub struct TrayHandle(Mutex<Option<tauri::tray::TrayIcon>>);
+
 type Db = Arc<Mutex<Connection>>;
 
 /// Called after every successful write so the app UI can refresh.
@@ -1807,14 +1814,28 @@ pub async fn agent_server_start(
     });
 
     *state.0.lock().unwrap() = Some((ct, endpoint.clone()));
+
+    // Background mode: while the server is up, closing the window hides it instead
+    // of quitting, so the tray becomes the way back to the window and to Quit. A
+    // tray build failure must not fail the server (the board is the point), but it
+    // does mean a later close would hide with no way back — logged, not fatal.
+    if let Err(e) = install_tray(&app, port) {
+        eprintln!("tildone: could not install the menu-bar tray: {e}");
+    }
+
     Ok(endpoint)
 }
 
 #[tauri::command]
-pub fn agent_server_stop(state: State<'_, AgentServer>) {
+pub fn agent_server_stop(app: AppHandle, state: State<'_, AgentServer>) {
     if let Some((ct, _)) = state.0.lock().unwrap().take() {
         ct.cancel();
     }
+    // Leaving background mode: drop the tray and make sure the window is visible,
+    // so turning Agent access off while the window is hidden can't orphan the app
+    // with no window and no tray.
+    remove_tray(&app);
+    show_main_window(&app);
 }
 
 #[tauri::command]
@@ -1846,6 +1867,120 @@ pub fn shutdown(app: &AppHandle) {
         if let Some((ct, _)) = server.0.lock().unwrap().take() {
             ct.cancel();
         }
+    }
+}
+
+/// True while the agent MCP server is bound and serving. The window-close handler
+/// reads this to decide "hide to the tray" (server up) vs "quit" (server down).
+pub fn server_running(app: &AppHandle) -> bool {
+    app.try_state::<AgentServer>()
+        .and_then(|s| s.0.lock().unwrap().as_ref().map(|(ct, _)| !ct.is_cancelled()))
+        .unwrap_or(false)
+}
+
+/// Show and focus the main window — from the tray, a Dock re-open, or leaving
+/// background mode.
+pub fn show_main_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Fire the "still running in the menu bar" hint exactly once, ever. Guarded by a
+/// marker file in the app config dir: the user is told the first time a close
+/// hides the window to the tray, and never nagged again. If the marker can't be
+/// written we stay silent rather than risk hinting on every close.
+pub fn maybe_first_hide_hint(app: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let Ok(dir) = app.path().app_config_dir() else {
+        return;
+    };
+    let marker = dir.join(".bg-hint-shown");
+    if marker.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    if std::fs::write(&marker, b"1").is_err() {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title("Tildone is still running")
+        .body("The board stays live in the menu bar. Quit Tildone from there.")
+        .show();
+}
+
+/// Build the menu-bar tray (Show / status / Quit) and keep it alive in `TrayHandle`.
+/// Called when the agent server starts. Idempotent: a second start (e.g. the window
+/// re-opening and re-invoking `agent_server_start`) leaves the existing tray in place.
+fn install_tray(app: &AppHandle, port: u16) -> Result<(), String> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let Some(tray_state) = app.try_state::<TrayHandle>() else {
+        return Err("tray state missing".into());
+    };
+    if tray_state.0.lock().unwrap().is_some() {
+        return Ok(());
+    }
+
+    let show = MenuItemBuilder::with_id("show", "Show Tildone")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    // A disabled line that names the live endpoint — the port is only known after
+    // bind, so it is passed in, never assumed to be AGENT_PORT.
+    let status = MenuItemBuilder::with_id("status", format!("Server · :{port}"))
+        .enabled(false)
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit Tildone")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show, &status, &quit])
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or("no default window icon to use for the tray")?;
+
+    let tray = TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("Tildone")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+
+    *tray_state.0.lock().unwrap() = Some(tray);
+    Ok(())
+}
+
+/// Remove the tray icon. Taking it out of the `Mutex<Option<..>>` drops it, which
+/// un-installs it from the menu bar.
+fn remove_tray(app: &AppHandle) {
+    if let Some(tray_state) = app.try_state::<TrayHandle>() {
+        let _ = tray_state.0.lock().unwrap().take();
     }
 }
 

@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 
+use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -65,14 +66,31 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ai::EngineProcess::default())
         .manage(agent::AgentServer::default())
+        .manage(agent::TrayHandle::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:tildone.db", migrations)
                 .build(),
         )
+        .on_window_event(|window, event| {
+            // Background mode: while the agent server is running, closing the
+            // window hides it to the tray instead of quitting, so a parked
+            // list_changes agent keeps serving. When the server is off, close
+            // behaves as it always has (quit). We intercept window *close* only,
+            // never app *exit* — so Cmd+Q and the tray's Quit still terminate.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if agent::server_running(app) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    agent::maybe_first_hide_hint(app);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             ai::ai_probe,
             ai::ai_identify,
@@ -89,10 +107,16 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit => {
                 ai::kill_engine(app);
                 agent::shutdown(app);
             }
+            // macOS: clicking the Dock icon while the window is hidden in the tray
+            // asks the app to reopen. Bring the window back rather than doing nothing.
+            tauri::RunEvent::Reopen { .. } => {
+                agent::show_main_window(app);
+            }
+            _ => {}
         });
 }
