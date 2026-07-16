@@ -8,12 +8,14 @@ interface SettingsState {
   weekStart: WeekStart;
   defaultProjectId: number | null;
   agentServer: boolean;
+  tagsCollapsed: boolean;
   settingsOpen: boolean;
 
   setTheme: (theme: Theme) => void;
   setWeekStart: (weekStart: WeekStart) => void;
   setDefaultProjectId: (id: number | null) => void;
   setAgentServer: (enabled: boolean) => void;
+  setTagsCollapsed: (collapsed: boolean) => void;
   openSettings: () => void;
   closeSettings: () => void;
 }
@@ -22,13 +24,14 @@ const STORAGE_KEY = "tildone-settings";
 
 function loadPersisted(): Pick<
   SettingsState,
-  "theme" | "weekStart" | "defaultProjectId" | "agentServer"
+  "theme" | "weekStart" | "defaultProjectId" | "agentServer" | "tagsCollapsed"
 > {
   const defaults = {
     theme: "auto" as Theme,
     weekStart: "monday" as WeekStart,
     defaultProjectId: null,
     agentServer: false,
+    tagsCollapsed: false,
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -42,6 +45,7 @@ function loadPersisted(): Pick<
       defaultProjectId:
         typeof parsed.defaultProjectId === "number" ? parsed.defaultProjectId : null,
       agentServer: parsed.agentServer === true,
+      tagsCollapsed: parsed.tagsCollapsed === true,
     };
   } catch {
     return defaults;
@@ -56,6 +60,7 @@ function persist(state: SettingsState) {
       weekStart: state.weekStart,
       defaultProjectId: state.defaultProjectId,
       agentServer: state.agentServer,
+      tagsCollapsed: state.tagsCollapsed,
     }),
   );
 }
@@ -79,6 +84,10 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   },
   setAgentServer: (agentServer) => {
     set({ agentServer });
+    persist(get());
+  },
+  setTagsCollapsed: (tagsCollapsed) => {
+    set({ tagsCollapsed });
     persist(get());
   },
   openSettings: () => set({ settingsOpen: true }),
