@@ -1,7 +1,3 @@
-/* Tildone brand tokens — source of truth for the logo/icon assets in this folder.
-   The app's UI theme lives in src/App.css and already resolves to these values for
-   indigo/ink/muted/faint; it additionally carries a dark theme, which the brand
-   kit (light-only) does not define. Keep the two in sync by hand. */
 :root{
   /* Brand */
   --tld-indigo: #5645d4;

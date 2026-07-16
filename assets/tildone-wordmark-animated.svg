@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="96" viewBox="0 0 300 96" fill="none">
+
+<text class="wt" x="6" y="66">tıldone</text>
+<g class="til" transform="translate(18,3)">
+  <path class="tilp" d="M4,11 C10,3 16,3 21,9 C25,14 31,14 36,7" stroke="#5645d4" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" pathLength="1"></path>
+</g>
+</svg>
