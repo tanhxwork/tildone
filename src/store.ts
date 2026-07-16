@@ -274,7 +274,7 @@ export const useStore = create<Store>()((set, get) => ({
     }
     // Changing group without a fresh slot would carry the old position into the new
     // group and collide with whatever already sits there, dropping the column back
-    // to sorting by id. A drag doesn't come through here — it calls applyPositions
+    // to sorting by id. A drag doesn't come through here — it calls applyDrag
     // with positions of its own — so recomputing whenever the group moved is safe.
     const destStatus = patch.status ?? current.status;
     const destProject =
