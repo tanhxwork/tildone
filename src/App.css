@@ -3026,6 +3026,155 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
+/* Rendered-markdown view of notes (click to edit swaps in the textarea) */
+.detail-notes-rendered,
+.detail-notes-empty {
+  cursor: text;
+}
+
+.detail-notes-rendered:focus,
+.detail-notes-empty:focus {
+  outline: none;
+}
+
+.detail-notes-empty {
+  color: var(--text-faint);
+}
+
+.detail-notes-rendered > :first-child {
+  margin-top: 0;
+}
+
+.detail-notes-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-notes-rendered h1,
+.detail-notes-rendered h2,
+.detail-notes-rendered h3,
+.detail-notes-rendered h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 16px 0 4px;
+  color: var(--text);
+}
+
+.detail-notes-rendered h1 {
+  font-size: 18px;
+}
+
+.detail-notes-rendered h2 {
+  font-size: 15.5px;
+}
+
+.detail-notes-rendered h3 {
+  font-size: 14px;
+}
+
+.detail-notes-rendered h4 {
+  font-size: 13.5px;
+}
+
+.detail-notes-rendered p {
+  margin: 6px 0;
+}
+
+.detail-notes-rendered ul,
+.detail-notes-rendered ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.detail-notes-rendered li {
+  margin: 2px 0;
+}
+
+.detail-notes-rendered li::marker {
+  color: var(--text-faint);
+}
+
+.detail-notes-rendered strong {
+  font-weight: 600;
+}
+
+.detail-notes-rendered a {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.detail-notes-rendered a:hover {
+  text-decoration: underline;
+}
+
+.md-task-ref {
+  font-weight: 500;
+}
+
+.detail-notes-rendered code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--bg-hover);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.detail-notes-rendered pre {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.detail-notes-rendered pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+}
+
+.detail-notes-rendered blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.detail-notes-rendered hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+
+.detail-notes-rendered table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+}
+
+.detail-notes-rendered th,
+.detail-notes-rendered td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.detail-notes-rendered th {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+/* remark-gfm task-list items render a checkbox — drop the bullet */
+.detail-notes-rendered li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.detail-notes-rendered input[type="checkbox"] {
+  margin-right: 6px;
+}
+
 .detail-section {
   border-top: 1px solid var(--border);
   padding-top: 12px;

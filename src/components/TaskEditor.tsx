@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
@@ -24,6 +24,7 @@ import {
   LinkKindIcon,
 } from "./Icons";
 import { agentIdentity } from "../agents";
+import { Markdown } from "./Markdown";
 
 export function TaskEditor() {
   const {
@@ -53,6 +54,8 @@ export function TaskEditor() {
 
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  const [editingNotes, setEditingNotes] = useState(false);
+  const notesRef = useRef<HTMLTextAreaElement>(null);
   const [tagInput, setTagInput] = useState("");
   const [subtaskInput, setSubtaskInput] = useState("");
   const [linkInput, setLinkInput] = useState("");
@@ -69,10 +72,16 @@ export function TaskEditor() {
       setLinkInput("");
       setConfirmDelete(false);
       setAiError("");
+      setEditingNotes(false);
     }
     // Re-sync local fields only when switching to a different task.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.id]);
+
+  // Focus the notes textarea the moment it swaps in for the rendered view.
+  useEffect(() => {
+    if (editingNotes) notesRef.current?.focus();
+  }, [editingNotes]);
 
   if (!task) return null;
 
@@ -319,15 +328,52 @@ export function TaskEditor() {
             <span className="detail-created">{createdLabel}</span>
           </div>
 
-          <textarea
-            className="detail-notes"
-            value={notes}
-            placeholder="Add notes…"
-            aria-label="Task notes"
-            rows={Math.max(3, notes.split("\n").length + 1)}
-            onChange={(e) => setNotes(e.target.value)}
-            onBlur={commitNotes}
-          />
+          {editingNotes ? (
+            <textarea
+              ref={notesRef}
+              className="detail-notes"
+              value={notes}
+              placeholder="Add notes…"
+              aria-label="Task notes"
+              rows={Math.max(3, notes.split("\n").length + 1)}
+              onChange={(e) => setNotes(e.target.value)}
+              onBlur={() => {
+                commitNotes();
+                setEditingNotes(false);
+              }}
+            />
+          ) : notes.trim() ? (
+            <div
+              className="detail-notes detail-notes-rendered"
+              tabIndex={0}
+              aria-label="Task notes, click to edit"
+              onClick={() => setEditingNotes(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  setEditingNotes(true);
+                }
+              }}
+            >
+              <Markdown>{notes}</Markdown>
+            </div>
+          ) : (
+            <div
+              className="detail-notes detail-notes-empty"
+              role="button"
+              tabIndex={0}
+              aria-label="Add notes"
+              onClick={() => setEditingNotes(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  setEditingNotes(true);
+                }
+              }}
+            >
+              Add notes…
+            </div>
+          )}
 
           <section className="detail-section">
             <h3 className="detail-section-title">
@@ -454,7 +500,9 @@ export function TaskEditor() {
                           <agent.Mark size={12} />
                         </span>
                       )}
-                      <span className="detail-activity-label">{entry.label}</span>
+                      <span className="detail-activity-label">
+                        <Markdown inline>{entry.label}</Markdown>
+                      </span>
                     </div>
                   );
                 })}
