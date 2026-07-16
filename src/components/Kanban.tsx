@@ -176,6 +176,10 @@ export function Kanban() {
   }
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;
+  // Keep the drag overlay in the same form as the resting card: today's done
+  // cards (the first `doneMeta.today` in the Done column) drag as full, not compact.
+  const activeFull =
+    activeId !== null && columns.done.slice(0, doneMeta.today).includes(activeId);
 
   return (
     <DndContext
@@ -203,7 +207,7 @@ export function Kanban() {
         ))}
       </div>
       <DragOverlay>
-        {activeTask ? <CardContent task={activeTask} overlay /> : null}
+        {activeTask ? <CardContent task={activeTask} overlay full={activeFull} /> : null}
       </DragOverlay>
     </DndContext>
   );
@@ -233,12 +237,15 @@ function Column({
   const { setNodeRef } = useDroppable({ id: status });
   const isDone = status === "done";
 
-  const card = (id: number) => {
+  // `full` keeps a done card in its full form instead of collapsing to one line —
+  // used for today's completions, which are still fresh enough to want the detail.
+  const card = (id: number, full = false) => {
     const task = taskById.get(id);
     return task ? (
       <Card
         key={id}
         task={task}
+        full={full}
         onOpen={onOpen}
         flourishKey={celebrate?.id === id ? celebrate.key : null}
         onFlourishDone={onFlourishDone}
@@ -263,17 +270,17 @@ function Column({
           {isDone ? (
             <>
               {todayCount > 0 && <div className="col-divider">Today</div>}
-              {ids.slice(0, todayCount).map(card)}
+              {ids.slice(0, todayCount).map((id) => card(id, true))}
               {hasEarlier && (
                 <div className="col-divider">
                   Earlier
                   <span className="backfill-tag">fills to {DONE_WINDOW_LIMIT}</span>
                 </div>
               )}
-              {ids.slice(todayCount).map(card)}
+              {ids.slice(todayCount).map((id) => card(id))}
             </>
           ) : (
-            ids.map(card)
+            ids.map((id) => card(id))
           )}
           {ids.length === 0 && (
             <div className="column-empty">
@@ -293,11 +300,13 @@ function Column({
 
 function Card({
   task,
+  full,
   onOpen,
   flourishKey,
   onFlourishDone,
 }: {
   task: Task;
+  full?: boolean;
   onOpen: (id: number) => void;
   flourishKey: number | null;
   onFlourishDone: () => void;
@@ -317,7 +326,7 @@ function Card({
       {...listeners}
       onClick={() => onOpen(task.id)}
     >
-      <CardContent task={task} flourishKey={flourishKey} onFlourishDone={onFlourishDone} />
+      <CardContent task={task} full={full} flourishKey={flourishKey} onFlourishDone={onFlourishDone} />
     </div>
   );
 }
@@ -340,11 +349,13 @@ function cardLinkShort(link: TaskLink): string | null {
 function CardContent({
   task,
   overlay,
+  full,
   flourishKey = null,
   onFlourishDone,
 }: {
   task: Task;
   overlay?: boolean;
+  full?: boolean;
   flourishKey?: number | null;
   onFlourishDone?: () => void;
 }) {
@@ -359,8 +370,10 @@ function CardContent({
 
   // A finished card is history, not work in flight: collapse it to one line —
   // check, strikethrough title, project dot, completion time. The full meta
-  // (subtask bar, due date, priority, tags) only matters while a task is live.
-  if (task.status === "done") {
+  // (subtask bar, due date, priority, tags) only matters while a task is live —
+  // except for today's completions (`full`), which stay full so the day's work
+  // keeps its detail; older done cards still collapse.
+  if (task.status === "done" && !full) {
     const project =
       task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
     const time = task.completed_at ? format(new Date(task.completed_at), "h:mm a") : "";
@@ -385,10 +398,14 @@ function CardContent({
     );
   }
 
+  // Today's done cards reach here (`full`): the full layout, but with the `done`
+  // class so the title strikes through and the subtask bar goes green — the same
+  // done vocabulary as the compact card, just not collapsed.
   return (
     <div
       className={[
         "board-card",
+        task.status === "done" ? "done" : "",
         overlay ? "overlay" : "",
         state ? `state-${state}` : "",
       ]
