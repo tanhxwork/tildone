@@ -18,25 +18,38 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { format } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { visibleTasks } from "../selectors";
+import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Status, Task } from "../types";
 import { STATUSES, STATUS_LABELS } from "../types";
+import { todayStr } from "../utils/dates";
 import { CompletionFlourish } from "./Brand";
+import { IconCheck } from "./Icons";
 import { TaskMeta, reservedState } from "./TaskRow";
 
 type Columns = Record<Status, number[]>;
 
-function computeColumns(tasks: Task[]): Columns {
+interface BoardModel {
+  columns: Columns;
+  /** Where the "Earlier" divider falls inside the Done column. */
+  doneTodayCount: number;
+  /** Done tasks not on the board — the count behind the "in Completed" link. */
+  doneHidden: number;
+}
+
+const byPosition = (a: Task, b: Task) => a.position - b.position || a.id - b.id;
+
+function computeColumns(tasks: Task[], today: string): BoardModel {
   const columns: Columns = { todo: [], doing: [], done: [] };
-  for (const status of STATUSES) {
-    columns[status] = tasks
-      .filter((t) => t.status === status)
-      .sort((a, b) => a.position - b.position || a.id - b.id)
-      .map((t) => t.id);
-  }
-  return columns;
+  columns.todo = tasks.filter((t) => t.status === "todo").sort(byPosition).map((t) => t.id);
+  columns.doing = tasks.filter((t) => t.status === "doing").sort(byPosition).map((t) => t.id);
+  // Done is not the whole pile: it is the recent window (today + backfill to the
+  // limit), newest first. The rest lives in Completed.
+  const w = doneBoardWindow(tasks.filter((t) => t.status === "done"), today);
+  columns.done = [...w.today, ...w.earlier].map((t) => t.id);
+  return { columns, doneTodayCount: w.today.length, doneHidden: w.hiddenCount };
 }
 
 export function Kanban() {
@@ -48,6 +61,7 @@ export function Kanban() {
     priorityFilter,
     applyDrag,
     openEditor,
+    select,
   } = useStore();
 
   // The board always shows the Done column, independent of the list-view toggle.
@@ -65,6 +79,10 @@ export function Kanban() {
   const taskById = useMemo(() => new Map(visible.map((t) => [t.id, t])), [visible]);
 
   const [columns, setColumns] = useState<Columns>({ todo: [], doing: [], done: [] });
+  const [doneMeta, setDoneMeta] = useState<{ today: number; hidden: number }>({
+    today: 0,
+    hidden: 0,
+  });
   const [activeId, setActiveId] = useState<number | null>(null);
   // A card that just landed in Done, to overlay the wave-to-check flourish on.
   // `key` bumps per completion so re-completing the same card replays it.
@@ -74,7 +92,9 @@ export function Kanban() {
 
   useEffect(() => {
     if (activeId === null) {
-      setColumns(computeColumns(visible));
+      const model = computeColumns(visible, todayStr());
+      setColumns(model.columns);
+      setDoneMeta({ today: model.doneTodayCount, hidden: model.doneHidden });
     }
   }, [visible, activeId]);
 
@@ -168,6 +188,9 @@ export function Kanban() {
             onOpen={openEditor}
             celebrate={celebrate}
             onFlourishDone={() => setCelebrate(null)}
+            doneTodayCount={doneMeta.today}
+            doneHidden={doneMeta.hidden}
+            onSeeAll={() => select({ type: "completed" })}
           />
         ))}
       </div>
@@ -185,6 +208,9 @@ function Column({
   onOpen,
   celebrate,
   onFlourishDone,
+  doneTodayCount,
+  doneHidden,
+  onSeeAll,
 }: {
   status: Status;
   ids: number[];
@@ -192,8 +218,30 @@ function Column({
   onOpen: (id: number) => void;
   celebrate: { id: number; key: number } | null;
   onFlourishDone: () => void;
+  doneTodayCount: number;
+  doneHidden: number;
+  onSeeAll: () => void;
 }) {
   const { setNodeRef } = useDroppable({ id: status });
+  const isDone = status === "done";
+
+  const card = (id: number) => {
+    const task = taskById.get(id);
+    return task ? (
+      <Card
+        key={id}
+        task={task}
+        onOpen={onOpen}
+        flourishKey={celebrate?.id === id ? celebrate.key : null}
+        onFlourishDone={onFlourishDone}
+      />
+    ) : null;
+  };
+
+  // The Done column groups its window into Today / Earlier; the split index is where
+  // the backfilled older cards begin. Other columns render a flat list.
+  const todayCount = Math.min(doneTodayCount, ids.length);
+  const hasEarlier = isDone && ids.length > todayCount;
 
   return (
     <div className="board-column">
@@ -204,21 +252,33 @@ function Column({
       </div>
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
         <div ref={setNodeRef} className="column-body">
-          {ids.map((id) => {
-            const task = taskById.get(id);
-            return task ? (
-              <Card
-                key={id}
-                task={task}
-                onOpen={onOpen}
-                flourishKey={celebrate?.id === id ? celebrate.key : null}
-                onFlourishDone={onFlourishDone}
-              />
-            ) : null;
-          })}
-          {ids.length === 0 && <div className="column-empty">Drop tasks here</div>}
+          {isDone ? (
+            <>
+              {todayCount > 0 && <div className="col-divider">Today</div>}
+              {ids.slice(0, todayCount).map(card)}
+              {hasEarlier && (
+                <div className="col-divider">
+                  Earlier
+                  <span className="backfill-tag">fills to {DONE_WINDOW_LIMIT}</span>
+                </div>
+              )}
+              {ids.slice(todayCount).map(card)}
+            </>
+          ) : (
+            ids.map(card)
+          )}
+          {ids.length === 0 && (
+            <div className="column-empty">
+              {isDone ? "Nothing finished yet" : "Drop tasks here"}
+            </div>
+          )}
         </div>
       </SortableContext>
+      {isDone && doneHidden > 0 && (
+        <button type="button" className="see-all" onClick={onSeeAll}>
+          {doneHidden} more in Completed →
+        </button>
+      )}
     </div>
   );
 }
@@ -267,16 +327,44 @@ function CardContent({
 }) {
   const subtasks = useStore((s) => s.subtasks);
   const tags = useStore((s) => s.tags);
+  const projects = useStore((s) => s.projects);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
+
+  // A finished card is history, not work in flight: collapse it to one line —
+  // check, strikethrough title, project dot, completion time. The full meta
+  // (subtask bar, due date, priority, tags) only matters while a task is live.
+  if (task.status === "done") {
+    const project =
+      task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
+    const time = task.completed_at ? format(new Date(task.completed_at), "h:mm a") : "";
+    return (
+      <div className={["board-card", "done", "compact", overlay ? "overlay" : ""].filter(Boolean).join(" ")}>
+        <span className="done-check" aria-hidden="true">
+          <IconCheck size={10} />
+        </span>
+        <span className="done-title">
+          <span className="card-id" aria-hidden="true">#{task.id}</span> {task.title}
+        </span>
+        <span className="done-meta">
+          {project && (
+            <span className="project-label" title={project.name}>
+              <span className="project-dot" style={{ background: project.color }} />
+            </span>
+          )}
+          {time && <span className="done-time">{time}</span>}
+        </span>
+        {flourishKey !== null && <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />}
+      </div>
+    );
+  }
 
   return (
     <div
       className={[
         "board-card",
         overlay ? "overlay" : "",
-        task.status === "done" ? "done" : "",
         state ? `state-${state}` : "",
       ]
         .filter(Boolean)

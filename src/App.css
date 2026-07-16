@@ -997,6 +997,112 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+/* Compact Done cards. A finished card is history, not work in flight, so it
+   collapses to one line: check, strikethrough title, project dot, completion time.
+   The Done column is a recent window (today + backfill to a limit); the rest lives
+   in Completed. */
+.board-card.done.compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.done-check {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.board-card.done .done-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.done-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.done-time {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Today / Earlier group headers inside the Done column. */
+.col-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.col-divider:first-child {
+  padding-top: 2px;
+}
+
+.col-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.backfill-tag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--bg-active);
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+/* The door from the windowed board column to the full Completed history. */
+.see-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.see-all:hover {
+  background: var(--bg-hover);
+}
+
 /* ---------- Editor panel ---------- */
 
 .editor {

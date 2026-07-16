@@ -42,6 +42,12 @@ pub fn run() {
             sql: include_str!("../migrations/006_repair_positions.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 7,
+            description: "archived_at",
+            sql: include_str!("../migrations/007_archived_at.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
