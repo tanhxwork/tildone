@@ -11,8 +11,9 @@ import type {
   ViewMode,
 } from "./types";
 import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
+import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
-import { dueLabel, toIsoUtc } from "./utils/dates";
+import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
 
 export interface ImportedTask {
   title: string;
@@ -79,6 +80,9 @@ interface Store {
   restoreTask: (id: number) => Promise<void>;
   destroyTask: (id: number) => Promise<void>;
   emptyTrash: () => Promise<void>;
+  /** Drop every not-today done card out of the board's Done window now, ahead of
+   * the natural next-day rollover. They stay live in Completed. */
+  archiveOlderDone: () => Promise<void>;
   applyDrag: (
     activeId: number,
     columns: Record<Status, number[]>,
@@ -260,6 +264,7 @@ export const useStore = create<Store>()((set, get) => ({
       created_at,
       completed_at: null,
       deleted_at: null,
+      archived_at: null,
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -271,6 +276,9 @@ export const useStore = create<Store>()((set, get) => ({
     const full = { ...patch };
     if (patch.status && patch.status !== current.status) {
       full.completed_at = patch.status === "done" ? new Date().toISOString() : null;
+      // Any status change makes the card boardable again: a fresh completion belongs
+      // in the Done window, and leaving Done clears a stale "cleared off board" mark.
+      full.archived_at = null;
     }
     // Changing group without a fresh slot would carry the old position into the new
     // group and collide with whatever already sits there, dropping the column back
@@ -361,6 +369,25 @@ export const useStore = create<Store>()((set, get) => ({
         subtasks: s.subtasks.filter((x) => !trashedIds.has(x.task_id)),
       };
     });
+  },
+
+  archiveOlderDone: async () => {
+    const today = todayStr();
+    const now = new Date().toISOString();
+    const targets = get().tasks.filter(
+      (t) =>
+        t.deleted_at === null &&
+        t.status === "done" &&
+        t.archived_at === null &&
+        t.completed_at !== null &&
+        format(new Date(t.completed_at), "yyyy-MM-dd") !== today,
+    );
+    if (targets.length === 0) return;
+    const ids = new Set(targets.map((t) => t.id));
+    for (const t of targets) await db.updateTask(t.id, { archived_at: now });
+    set((s) => ({
+      tasks: s.tasks.map((t) => (ids.has(t.id) ? { ...t, archived_at: now } : t)),
+    }));
   },
 
   applyDrag: async (activeId, columns) => {
