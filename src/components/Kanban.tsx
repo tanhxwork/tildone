@@ -282,7 +282,9 @@ function CardContent({
         .filter(Boolean)
         .join(" ")}
     >
-      <span className="card-title">{task.title}</span>
+      <span className="card-title">
+        <span className="card-id" aria-hidden="true">#{task.id}</span> {task.title}
+      </span>
       {mine.length > 0 && (
         <span
           className="card-progress"

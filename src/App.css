@@ -936,6 +936,12 @@ textarea:focus-visible,
   overflow-wrap: anywhere;
 }
 
+.card-id {
+  font-weight: 400;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .board-card .task-meta {
   margin-left: 0;
   flex-wrap: wrap;
