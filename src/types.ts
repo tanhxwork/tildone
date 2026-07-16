@@ -17,6 +17,9 @@ export interface Project {
    *  null = auto-guess ~/projects/<name>; "" = icon disabled (colour dot);
    *  "<path>" = use this folder. */
   folder_path: string | null;
+  /** Short unique code for the task reference, e.g. "TIL". Derived from the name
+   * at creation; NULL only on legacy rows the backfill hasn't reached yet. */
+  code: string | null;
 }
 
 /** Result of icon discovery for one project (Rust: discover_project_icon). */
@@ -50,6 +53,13 @@ export interface Task {
    * board's Done window. Cleared when a task leaves Done. Not a delete — the task
    * still shows in Completed. */
   archived_at: string | null;
+  /** Per-code counter (1..N), assigned once at creation and never changed — the
+   * ref stays stable when a task moves to another project. NULL on legacy rows
+   * the backfill hasn't reached yet. */
+  number: number | null;
+  /** Frozen "CODE-N" reference shown on the card and accepted by the MCP tools,
+   * e.g. "TIL-3". Immutable after creation. NULL only pre-backfill. */
+  ref: string | null;
   tag_ids: number[];
 }
 

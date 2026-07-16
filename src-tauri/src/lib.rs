@@ -68,6 +68,12 @@ pub fn run() {
             sql: include_str!("../migrations/010_project_folder.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "add_task_ref",
+            sql: include_str!("../migrations/011_task_ref.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

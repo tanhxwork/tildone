@@ -8,6 +8,7 @@ import {
   STATUS_LABELS,
 } from "../types";
 import { dueLabel, isOverdue } from "../utils/dates";
+import { taskRefLabel } from "../utils/ref";
 import { IconCheck, IconFlag } from "./Icons";
 
 const isReserved = (name: string): name is ReservedTag =>
@@ -114,7 +115,7 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       >
         {done && <IconCheck size={11} />}
       </button>
-      <span className="task-id" aria-hidden="true">#{task.id}</span>
+      <span className="task-id" aria-hidden="true">{taskRefLabel(task)}</span>
       <span className="task-title">{task.title}</span>
       <TaskMeta task={task} showProject={showProject} />
     </div>
