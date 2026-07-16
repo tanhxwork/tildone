@@ -46,7 +46,7 @@ export function Kanban() {
     search,
     activeTagIds,
     priorityFilter,
-    applyPositions,
+    applyDrag,
     openEditor,
   } = useStore();
 
@@ -133,10 +133,6 @@ export function Kanban() {
         }
       }
     }
-    const updates = STATUSES.flatMap((status) =>
-      next[status].map((id, index) => ({ id, status, position: index })),
-    );
-
     // Fire the flourish only on a real completion: the card ended in Done and
     // did not start there.
     const landedId = active.id as number;
@@ -148,7 +144,7 @@ export function Kanban() {
     dragFromStatus.current = null;
 
     setActiveId(null);
-    void applyPositions(updates);
+    void applyDrag(active.id as number, next);
   }
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;

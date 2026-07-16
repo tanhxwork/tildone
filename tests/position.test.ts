@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { Status, Task } from "../src/types";
+import type { Selection, Status, Task } from "../src/types";
+import { computeDragUpdates } from "../src/reorder";
+
+const NOW = "2026-07-16T09:00:00.000Z";
 
 // `position` is an ordinal WITHIN one (project, status) group — never comparable
 // across projects (see the RANK_SQL comment in src-tauri/src/agent.rs).
@@ -167,64 +170,138 @@ describe("patchTask keeps positions distinct within a group", () => {
   });
 });
 
-describe("applyPositions only writes rows that actually changed", () => {
-  beforeEach(() => {
-    updateTask.mockClear();
+// A drag only ever knows the *visible* (filtered) column, but `position` is a group
+// ordinal. Writing the visible index straight through corrupts any group the column
+// does not show in full: cross-project board views, and any single-project view with a
+// filter active. computeDragUpdates reconstructs each full group from the store's task
+// set instead. Pure function → tested directly; the store action applyDrag wraps it.
+const cols = (over: Partial<Record<Status, number[]>>): Record<Status, number[]> => ({
+  todo: [],
+  doing: [],
+  done: [],
+  ...over,
+});
+
+describe("computeDragUpdates — single-group (project / inbox) views", () => {
+  const project: Selection = { type: "project", projectId: 7 };
+
+  it("reorders precisely: dragging card 3 to the top renumbers the group densely", () => {
+    const tasks = [
+      task(1, { project_id: 7, position: 0 }),
+      task(2, { project_id: 7, position: 1 }),
+      task(3, { project_id: 7, position: 2 }),
+    ];
+    // Visible column after the drag: 3 moved to the top.
+    const updates = computeDragUpdates(tasks, project, 3, cols({ todo: [3, 1, 2] }), NOW);
+    const pos = Object.fromEntries(updates.map((u) => [u.id, u.position]));
+    expect(pos).toEqual({ 3: 0, 1: 1, 2: 2 });
   });
 
-  // A drag rewrites the index of every card in the column, but a within-column move
-  // only actually shifts the cards between source and destination. The change-feed
-  // trigger already suppresses no-op feed rows; this suppresses the wasted UPDATE
-  // that would have fired it.
-  it("skips the DB write for cards whose position is unchanged", async () => {
+  // The core task-48 fix: a filter hides some of the group, but the drag must not
+  // strand the hidden cards. Card 5 is hidden (filtered out); dragging 3 above 1 must
+  // keep 5 between them in the full order, not renumber only the visible subset.
+  it("preserves hidden filtered cards when reordering", () => {
+    const tasks = [
+      task(1, { project_id: 7, position: 0 }),
+      task(5, { project_id: 7, position: 1 }), // hidden by a filter
+      task(3, { project_id: 7, position: 2 }),
+    ];
+    // Only cards 1 and 3 are visible; the drag puts 3 above 1.
+    const updates = computeDragUpdates(tasks, project, 3, cols({ todo: [3, 1] }), NOW);
+    const pos = Object.fromEntries(updates.map((u) => [u.id, u.position]));
+    // 3 first, then 1, and hidden 5 keeps its place after 1 — all distinct, dense.
+    expect(pos[3]).toBeLessThan(pos[1]);
+    expect(pos[1]).toBeLessThan(pos[5]);
+    const values = Object.values(pos).sort((a, b) => a - b);
+    expect(values).toEqual([0, 1, 2]); // dense, no duplicates
+  });
+
+  it("sets completed_at when a drag crosses into Done", () => {
+    const tasks = [task(1, { project_id: 7, status: "todo", position: 0 })];
+    const updates = computeDragUpdates(tasks, project, 1, cols({ done: [1] }), NOW);
+    expect(updates[0].status).toBe("done");
+    expect(updates[0].completed_at).toBe(NOW);
+  });
+});
+
+describe("computeDragUpdates — mixed (all / today / upcoming) views", () => {
+  const all: Selection = { type: "all" };
+
+  // The product decision: in a mixed column a drag moves ONLY the dragged card, to the
+  // top or bottom of its OWN project group by which half it was dropped in. Other
+  // projects are never touched — no flattening.
+  it("never repositions another project's cards", () => {
+    const tasks = [
+      task(1, { project_id: 7, position: 0 }),
+      task(2, { project_id: 8, position: 0 }), // different project, also at 0 — legal
+      task(3, { project_id: 7, position: 1 }),
+    ];
+    // Drag card 3 (project 7) around a column that interleaves projects 7 and 8.
+    const updates = computeDragUpdates(tasks, all, 3, cols({ todo: [3, 2, 1] }), NOW);
+    // Only card 3 is written; project 8's card 2 and sibling card 1 are untouched.
+    expect(updates.map((u) => u.id)).toEqual([3]);
+  });
+
+  it("drops to the TOP of its own group when released in the top half", () => {
+    const tasks = [
+      task(1, { project_id: 7, position: 0 }),
+      task(2, { project_id: 7, position: 1 }),
+      task(3, { project_id: 7, position: 2 }),
+    ];
+    // Column [3,1,2]: card 3 at index 0 → top half → top of group (min-1).
+    const updates = computeDragUpdates(tasks, all, 3, cols({ todo: [3, 1, 2] }), NOW);
+    expect(updates).toEqual([
+      { id: 3, status: "todo", position: -1, completed_at: null },
+    ]);
+  });
+
+  it("drops to the BOTTOM of its own group when released in the bottom half", () => {
+    const tasks = [
+      task(1, { project_id: 7, position: 0 }),
+      task(2, { project_id: 7, position: 1 }),
+      task(3, { project_id: 7, position: 2 }),
+    ];
+    // Column [1,2,3]: card 3 at index 2 of 3 → bottom half → bottom of group. Group
+    // members excluding card 3 sit at 0 and 1, so bottom is max+1 = 2.
+    const updates = computeDragUpdates(tasks, all, 3, cols({ todo: [1, 2, 3] }), NOW);
+    expect(updates).toEqual([
+      { id: 3, status: "todo", position: 2, completed_at: null },
+    ]);
+  });
+});
+
+describe("applyDrag writes only rows that changed", () => {
+  beforeEach(() => {
+    updateTask.mockClear();
+    useStore.setState({ selection: { type: "project", projectId: 7 } });
+  });
+
+  it("skips the DB write for cards whose slot is unchanged", async () => {
     useStore.setState({
       tasks: [
-        task(1, { position: 0 }),
-        task(2, { position: 1 }),
-        task(3, { position: 2 }),
+        task(1, { project_id: 7, position: 0 }),
+        task(2, { project_id: 7, position: 1 }),
+        task(3, { project_id: 7, position: 2 }),
       ],
     });
-
-    // Kanban always recomputes the whole column. Here cards 1 and 2 swap the top
-    // two slots while card 3 keeps position 2 — so only 1 and 2 should hit the DB.
-    await useStore.getState().applyPositions([
-      { id: 2, status: "todo", position: 0 },
-      { id: 1, status: "todo", position: 1 },
-      { id: 3, status: "todo", position: 2 },
-    ]);
+    // Swap the top two; card 3 keeps position 2.
+    await useStore.getState().applyDrag(2, cols({ todo: [2, 1, 3] }));
 
     const written = updateTask.mock.calls.map((c) => c[0]);
     expect(written).toContain(1);
     expect(written).toContain(2);
-    expect(written).not.toContain(3); // unchanged — no round-trip
+    expect(written).not.toContain(3);
   });
 
-  it("still updates in-memory state for every card, changed or not", async () => {
+  it("writes a status change even when the position index is unchanged", async () => {
+    // Drag the only todo card into an empty Done column: position stays 0, but status
+    // flips and completed_at must land. A position-only diff would wrongly skip it.
     useStore.setState({
-      tasks: [task(1, { position: 0 }), task(2, { position: 1 })],
+      tasks: [task(1, { project_id: 7, status: "todo", position: 0 })],
     });
-
-    await useStore.getState().applyPositions([
-      { id: 1, status: "todo", position: 0 }, // unchanged
-      { id: 2, status: "todo", position: 5 }, // moved
-    ]);
-
-    const tasks = useStore.getState().tasks;
-    expect(tasks.find((t) => t.id === 2)?.position).toBe(5);
-    expect(tasks.find((t) => t.id === 1)?.position).toBe(0);
-  });
-
-  it("writes a card that changes status even if its position index is the same", async () => {
-    // Dragging todo/0 into an empty Done column: position stays 0 but status flips,
-    // and completed_at must be set. A position-only diff would wrongly skip it.
-    useStore.setState({ tasks: [task(1, { status: "todo", position: 0 })] });
-
-    await useStore.getState().applyPositions([
-      { id: 1, status: "done", position: 0 },
-    ]);
+    await useStore.getState().applyDrag(1, cols({ done: [1] }));
 
     const patch = patchFor(1);
-    expect(patch).toBeDefined();
     expect(patch?.status).toBe("done");
     expect(patch?.completed_at).not.toBeNull();
   });
