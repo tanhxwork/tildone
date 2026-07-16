@@ -1032,6 +1032,31 @@ textarea:focus-visible,
   flex-shrink: 0;
 }
 
+/* Provenance footer: project · repo links · which agent last touched the card.
+   A hairline splits it from the classification row above (state / priority / tags)
+   so human labels and tooling facts never blur into one band. Everything here is one
+   muted weight; the agent's brand mark is the row's only spot of colour. Presence is
+   pushed to the far right — "who / when" reads as the strip's trailing signature. */
+.card-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 1px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.card-provenance .card-presence {
+  margin-left: auto;
+}
+
+/* No project name in the footer — the dot alone carries it, with the name on hover.
+   Keeps the strip short so the repo links and presence have room. */
+.card-provenance .project-label {
+  max-width: 120px;
+}
+
 /* While an agent is actively writing (a fresh activity row within the short active
    window), its mark spins and pulses, then settles to static once the writes stop
    and the timestamp ages out. Event-driven off the reload every write triggers —
