@@ -26,7 +26,7 @@ export async function fetchAll(): Promise<{
   );
   const subtasks = subtaskRows.map((s) => ({ ...s, done: s.done !== 0 }));
   const projects = await d.select<Project[]>(
-    "SELECT id, name, color, position FROM projects ORDER BY position, id",
+    "SELECT id, name, color, position, folder_path FROM projects ORDER BY position, id",
   );
   const tags = await d.select<Tag[]>(
     "SELECT id, name, color FROM tags ORDER BY name",
@@ -159,13 +159,17 @@ export async function insertProject(name: string, color: string): Promise<number
   return result.lastInsertId ?? 0;
 }
 
-export async function updateProject(id: number, name: string, color: string): Promise<void> {
+export async function updateProject(
+  id: number,
+  name: string,
+  color: string,
+  folderPath: string | null,
+): Promise<void> {
   const d = await getDb();
-  await d.execute("UPDATE projects SET name = $1, color = $2 WHERE id = $3", [
-    name,
-    color,
-    id,
-  ]);
+  await d.execute(
+    "UPDATE projects SET name = $1, color = $2, folder_path = $3 WHERE id = $4",
+    [name, color, folderPath, id],
+  );
 }
 
 export async function updateProjectPositions(

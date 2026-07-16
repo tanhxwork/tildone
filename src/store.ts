@@ -1,9 +1,11 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import * as db from "./db";
 import type {
   ActivityEntry,
   LinkKind,
   Project,
+  ProjectIcon,
   Selection,
   Status,
   Subtask,
@@ -33,6 +35,8 @@ export interface ImportedTask {
 interface Store {
   loaded: boolean;
   projects: Project[];
+  /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
+  projectIcons: Record<number, ProjectIcon>;
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
@@ -72,9 +76,18 @@ interface Store {
   setTagManagerOpen: (open: boolean) => void;
 
   addProject: (name: string, color: string) => Promise<void>;
-  editProject: (id: number, name: string, color: string) => Promise<void>;
+  editProject: (
+    id: number,
+    name: string,
+    color: string,
+    folderPath: string | null,
+  ) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
   moveProject: (id: number, delta: -1 | 1) => Promise<void>;
+  /** Discover one project's icon from disk (Rust); merge into projectIcons. */
+  loadProjectIcon: (project: Project) => Promise<void>;
+  /** Discover every project's icon; called after each full data load. */
+  loadProjectIcons: () => Promise<void>;
 
   addTask: (input: {
     title: string;
@@ -154,6 +167,7 @@ export function groupSlot(
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   projects: [],
+  projectIcons: {},
   tasks: [],
   tags: [],
   subtasks: [],
@@ -178,11 +192,14 @@ export const useStore = create<Store>()((set, get) => ({
     await db.purgeTrashedBefore(cutoff);
     const data = await db.fetchAll();
     set({ ...data, loaded: true });
+    // Icons resolve async off the main load — the dot shows until they land.
+    void get().loadProjectIcons();
   },
 
   reload: async () => {
     const data = await db.fetchAll();
     set({ ...data });
+    void get().loadProjectIcons();
     // fetchAll has no activity in it, so an open task's log would sit frozen while
     // an agent writes to it — the one place the user is actually watching.
     const { editingTaskId } = get();
@@ -209,17 +226,48 @@ export const useStore = create<Store>()((set, get) => ({
 
   addProject: async (name, color) => {
     const id = await db.insertProject(name, color);
+    const project: Project = { id, name, color, position: get().projects.length, folder_path: null };
     set((s) => ({
-      projects: [...s.projects, { id, name, color, position: s.projects.length }],
+      projects: [...s.projects, project],
       selection: { type: "project", projectId: id },
     }));
+    void get().loadProjectIcon(project);
   },
 
-  editProject: async (id, name, color) => {
-    await db.updateProject(id, name, color);
+  editProject: async (id, name, color, folderPath) => {
+    await db.updateProject(id, name, color, folderPath);
     set((s) => ({
-      projects: s.projects.map((p) => (p.id === id ? { ...p, name, color } : p)),
+      projects: s.projects.map((p) =>
+        p.id === id ? { ...p, name, color, folder_path: folderPath } : p,
+      ),
     }));
+    const updated = get().projects.find((p) => p.id === id);
+    if (updated) void get().loadProjectIcon(updated);
+  },
+
+  loadProjectIcon: async (project) => {
+    // "" is an explicit opt-out: never scan, never show an icon.
+    if (project.folder_path === "") {
+      set((s) => {
+        const next = { ...s.projectIcons };
+        delete next[project.id];
+        return { projectIcons: next };
+      });
+      return;
+    }
+    try {
+      const icon = await invoke<ProjectIcon>("discover_project_icon", {
+        name: project.name,
+        folder: project.folder_path ?? null,
+      });
+      set((s) => ({ projectIcons: { ...s.projectIcons, [project.id]: icon } }));
+    } catch {
+      // Discovery is best-effort; on any failure the colour dot stands in.
+    }
+  },
+
+  loadProjectIcons: async () => {
+    await Promise.all(get().projects.map((p) => get().loadProjectIcon(p)));
   },
 
   removeProject: async (id) => {
