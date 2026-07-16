@@ -640,6 +640,14 @@ textarea:focus-visible,
   border-color: var(--accent);
 }
 
+.task-id {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 .task-title {
   min-width: 0;
   overflow: hidden;
