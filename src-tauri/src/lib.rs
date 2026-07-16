@@ -38,8 +38,26 @@ pub fn run() {
         },
         Migration {
             version: 6,
+            description: "repair_task_positions",
+            sql: include_str!("../migrations/006_repair_positions.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 7,
+            description: "archived_at",
+            sql: include_str!("../migrations/007_archived_at.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 8,
+            description: "add_task_links",
+            sql: include_str!("../migrations/008_task_links.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 9,
             description: "add_activity_actor",
-            sql: include_str!("../migrations/006_activity_actor.sql"),
+            sql: include_str!("../migrations/009_activity_actor.sql"),
             kind: MigrationKind::Up,
         },
     ];

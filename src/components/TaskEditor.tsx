@@ -1,11 +1,28 @@
 import { useEffect, useState } from "react";
 import { format, parseISO } from "date-fns";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { useStore } from "../store";
 import type { Status } from "../types";
-import { PRIORITY_LABELS, STATUSES, STATUS_LABELS } from "../types";
+import {
+  LINK_KIND_COLORS,
+  LINK_KIND_LABELS,
+  PRIORITY_LABELS,
+  STATUSES,
+  STATUS_LABELS,
+  asLinkKind,
+} from "../types";
 import { relativeDueLabel, timeAgo } from "../utils/dates";
-import { IconCheck, IconPlus, IconSparkles, IconTrash, IconX } from "./Icons";
+import { isHttpUrl } from "../utils/links";
+import {
+  IconCheck,
+  IconLink,
+  IconPlus,
+  IconSparkles,
+  IconTrash,
+  IconX,
+  LinkKindIcon,
+} from "./Icons";
 import { agentIdentity } from "../agents";
 
 export function TaskEditor() {
@@ -25,6 +42,9 @@ export function TaskEditor() {
     addSubtask,
     toggleSubtask,
     removeSubtask,
+    links,
+    addLink,
+    removeLink,
   } = useStore();
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
@@ -35,6 +55,7 @@ export function TaskEditor() {
   const [notes, setNotes] = useState("");
   const [tagInput, setTagInput] = useState("");
   const [subtaskInput, setSubtaskInput] = useState("");
+  const [linkInput, setLinkInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -45,6 +66,7 @@ export function TaskEditor() {
       setNotes(task.notes);
       setTagInput("");
       setSubtaskInput("");
+      setLinkInput("");
       setConfirmDelete(false);
       setAiError("");
     }
@@ -59,6 +81,7 @@ export function TaskEditor() {
   const doneCount = taskSubtasks.filter((s) => s.done).length;
   const taskTags = tags.filter((t) => task.tag_ids.includes(t.id));
   const availableTags = tags.filter((t) => !task.tag_ids.includes(t.id));
+  const taskLinks = links[task.id] ?? [];
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -90,6 +113,13 @@ export function TaskEditor() {
     if (!value) return;
     await addSubtask(task!.id, value);
     setSubtaskInput("");
+  }
+
+  async function addLinkFromInput() {
+    const url = linkInput.trim();
+    if (!isHttpUrl(url)) return;
+    await addLink(task!.id, url);
+    setLinkInput("");
   }
 
   async function breakIntoSubtasks() {
@@ -347,6 +377,53 @@ export function TaskEditor() {
                   aria-label="Add subtask"
                   onChange={(e) => setSubtaskInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void addSubtaskFromInput()}
+                />
+              </div>
+            </div>
+          </section>
+
+          <section className="detail-section">
+            <h3 className="detail-section-title">
+              Links
+              {taskLinks.length > 0 && (
+                <span className="detail-section-count">{taskLinks.length}</span>
+              )}
+            </h3>
+            <div className="detail-links">
+              {taskLinks.map((link) => {
+                const kind = asLinkKind(link.kind);
+                return (
+                  <span
+                    key={link.id}
+                    className="link-chip"
+                    style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
+                  >
+                    <button
+                      className="link-chip-open"
+                      title={`${LINK_KIND_LABELS[kind]} · ${link.url}`}
+                      onClick={() => void openUrl(link.url)}
+                    >
+                      <LinkKindIcon kind={link.kind} size={13} />
+                      <span className="link-chip-label">{link.label}</span>
+                    </button>
+                    <button
+                      className="link-delete"
+                      aria-label={`Remove link ${link.label}`}
+                      onClick={() => void removeLink(task.id, link.id)}
+                    >
+                      <IconX size={11} />
+                    </button>
+                  </span>
+                );
+              })}
+              <div className="detail-link-add">
+                <IconLink size={12} />
+                <input
+                  value={linkInput}
+                  placeholder="Paste a PR, branch, or commit URL"
+                  aria-label="Add link"
+                  onChange={(e) => setLinkInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void addLinkFromInput()}
                 />
               </div>
             </div>

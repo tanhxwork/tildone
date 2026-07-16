@@ -204,3 +204,61 @@ export const IconCommand = (p: IconProps) => (
     <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />
   </Svg>
 );
+
+export const IconLink = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </Svg>
+);
+
+export const IconGitPullRequest = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="18" cy="18" r="3" />
+    <circle cx="6" cy="6" r="3" />
+    <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+    <path d="M6 9v12" />
+  </Svg>
+);
+
+export const IconGitBranch = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 3v12" />
+    <circle cx="18" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M18 9a9 9 0 0 1-9 9" />
+  </Svg>
+);
+
+export const IconGitCommit = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M1.5 12h6.5" />
+    <path d="M16 12h6.5" />
+  </Svg>
+);
+
+export const IconGitWorktree = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6" cy="6" r="3" />
+    <path d="M6 9v9" />
+    <path d="M6 13h5" />
+    <rect x="11" y="9.5" width="10" height="7" rx="1.5" />
+  </Svg>
+);
+
+/** The icon for a link kind, shared by the card and the editor. */
+export function LinkKindIcon({ kind, size = 13 }: { kind: string; size?: number }) {
+  switch (kind) {
+    case "pr":
+      return <IconGitPullRequest size={size} />;
+    case "branch":
+      return <IconGitBranch size={size} />;
+    case "commit":
+      return <IconGitCommit size={size} />;
+    case "worktree":
+      return <IconGitWorktree size={size} />;
+    default:
+      return <IconLink size={size} />;
+  }
+}

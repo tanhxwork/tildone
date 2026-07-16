@@ -54,6 +54,7 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 | **Task** | `title`, `notes`, `status` (`todo` / `doing` / `done`), `priority` (0 none, 1 low, 2 medium, 3 high), `due_date` (`YYYY-MM-DD` or null), optional project, tag names |
 | **Subtask** | A task's checklist item: `title`, `done`, kept in insertion order. Returned by `get_task`. The board card renders them as a live progress bar — **put your plan checklist here, not in `notes`**, and tick items as you go so the user can watch progress. Every subtask write returns `progress: {done, total}`. |
 | **Activity** | A task's timestamped log, shown as the **Activity** feed in the app. Tildone writes an entry for every field change on its own; `log_progress` adds your narrative ones. **Put your running log here, not in `notes`.** Every entry you write is attributed to you: the app labels it with your MCP client name (from the `initialize` handshake) and, on the board card, shows which agent last touched a task and how long ago — so `log_progress` doubles as a presence signal. Nothing to opt into. |
+| **Repo links** | A task's branch / PR / commit / worktree URLs, shown as clickable chips on the card. Add with `add_link`, remove with `delete_link`; returned by `get_task` as `links`. **You** supply the `url` and `label` — only the caller standing in the checkout knows the remote and the repo. Only `http(s)` URLs are accepted. |
 | **Project** | Named container with a color. Deleting a project permanently deletes its tasks. |
 | **Inbox** | Where tasks without a project live. Pass `"inbox"` (or omit `project`) to target it. |
 | **Tags** | Case-insensitive names. Unknown tag names are **created automatically** when used on a task. |
@@ -103,7 +104,7 @@ Conventions:
 | `list_projects` | — | `[{id, name, color, open_tasks, done_tasks}]` |
 | `list_tags` | — | `[{id, name, color, task_count}]` |
 | `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags, rank}]}` |
-| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `created_at`, `rank` |
+| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `links`, `created_at`, `rank` |
 | `list_changes` | all optional: `since` (cursor), `wait_ms` (block up to N ms, max 60000) | `{cursor, changes: [{id, entity, entity_id, kind, created_at}], truncated?}` |
 
 By default `list_tasks` excludes completed tasks; pass `include_done: true`
@@ -159,6 +160,8 @@ cursor. Loop on it.
 | `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
 | `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. |
 | `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
+| `add_link` | `task_id`, `url` (http/https); optional `label`, `kind` (`pr`/`branch`/`commit`/`worktree`/`other`) | Attaches a repo link, clickable on the card. `label` defaults to the URL's last path segment; `kind` to `other`. Non-http schemes are refused. |
+| `delete_link` | `id` (the **link** id, from `get_task`) | **Hard** delete — links have no trash. |
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |

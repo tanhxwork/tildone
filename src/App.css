@@ -160,10 +160,37 @@ textarea:focus-visible,
 }
 
 .sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.2px;
   padding: 0 8px 10px;
+}
+
+.sidebar-brand-mark {
+  color: var(--accent);
+  flex: none;
+}
+
+/* Draw the mark once as the app opens — the simplest of the brand animations
+   (the self-drawing "wave"). The sidebar mounts once per session, so this plays
+   at startup and not on every re-render. Held still for reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-brand-mark path {
+    stroke-dasharray: 1;
+    animation: mark-draw 0.7s ease-out both;
+  }
+}
+
+@keyframes mark-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 
 .sidebar-section {
@@ -613,6 +640,15 @@ textarea:focus-visible,
   border-color: var(--accent);
 }
 
+.task-id {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 .task-title {
   min-width: 0;
   overflow: hidden;
@@ -787,6 +823,7 @@ textarea:focus-visible,
 }
 
 .board-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -797,6 +834,63 @@ textarea:focus-visible,
   box-shadow: var(--shadow-card);
   cursor: grab;
   transition: border-color 150ms;
+}
+
+/* Wave-to-check flourish overlaid on a card when it lands in Done. The mark
+   draws itself in the success colour, then fades out and unmounts. */
+.completion-flourish {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.completion-flourish svg {
+  width: 52px;
+  height: auto;
+}
+
+.completion-flourish-path {
+  fill: none;
+  stroke: var(--success);
+  stroke-width: 11;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  /* Hard-accelerating draw: the mark barely moves at first, then snaps into the
+     check — a dramatic slow-to-fast gathering of momentum. */
+  animation:
+    flourish-draw 0.6s cubic-bezier(0.9, 0, 0.95, 0.2) both,
+    flourish-fade 0.35s ease-in 0.6s both;
+}
+
+@keyframes flourish-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes flourish-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* No draw for reduced-motion: the check just appears and fades. */
+@media (prefers-reduced-motion: reduce) {
+  .completion-flourish-path {
+    stroke-dashoffset: 0;
+    animation: flourish-fade 0.45s ease-in 0.2s both;
+  }
 }
 
 .board-card:hover {
@@ -841,6 +935,24 @@ textarea:focus-visible,
 .card-title {
   font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+.card-id {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+
+/* On a live card the id becomes a kicker line above the title, leaving the card
+   body free for the repo/agent status row. On the compact done card it stays
+   inline, so the one-line collapsed layout is preserved. */
+.card-title .card-id {
+  display: block;
+  margin-right: 0;
+  margin-bottom: 1px;
+  letter-spacing: 0.03em;
 }
 
 .board-card .task-meta {
@@ -918,6 +1030,112 @@ textarea:focus-visible,
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* Compact Done cards. A finished card is history, not work in flight, so it
+   collapses to one line: check, strikethrough title, project dot, completion time.
+   The Done column is a recent window (today + backfill to a limit); the rest lives
+   in Completed. */
+.board-card.done.compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.done-check {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.board-card.done .done-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.done-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.done-time {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Today / Earlier group headers inside the Done column. */
+.col-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.col-divider:first-child {
+  padding-top: 2px;
+}
+
+.col-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.backfill-tag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--bg-active);
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+/* The door from the windowed board column to the full Completed history. */
+.see-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.see-all:hover {
+  background: var(--bg-hover);
 }
 
 /* ---------- Editor panel ---------- */
@@ -3034,5 +3252,109 @@ textarea:focus-visible,
   padding-left: 20px;
   font-size: 13px;
   line-height: 1.7;
+  color: var(--text-muted);
+}
+
+/* ---- Repo links (item 7) ---- */
+
+/* Editor: full chips (icon + label) with an open action and a remove button. */
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--link-color) 35%, var(--border));
+  background: color-mix(in srgb, var(--link-color) 10%, transparent);
+  padding: 1px 3px 1px 4px;
+}
+.link-chip-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+.link-chip-open:hover .link-chip-label {
+  text-decoration: underline;
+}
+.link-chip-open svg {
+  color: var(--link-color);
+  flex: none;
+}
+.link-delete {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.link-chip:hover .link-delete {
+  color: var(--danger);
+}
+.detail-link-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+}
+.detail-link-add svg {
+  flex: none;
+}
+.detail-link-add input {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  min-width: 180px;
+}
+
+/* Card: compact icon (+ short label where short), opens in the browser on click. */
+.card-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+}
+.card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.card-link:hover {
+  background: var(--bg-hover);
+}
+.card-link svg {
+  color: var(--link-color);
+  flex: none;
+}
+.card-link-label {
   color: var(--text-muted);
 }

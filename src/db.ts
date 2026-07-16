@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Project, Status, Subtask, Tag, Task } from "./types";
+import type { ActivityEntry, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
 
 let db: Database | null = null;
 
@@ -18,6 +18,7 @@ export async function fetchAll(): Promise<{
   tags: Tag[];
   subtasks: Subtask[];
   presence: Record<number, { name: string | null; at: string }>;
+  links: Record<number, TaskLink[]>;
 }> {
   const d = await getDb();
   const subtaskRows = await d.select<(Omit<Subtask, "done"> & { done: number })[]>(
@@ -31,7 +32,7 @@ export async function fetchAll(): Promise<{
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at FROM tasks",
+    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -47,7 +48,33 @@ export async function fetchAll(): Promise<{
     tag_ids: tagsByTask.get(row.id) ?? [],
   }));
   const presence = await fetchAgentPresence();
-  return { projects, tasks, tags, subtasks, presence };
+  const linkRows = await d.select<TaskLink[]>(
+    "SELECT id, task_id, url, label, kind FROM task_links ORDER BY id",
+  );
+  const linksByTask: Record<number, TaskLink[]> = {};
+  for (const row of linkRows) {
+    (linksByTask[row.task_id] ??= []).push(row);
+  }
+  return { projects, tasks, tags, subtasks, presence, links: linksByTask };
+}
+
+export async function addLink(
+  taskId: number,
+  url: string,
+  label: string,
+  kind: string,
+): Promise<TaskLink> {
+  const d = await getDb();
+  const result = await d.execute(
+    "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES ($1, $2, $3, $4, $5)",
+    [taskId, url, label, kind, new Date().toISOString()],
+  );
+  return { id: result.lastInsertId ?? 0, task_id: taskId, url, label, kind };
+}
+
+export async function deleteLink(id: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM task_links WHERE id = $1", [id]);
 }
 
 export async function insertSubtask(taskId: number, title: string, position: number): Promise<number> {
@@ -194,6 +221,7 @@ const TASK_COLUMNS = new Set([
   "position",
   "completed_at",
   "deleted_at",
+  "archived_at",
 ]);
 
 export async function updateTask(

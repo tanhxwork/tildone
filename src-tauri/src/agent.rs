@@ -125,6 +125,32 @@ fn valid_date(s: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
+const LINK_KINDS: [&str; 5] = ["pr", "branch", "commit", "worktree", "other"];
+
+/// Only http(s) links are clickable. The app opens a link with
+/// tauri-plugin-opener, which hands the string to the OS to open with whatever
+/// handles its scheme — so `file://`, `javascript:`, `mailto:` and custom app
+/// schemes are a local-code-execution surface dressed as a convenience. Refuse
+/// everything but http/https at the write boundary, so a bad link can never reach
+/// the UI. The agent is trusted; "trusted" is not a reason to accept `file:///`.
+fn valid_http_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    ["http://", "https://"]
+        .iter()
+        .any(|scheme| lower.strip_prefix(scheme).is_some_and(|rest| !rest.is_empty()))
+}
+
+/// The URL's last non-empty path segment — the default label when the caller
+/// gives none (".../pull/12" -> "12", ".../tree/fix/x" -> "x").
+fn link_label_from_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    trimmed
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 fn err(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.into())])
 }
@@ -202,18 +228,35 @@ impl TildoneAgent {
         )))
     }
 
-    fn next_position(
+    /// The slot a task takes when it lands in the (project_id, status) group.
+    ///
+    /// `done` inserts at the TOP (MIN-1), the rest append at the BOTTOM (MAX+1):
+    /// a Done column reads newest-first, a To Do column grows downwards.
+    ///
+    /// Top-insert deliberately does NOT renumber the group. Done grows without
+    /// bound, so shifting every card down would cost an UPDATE per card on every
+    /// completion and fire `changes_task_moved` for each one — waking every parked
+    /// agent with the whole board, and getting slower the longer Done gets.
+    /// Nothing requires positions to be a dense 0..N-1 index: they only have to be
+    /// distinct and correctly ordered within the group (RANK_SQL counts the rows
+    /// that sort before a task, and the Kanban just sorts by them). So the cheap
+    /// move is to let `done` drift negative.
+    fn group_slot(
         conn: &Connection,
         project_id: Option<i64>,
         status: &str,
     ) -> Result<i64, rusqlite::Error> {
-        conn.query_row(
+        // COALESCE defaults are chosen so the first card of an empty group is 0.
+        let sql = if status == "done" {
+            "SELECT COALESCE(MIN(position), 1) - 1 FROM tasks
+             WHERE deleted_at IS NULL AND status = ?1
+               AND (project_id IS ?2 OR project_id = ?2)"
+        } else {
             "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks
              WHERE deleted_at IS NULL AND status = ?1
-               AND (project_id IS ?2 OR project_id = ?2)",
-            rusqlite::params![status, project_id],
-            |r| r.get(0),
-        )
+               AND (project_id IS ?2 OR project_id = ?2)"
+        };
+        conn.query_row(sql, rusqlite::params![status, project_id], |r| r.get(0))
     }
 
     /// Record one activity row **as an agent**.
@@ -494,11 +537,11 @@ impl TildoneAgent {
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
-        let current: Option<(String, Option<String>)> = conn
+        let current: Option<(String, Option<i64>, Option<String>)> = conn
             .query_row(
-                "SELECT status, deleted_at FROM tasks WHERE id = ?1",
+                "SELECT status, project_id, deleted_at FROM tasks WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -506,7 +549,7 @@ impl TildoneAgent {
                 other => Err(other),
             })
             .map_err(db_err)?;
-        let Some((old_status, deleted_at)) = current else {
+        let Some((old_status, old_project_id, deleted_at)) = current else {
             return Ok(err(format!("No task with id {id}.")));
         };
         if deleted_at.is_some() {
@@ -536,11 +579,17 @@ impl TildoneAgent {
         if let Some(notes) = notes {
             push(&mut sets, &mut params, "notes", Box::new(notes));
         }
+        // The destination group, when the task is changing group. `None` means
+        // that axis is unchanged.
+        let mut dest_status: Option<String> = None;
+        let mut dest_project: Option<Option<i64>> = None;
+
         if let Some(status) = &status {
             if !STATUSES.contains(&status.as_str()) {
                 return Ok(err("status must be one of: todo, doing, done."));
             }
             if *status != old_status {
+                dest_status = Some(status.clone());
                 push(&mut sets, &mut params, "status", Box::new(status.clone()));
                 let completed: Option<String> =
                     (status == "done").then(now_iso);
@@ -590,9 +639,28 @@ impl TildoneAgent {
                         None => "Moved to Inbox".to_string(),
                     });
                     push(&mut sets, &mut params, "project_id", Box::new(pid));
+                    if pid != old_project_id {
+                        dest_project = Some(pid);
+                    }
                 }
                 Err(msg) => return Ok(err(msg)),
             }
+        }
+
+        // A task that changes (project, status) group would otherwise carry its old
+        // position into the new one, where it collides with whatever already holds
+        // that slot — the column then falls back to sorting by id and the user's
+        // manual order is silently lost. `create_task` has always asked for a slot;
+        // nothing else did. Only recompute when the group actually changed: a Kanban
+        // drag supplies its own positions and never comes through here.
+        if dest_status.is_some() || dest_project.is_some() {
+            let slot = Self::group_slot(
+                &conn,
+                dest_project.unwrap_or(old_project_id),
+                dest_status.as_deref().unwrap_or(&old_status),
+            )
+            .map_err(db_err)?;
+            push(&mut sets, &mut params, "position", Box::new(slot));
         }
 
         if !sets.is_empty() {
@@ -737,6 +805,20 @@ struct UpdateTaskParams {
     project: Option<String>,
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AddLinkParams {
+    #[schemars(description = "Id of the task to attach the link to")]
+    task_id: i64,
+    #[schemars(description = "The URL to open. Must be http(s) — other schemes are refused.")]
+    url: String,
+    #[schemars(
+        description = "What to show on the chip (e.g. \"PR #12\", a branch name, a short SHA). Defaults to the URL's last path segment."
+    )]
+    label: Option<String>,
+    #[schemars(description = "One of: pr, branch, commit, worktree, other. Defaults to other.")]
+    kind: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -975,6 +1057,22 @@ impl TildoneAgent {
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
         task["subtasks"] = json!(subtasks);
+        let mut link_stmt = conn
+            .prepare("SELECT id, url, label, kind FROM task_links WHERE task_id = ?1 ORDER BY id")
+            .map_err(db_err)?;
+        let links: Vec<Value> = link_stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "url": r.get::<_, String>(1)?,
+                    "label": r.get::<_, String>(2)?,
+                    "kind": r.get::<_, String>(3)?,
+                }))
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        task["links"] = json!(links);
         ok_json(&task)
     }
 
@@ -1018,7 +1116,7 @@ impl TildoneAgent {
                 Err(msg) => return Ok(err(msg)),
             },
         };
-        let position = Self::next_position(&conn, project_id, &status).map_err(db_err)?;
+        let position = Self::group_slot(&conn, project_id, &status).map_err(db_err)?;
         let completed_at: Option<String> = (status == "done").then(now_iso);
         conn.execute(
             "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at)
@@ -1394,7 +1492,114 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "Attach a repo link to a task — a branch, PR, commit or worktree URL — rendered as a clickable chip on the card. You supply the url and label: the app never guesses one, since only you (standing in the checkout) know the remote, the host convention and the repo. Only http(s) URLs are accepted."
+    )]
+    fn add_link(
+        &self,
+        Parameters(p): Parameters<AddLinkParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.add_link_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn add_link_as(
+        &self,
+        AddLinkParams {
+            task_id,
+            url,
+            label,
+            kind,
+        }: AddLinkParams,
+        agent: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let url = url.trim().to_string();
+        if !valid_http_url(&url) {
+            return Ok(err(
+                "url must be an http(s) link; other schemes (file, javascript, mailto, custom app schemes) are refused.",
+            ));
+        }
+        let kind = kind
+            .map(|k| k.trim().to_ascii_lowercase())
+            .filter(|k| !k.is_empty())
+            .unwrap_or_else(|| "other".to_string());
+        if !LINK_KINDS.contains(&kind.as_str()) {
+            return Ok(err("kind must be one of: pr, branch, commit, worktree, other."));
+        }
+        let label = label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| link_label_from_url(&url));
+
+        let conn = self.db.lock().unwrap();
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        conn.execute(
+            "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task_id, url, label, kind, now_iso()],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        Self::record_activity(&conn, task_id, &format!("Link added: {label}"), agent);
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "url": url,
+            "label": label,
+            "kind": kind,
+        }))
+    }
+
+    #[tool(
+        description = "Remove a repo link from a task by its link id (from get_task's `links`). Hard delete — there is no trash for links."
+    )]
+    fn delete_link(
+        &self,
+        Parameters(p): Parameters<IdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.delete_link_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn delete_link_as(
+        &self,
+        IdParams { id }: IdParams,
+        agent: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let found: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT task_id, label FROM task_links WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let Some((task_id, label)) = found else {
+            return Ok(err(format!("No link with id {id}.")));
+        };
+        conn.execute("DELETE FROM task_links WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        Self::record_activity(&conn, task_id, &format!("Link removed: {label}"), agent);
+        drop(conn);
+        self.notify();
+        ok_json(&json!({ "deleted": id, "task_id": task_id }))
+    }
+
+    #[tool(
+        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
         &self,
@@ -1664,7 +1869,10 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
-        conn.execute_batch(include_str!("../migrations/006_activity_actor.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/007_archived_at.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/008_task_links.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/009_activity_actor.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -1683,6 +1891,196 @@ mod tests {
             TildoneAgent::new(db.clone(), Arc::new(|| {}), CancellationToken::new()),
             db,
         )
+    }
+
+    // ---- item 7: task <-> repo links ----
+
+    fn a_task(agent: &TildoneAgent, title: &str) -> i64 {
+        let (is_err, task) = extract(
+            &agent
+                .create_task_as(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }, None)
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {task}");
+        task["id"].as_i64().unwrap()
+    }
+
+    fn attach(
+        agent: &TildoneAgent,
+        task_id: i64,
+        url: &str,
+        label: Option<&str>,
+        kind: Option<&str>,
+    ) -> (bool, Value) {
+        extract(
+            &agent
+                .add_link_as(AddLinkParams {
+                    task_id,
+                    url: url.into(),
+                    label: label.map(Into::into),
+                    kind: kind.map(Into::into),
+                }, None)
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn add_link_attaches_an_https_url_and_get_task_returns_it() {
+        let agent = test_agent();
+        let id = a_task(&agent, "Ship item 7");
+        let (is_err, link) = attach(
+            &agent,
+            id,
+            "https://github.com/tanhxwork/tildone/pull/12",
+            Some("PR #12"),
+            Some("pr"),
+        );
+        assert!(!is_err, "add_link errored: {link}");
+        assert_eq!(link["label"], "PR #12");
+        assert_eq!(link["kind"], "pr");
+
+        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let links = task["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["url"], "https://github.com/tanhxwork/tildone/pull/12");
+        assert_eq!(links[0]["kind"], "pr");
+    }
+
+    /// The whole security surface of the feature: an MCP tool that opens arbitrary
+    /// URIs is a local-code-execution primitive. Only http(s) may pass, and a
+    /// refusal writes nothing.
+    #[test]
+    fn add_link_refuses_non_http_schemes_and_writes_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "guard");
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "mailto:x@example.com",
+            "ftp://example.com/x",
+        ] {
+            let (is_err, msg) = attach(&agent, id, bad, None, None);
+            assert!(is_err, "expected refusal for {bad}, got {msg}");
+        }
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM task_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused link must write nothing");
+    }
+
+    #[test]
+    fn add_link_on_a_trashed_task_is_refused() {
+        let agent = test_agent();
+        let id = a_task(&agent, "doomed");
+        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, _) = attach(&agent, id, "https://example.com/x", None, None);
+        assert!(is_err, "a link on a trashed task must be refused");
+    }
+
+    #[test]
+    fn add_link_defaults_label_to_last_path_segment_and_explicit_label_wins() {
+        let agent = test_agent();
+        let id = a_task(&agent, "labels");
+        let (_, defaulted) = attach(&agent, id, "https://github.com/x/y/pull/34", None, Some("pr"));
+        assert_eq!(
+            defaulted["label"], "34",
+            "default label is the URL's last path segment"
+        );
+        let (_, explicit) = attach(
+            &agent,
+            id,
+            "https://github.com/x/y/pull/35",
+            Some("PR #35"),
+            Some("pr"),
+        );
+        assert_eq!(explicit["label"], "PR #35", "an explicit label wins");
+    }
+
+    #[test]
+    fn a_worktree_kind_is_accepted_and_unknown_kinds_refused() {
+        let agent = test_agent();
+        let id = a_task(&agent, "kinds");
+        let (is_err, link) =
+            attach(&agent, id, "https://example.com/wt", Some("item7"), Some("worktree"));
+        assert!(!is_err, "worktree must be a valid kind: {link}");
+        assert_eq!(link["kind"], "worktree");
+        let (bad, _) = attach(&agent, id, "https://example.com/z", None, Some("banana"));
+        assert!(bad, "an unknown kind must be refused");
+    }
+
+    #[test]
+    fn deleting_a_task_cascades_its_links() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "cascade");
+        attach(&agent, id, "https://example.com/a", None, None);
+        attach(&agent, id, "https://example.com/b", None, None);
+        let conn = db.lock().unwrap();
+        // Hard delete — delete_task only trashes; the FK cascade is what we test.
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_links WHERE task_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "links must cascade-delete with their task");
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0, "foreign_key_check must be clean");
+    }
+
+    #[test]
+    fn delete_link_removes_it_and_missing_id_errors() {
+        let agent = test_agent();
+        let id = a_task(&agent, "remove");
+        let (_, link) = attach(&agent, id, "https://example.com/a", None, None);
+        let link_id = link["id"].as_i64().unwrap();
+        let (is_err, _) =
+            extract(&agent.delete_link_as(IdParams { id: link_id }, None).unwrap());
+        assert!(!is_err);
+        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(task["links"].as_array().unwrap().len(), 0);
+        let (missing, _) = extract(&agent.delete_link_as(IdParams { id: 9999 }, None).unwrap());
+        assert!(missing, "deleting a non-existent link errors, not panics");
+    }
+
+    /// The change-feed trigger catches the attach so a parked agent wakes. It
+    /// addresses the TASK (kind=link), because an agent parks on a task, not a link.
+    #[test]
+    fn attaching_a_link_lands_in_the_changes_feed() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "wake me");
+        let before: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        attach(&agent, id, "https://github.com/x/y/pull/9", Some("PR #9"), Some("pr"));
+        let conn = db.lock().unwrap();
+        let row: (String, i64, String) = conn
+            .query_row(
+                "SELECT entity, entity_id, kind FROM changes WHERE id > ?1 ORDER BY id DESC LIMIT 1",
+                [before],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("task".to_string(), id, "link".to_string()),
+            "attaching a link must emit a change on the TASK with kind=link"
+        );
     }
 
     /// AGENT_PORT is a contract: an agent's MCP config points at a fixed URL, so
@@ -2408,6 +2806,276 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(positions, vec![0, 1, 2]);
+    }
+
+    /// Every (project, status) group of live tasks must hold distinct positions.
+    /// Duplicates are the whole bug: the Kanban sorts by `position, id`, so a tie
+    /// silently falls through to id order and the user's manual order is gone.
+    /// Returns the group's task ids in board order.
+    fn group_order(conn: &Connection, project_id: Option<i64>, status: &str) -> Vec<i64> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, position FROM tasks
+                 WHERE deleted_at IS NULL AND status = ?1
+                   AND (project_id IS ?2 OR project_id = ?2)
+                 ORDER BY position, id",
+            )
+            .unwrap();
+        let rows: Vec<(i64, i64)> = stmt
+            .query_map(rusqlite::params![status, project_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (id, pos) in &rows {
+            assert!(
+                seen.insert(*pos),
+                "duplicate position {pos} in ({project_id:?}, {status}) — task {id} \
+                 collides, so the column falls back to sorting by id"
+            );
+        }
+        rows.into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn new_task(agent: &TildoneAgent, title: &str) -> i64 {
+        let (is_err, v) = extract(
+            &agent
+                .create_task_as(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }, None)
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+        v["id"].as_i64().unwrap()
+    }
+
+    fn set_status(agent: &TildoneAgent, id: i64, status: &str) {
+        let (is_err, v) = extract(
+            &agent
+                .update_task_as(UpdateTaskParams {
+                    id,
+                    title: None,
+                    notes: None,
+                    status: Some(status.into()),
+                    priority: None,
+                    due_date: None,
+                    project: None,
+                    tags: None,
+                }, None)
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+    }
+
+    /// The regression. Before the fix, `next_position` was only ever called by
+    /// create_task, so a status change carried the old position into the new group:
+    /// three tasks created at todo/0,1,2 and completed all landed on done/0,1,2 —
+    /// every one of them colliding with a card already there. On the author's real
+    /// board this had reached eight tasks sharing done/position 0.
+    #[test]
+    fn completing_tasks_does_not_pile_them_onto_the_same_position() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        let c = new_task(&agent, "c");
+
+        for id in [a, b, c] {
+            let (is_err, v) = extract(&agent.complete_task_as(IdParams { id }, None).unwrap());
+            assert!(!is_err, "{v}");
+        }
+
+        let conn = agent.db.lock().unwrap();
+        // group_order panics on any duplicate, which is the assertion that matters.
+        let done = group_order(&conn, None, "done");
+        assert_eq!(done.len(), 3);
+        // Approved behaviour: newest completion first.
+        assert_eq!(done, vec![c, b, a], "Done must read newest-first");
+        assert!(group_order(&conn, None, "todo").is_empty());
+    }
+
+    /// Done inserts at the top without renumbering the cards already there, so a
+    /// completion costs one write no matter how long Done has grown.
+    #[test]
+    fn completing_does_not_renumber_the_rest_of_done() {
+        let agent = test_agent();
+        let ids: Vec<i64> = (0..5).map(|i| new_task(&agent, &format!("t{i}"))).collect();
+        for id in &ids[..4] {
+            agent.complete_task_as(IdParams { id: *id }, None).unwrap();
+        }
+
+        let before: Vec<(i64, i64)> = {
+            let conn = agent.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT id, position FROM tasks WHERE status='done' ORDER BY id")
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            v
+        };
+
+        agent.complete_task_as(IdParams { id: ids[4] }, None).unwrap();
+
+        let conn = agent.db.lock().unwrap();
+        for (id, pos) in before {
+            let now: i64 = conn
+                .query_row("SELECT position FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(now, pos, "task {id} was renumbered by an unrelated completion");
+        }
+        assert_eq!(group_order(&conn, None, "done")[0], ids[4]);
+    }
+
+    /// Moving a task back out of Done must also get a fresh slot, or it collides in
+    /// the group it returns to.
+    #[test]
+    fn reopening_a_task_gives_it_a_fresh_slot_in_todo() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        set_status(&agent, a, "done");
+        set_status(&agent, a, "todo");
+
+        let conn = agent.db.lock().unwrap();
+        // b is still todo/0; a must not land on top of it.
+        assert_eq!(group_order(&conn, None, "todo"), vec![b, a]);
+    }
+
+    /// Same bug on the project axis: a task carried its position into the project it
+    /// moved to, colliding with that project's card in the same slot.
+    #[test]
+    fn moving_project_gives_a_fresh_slot() {
+        let agent = test_agent();
+        agent
+            .create_project(Parameters(CreateProjectParams {
+                name: "work".into(),
+                color: None,
+            }))
+            .unwrap();
+        // Inbox task at todo/0 …
+        let inbox_task = new_task(&agent, "from inbox");
+        // … and a project task also at todo/0 in its own group.
+        let (_, v) = extract(
+            &agent
+                .create_task_as(CreateTaskParams {
+                    title: "already in work".into(),
+                    project: Some("work".into()),
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }, None)
+                .unwrap(),
+        );
+        let work_task = v["id"].as_i64().unwrap();
+
+        let (is_err, v) = extract(
+            &agent
+                .update_task_as(UpdateTaskParams {
+                    id: inbox_task,
+                    title: None,
+                    notes: None,
+                    status: None,
+                    priority: None,
+                    due_date: None,
+                    project: Some("work".into()),
+                    tags: None,
+                }, None)
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+
+        let conn = agent.db.lock().unwrap();
+        let pid: Option<i64> = conn
+            .query_row("SELECT id FROM projects WHERE name = 'work'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(group_order(&conn, pid, "todo"), vec![work_task, inbox_task]);
+    }
+
+    /// An update that doesn't change group must leave position alone — otherwise
+    /// renaming a card would reshuffle the board.
+    #[test]
+    fn a_non_group_change_leaves_position_untouched() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        let before: i64 = {
+            let conn = agent.db.lock().unwrap();
+            conn.query_row("SELECT position FROM tasks WHERE id = ?1", [a], |r| r.get(0))
+                .unwrap()
+        };
+        agent
+            .update_task_as(UpdateTaskParams {
+                id: a,
+                title: Some("renamed".into()),
+                notes: None,
+                status: None,
+                priority: Some(3),
+                due_date: None,
+                project: None,
+                tags: None,
+            }, None)
+            .unwrap();
+        let conn = agent.db.lock().unwrap();
+        let after: i64 = conn
+            .query_row("SELECT position FROM tasks WHERE id = ?1", [a], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before, "a rename must not move the card");
+        assert_eq!(group_order(&conn, None, "todo"), vec![a, b]);
+    }
+
+    /// Migration 006 repairs boards that already carry the damage. Mirrors the real
+    /// shape found on the author's board: many tasks stacked on done/position 0.
+    #[test]
+    fn migration_006_repairs_stacked_positions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/002_trash.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
+
+        // Four done tasks all stacked on position 0, completed at known times.
+        for (id, completed) in [
+            (1, "2026-07-01T00:00:00.000Z"),
+            (2, "2026-07-03T00:00:00.000Z"),
+            (3, "2026-07-02T00:00:00.000Z"),
+            (4, "2026-07-04T00:00:00.000Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, completed_at, created_at)
+                 VALUES (?1, ?2, 'done', 0, ?3, '2026-07-01T00:00:00.000Z')",
+                rusqlite::params![id, format!("done {id}"), completed],
+            )
+            .unwrap();
+        }
+        // Two todo tasks sharing position 2, whose relative order must be preserved.
+        for id in [5, 6] {
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, created_at)
+                 VALUES (?1, ?2, 'todo', 2, '2026-07-01T00:00:00.000Z')",
+                rusqlite::params![id, format!("todo {id}")],
+            )
+            .unwrap();
+        }
+
+        conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
+
+        // Done: newest completion first, dense, no duplicates.
+        assert_eq!(group_order(&conn, None, "done"), vec![4, 2, 3, 1]);
+        // Todo: prior order (position, id) preserved, now distinct.
+        assert_eq!(group_order(&conn, None, "todo"), vec![5, 6]);
     }
 
     /// Drives the real streamable-HTTP endpoint the way an MCP client does:

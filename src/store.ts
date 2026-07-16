@@ -2,16 +2,21 @@ import { create } from "zustand";
 import * as db from "./db";
 import type {
   ActivityEntry,
+  LinkKind,
   Project,
   Selection,
   Status,
   Subtask,
   Tag,
   Task,
+  TaskLink,
   ViewMode,
 } from "./types";
 import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
-import { dueLabel, toIsoUtc } from "./utils/dates";
+import { format } from "date-fns";
+import { computeDragUpdates } from "./reorder";
+import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
+import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 
 export interface ImportedTask {
   title: string;
@@ -31,6 +36,8 @@ interface Store {
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
+  /** Repo links per task: links[task_id] = [{id, url, label, kind}]. */
+  links: Record<number, TaskLink[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
   /**
@@ -85,14 +92,20 @@ interface Store {
   restoreTask: (id: number) => Promise<void>;
   destroyTask: (id: number) => Promise<void>;
   emptyTrash: () => Promise<void>;
-  applyPositions: (
-    updates: { id: number; status: Status; position: number }[],
+  /** Drop every not-today done card out of the board's Done window now, ahead of
+   * the natural next-day rollover. They stay live in Completed. */
+  archiveOlderDone: () => Promise<void>;
+  applyDrag: (
+    activeId: number,
+    columns: Record<Status, number[]>,
   ) => Promise<void>;
 
   addSubtask: (taskId: number, title: string) => Promise<void>;
   toggleSubtask: (id: number) => Promise<void>;
   renameSubtask: (id: number, title: string) => Promise<void>;
   removeSubtask: (id: number) => Promise<void>;
+  addLink: (taskId: number, url: string, label?: string, kind?: LinkKind) => Promise<void>;
+  removeLink: (taskId: number, linkId: number) => Promise<void>;
   loadActivity: (taskId: number) => Promise<void>;
 
   addTag: (name: string) => Promise<number>;
@@ -112,12 +125,39 @@ function colorForName(name: string): string {
 
 const TRASH_RETENTION_DAYS = 30;
 
+/**
+ * The slot a task takes when it lands in the (project_id, status) group.
+ * Mirrors `Store::group_slot` in src-tauri/src/agent.rs — the Rust MCP server and
+ * this store both write `tasks` directly, so the rule has to exist in both.
+ *
+ * `done` inserts at the top (MIN-1) so the newest completion reads first; the rest
+ * append at the bottom (MAX+1). Top-insert does not renumber the group: Done grows
+ * without bound and shifting every card down on each completion would get slower
+ * the longer it gets, and fire a `changes_task_moved` per card. Positions only have
+ * to be distinct and ordered within the group, never a dense index — so `done` is
+ * simply allowed to drift negative.
+ */
+export function groupSlot(
+  tasks: Task[],
+  project_id: number | null,
+  status: Status,
+): number {
+  const group = tasks.filter(
+    (t) =>
+      t.deleted_at === null && t.status === status && t.project_id === project_id,
+  );
+  if (group.length === 0) return 0;
+  const positions = group.map((t) => t.position);
+  return status === "done" ? Math.min(...positions) - 1 : Math.max(...positions) + 1;
+}
+
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   projects: [],
   tasks: [],
   tags: [],
   subtasks: [],
+  links: {},
   activity: [],
   presence: {},
 
@@ -215,10 +255,7 @@ export const useStore = create<Store>()((set, get) => ({
 
   addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [] }) => {
     const { tasks } = get();
-    const position =
-      tasks
-        .filter((t) => t.project_id === project_id && t.status === "todo")
-        .reduce((max, t) => Math.max(max, t.position), -1) + 1;
+    const position = groupSlot(tasks, project_id, "todo");
     const created_at = new Date().toISOString();
     const id = await db.insertTask({
       project_id,
@@ -243,6 +280,7 @@ export const useStore = create<Store>()((set, get) => ({
       created_at,
       completed_at: null,
       deleted_at: null,
+      archived_at: null,
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -254,6 +292,19 @@ export const useStore = create<Store>()((set, get) => ({
     const full = { ...patch };
     if (patch.status && patch.status !== current.status) {
       full.completed_at = patch.status === "done" ? new Date().toISOString() : null;
+      // Any status change makes the card boardable again: a fresh completion belongs
+      // in the Done window, and leaving Done clears a stale "cleared off board" mark.
+      full.archived_at = null;
+    }
+    // Changing group without a fresh slot would carry the old position into the new
+    // group and collide with whatever already sits there, dropping the column back
+    // to sorting by id. A drag doesn't come through here — it calls applyDrag
+    // with positions of its own — so recomputing whenever the group moved is safe.
+    const destStatus = patch.status ?? current.status;
+    const destProject =
+      patch.project_id !== undefined ? patch.project_id : current.project_id;
+    if (destStatus !== current.status || destProject !== current.project_id) {
+      full.position = groupSlot(get().tasks, destProject, destStatus);
     }
     await db.updateTask(id, full);
     set((s) => ({
@@ -300,19 +351,32 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   restoreTask: async (id) => {
-    await db.updateTask(id, { deleted_at: null });
+    const task = get().tasks.find((t) => t.id === id);
+    if (!task) return;
+    // Coming back from the trash is a group change too: the task has been out of
+    // its (project, status) group long enough for its old slot to be taken, so it
+    // needs a fresh one like any other arrival.
+    const position = groupSlot(get().tasks, task.project_id, task.status);
+    await db.updateTask(id, { deleted_at: null, position });
     set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === id ? { ...t, deleted_at: null } : t)),
+      tasks: s.tasks.map((t) =>
+        t.id === id ? { ...t, deleted_at: null, position } : t,
+      ),
     }));
   },
 
   destroyTask: async (id) => {
     await db.deleteTask(id);
-    set((s) => ({
-      tasks: s.tasks.filter((t) => t.id !== id),
-      subtasks: s.subtasks.filter((x) => x.task_id !== id),
-      editingTaskId: s.editingTaskId === id ? null : s.editingTaskId,
-    }));
+    set((s) => {
+      const links = { ...s.links };
+      delete links[id];
+      return {
+        tasks: s.tasks.filter((t) => t.id !== id),
+        subtasks: s.subtasks.filter((x) => x.task_id !== id),
+        links,
+        editingTaskId: s.editingTaskId === id ? null : s.editingTaskId,
+      };
+    });
   },
 
   emptyTrash: async () => {
@@ -328,30 +392,58 @@ export const useStore = create<Store>()((set, get) => ({
     });
   },
 
-  applyPositions: async (updates) => {
+  archiveOlderDone: async () => {
+    const today = todayStr();
     const now = new Date().toISOString();
+    const targets = get().tasks.filter(
+      (t) =>
+        t.deleted_at === null &&
+        t.status === "done" &&
+        t.archived_at === null &&
+        t.completed_at !== null &&
+        format(new Date(t.completed_at), "yyyy-MM-dd") !== today,
+    );
+    if (targets.length === 0) return;
+    const ids = new Set(targets.map((t) => t.id));
+    for (const t of targets) await db.updateTask(t.id, { archived_at: now });
+    set((s) => ({
+      tasks: s.tasks.map((t) => (ids.has(t.id) ? { ...t, archived_at: now } : t)),
+    }));
+  },
+
+  applyDrag: async (activeId, columns) => {
+    const now = new Date().toISOString();
+    const updates = computeDragUpdates(
+      get().tasks,
+      get().selection,
+      activeId,
+      columns,
+      now,
+    );
+    if (updates.length === 0) return;
+
     const byId = new Map(get().tasks.map((t) => [t.id, t]));
-    const resolved = updates
-      .filter((u) => byId.has(u.id))
-      .map((u) => {
-        const prev = byId.get(u.id)!;
-        const completed_at =
-          u.status === prev.status
-            ? prev.completed_at
-            : u.status === "done"
-              ? now
-              : null;
-        return { ...u, completed_at };
-      });
     set((s) => ({
       tasks: s.tasks.map((t) => {
-        const u = resolved.find((x) => x.id === t.id);
+        const u = updates.find((x) => x.id === t.id);
         return u
           ? { ...t, status: u.status, position: u.position, completed_at: u.completed_at }
           : t;
       }),
     }));
-    for (const u of resolved) {
+    // Only write rows that actually changed. A precise reorder dense-renumbers a whole
+    // group in memory but usually shifts only the cards between source and destination;
+    // the change-feed trigger already suppresses the no-op feed row, this skips the
+    // UPDATE that would have fired it.
+    for (const u of updates) {
+      const prev = byId.get(u.id)!;
+      if (
+        u.status === prev.status &&
+        u.position === prev.position &&
+        u.completed_at === prev.completed_at
+      ) {
+        continue;
+      }
       await db.updateTask(u.id, {
         status: u.status,
         position: u.position,
@@ -390,6 +482,27 @@ export const useStore = create<Store>()((set, get) => ({
   removeSubtask: async (id) => {
     await db.deleteSubtask(id);
     set((s) => ({ subtasks: s.subtasks.filter((x) => x.id !== id) }));
+  },
+
+  addLink: async (taskId, url, label, kind) => {
+    const trimmed = url.trim();
+    if (!isHttpUrl(trimmed)) return;
+    const k = kind ?? deriveLinkKind(trimmed);
+    const l = (label ?? "").trim() || deriveLinkLabel(trimmed, k);
+    const link = await db.addLink(taskId, trimmed, l, k);
+    set((s) => ({
+      links: { ...s.links, [taskId]: [...(s.links[taskId] ?? []), link] },
+    }));
+  },
+
+  removeLink: async (taskId, linkId) => {
+    await db.deleteLink(linkId);
+    set((s) => ({
+      links: {
+        ...s.links,
+        [taskId]: (s.links[taskId] ?? []).filter((x) => x.id !== linkId),
+      },
+    }));
   },
 
   loadActivity: async (taskId) => {
