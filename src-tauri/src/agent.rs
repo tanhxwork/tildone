@@ -1001,6 +1001,14 @@ struct AddLinkParams {
     kind: Option<String>,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AddCommentParams {
+    #[schemars(description = "Task id (number) or reference like \"TIL-3\" to comment on")]
+    task_id: TaskRef,
+    #[schemars(description = "The comment text. Ask a question here when blocked; the user answers with another comment and you wake via list_changes.")]
+    body: String,
+}
+
 // ---------------------------------------------------------------------------
 // Tools
 
@@ -1259,6 +1267,25 @@ impl TildoneAgent {
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
         task["links"] = json!(links);
+        let mut comment_stmt = conn
+            .prepare(
+                "SELECT id, body, actor_kind, actor_name, created_at FROM comments WHERE task_id = ?1 ORDER BY id",
+            )
+            .map_err(db_err)?;
+        let comments: Vec<Value> = comment_stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "body": r.get::<_, String>(1)?,
+                    "actor_kind": r.get::<_, String>(2)?,
+                    "actor_name": r.get::<_, Option<String>>(3)?,
+                    "created_at": r.get::<_, String>(4)?,
+                }))
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        task["comments"] = json!(comments);
         ok_json(&task)
     }
 
@@ -1807,6 +1834,65 @@ impl TildoneAgent {
     }
 
     #[tool(
+        description = "Add a comment to a task — a message on the card the user can read and reply to. Use it to ask a question when you are blocked: park a list_changes call on this task afterwards and you wake the moment the user answers with their own comment. Comments are authored by whoever writes them; yours are attributed to you."
+    )]
+    fn add_comment(
+        &self,
+        Parameters(p): Parameters<AddCommentParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.add_comment_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    // A comment written through the MCP server is always an agent's — the UI writes
+    // its own with actor_kind='user' (db.ts). `agent` is the client's own name from
+    // the handshake, or None when it sent none; the row is still kind='agent'.
+    // Deliberately no record_activity call: a comment is its own surface, and the
+    // spec keeps task_activity out of scope. The change feed is fed by the trigger
+    // (migration 012), so a parked list_changes still wakes.
+    fn add_comment_as(
+        &self,
+        AddCommentParams { task_id: task_ref, body }: AddCommentParams,
+        agent: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Ok(err("body cannot be empty."));
+        }
+        let conn = self.db.lock().unwrap();
+        let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with reference {task_ref}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_ref} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        let created_at = now_iso();
+        conn.execute(
+            "INSERT INTO comments (task_id, body, actor_kind, actor_name, created_at)
+             VALUES (?1, ?2, 'agent', ?3, ?4)",
+            rusqlite::params![task_id, body, agent, created_at],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "body": body,
+            "actor_kind": "agent",
+            "actor_name": agent,
+            "created_at": created_at,
+        }))
+    }
+
+    #[tool(
         description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
@@ -2211,6 +2297,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/009_activity_actor.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/010_project_folder.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/011_task_ref.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/012_comments.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -2418,6 +2505,119 @@ mod tests {
             row,
             ("task".to_string(), id, "link".to_string()),
             "attaching a link must emit a change on the TASK with kind=link"
+        );
+    }
+
+    // ---- item 5: comments on a card ----
+
+    fn comment(agent: &TildoneAgent, task_id: i64, body: &str, as_agent: Option<&str>) -> (bool, Value) {
+        extract(
+            &agent
+                .add_comment_as(
+                    AddCommentParams { task_id: task_id.into(), body: body.into() },
+                    as_agent,
+                )
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn add_comment_appends_and_get_task_returns_it_attributed() {
+        let agent = test_agent();
+        let id = a_task(&agent, "Ship item 5");
+        let (is_err, c) = comment(&agent, id, "  Which port should the dev build use?  ", Some("claude-code"));
+        assert!(!is_err, "add_comment errored: {c}");
+        assert_eq!(c["body"], "Which port should the dev build use?", "body is trimmed");
+        assert_eq!(c["actor_kind"], "agent");
+        assert_eq!(c["actor_name"], "claude-code");
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        let comments = task["comments"].as_array().unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0]["body"], "Which port should the dev build use?");
+        assert_eq!(comments[0]["actor_kind"], "agent");
+        assert_eq!(comments[0]["actor_name"], "claude-code");
+        let created = comments[0]["created_at"].as_str().unwrap();
+        assert!(created.ends_with('Z'), "created_at must be ISO-UTC with a Z: {created}");
+    }
+
+    /// An agent that sent no client name is still an agent — kind='agent', name NULL —
+    /// never silently promoted to a user, which the single-`actor` shape would risk.
+    #[test]
+    fn an_unnamed_agents_comment_is_agent_kind_with_null_name() {
+        let agent = test_agent();
+        let id = a_task(&agent, "anon");
+        let (_, c) = comment(&agent, id, "no name here", None);
+        assert_eq!(c["actor_kind"], "agent");
+        assert!(c["actor_name"].is_null(), "an unnamed agent has a NULL name, not 'user'");
+    }
+
+    #[test]
+    fn add_comment_refuses_an_empty_body_and_writes_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "empty");
+        let (is_err, _) = comment(&agent, id, "   ", None);
+        assert!(is_err, "a whitespace-only body must be refused");
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM comments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused comment writes nothing");
+    }
+
+    #[test]
+    fn add_comment_on_a_trashed_task_is_refused() {
+        let agent = test_agent();
+        let id = a_task(&agent, "doomed");
+        agent.db.lock().unwrap().execute("UPDATE tasks SET deleted_at = ?1 WHERE id = ?2", rusqlite::params![now_iso(), id]).unwrap();
+        let (is_err, _) = comment(&agent, id, "too late", None);
+        assert!(is_err, "commenting on a trashed task is refused like every other write");
+    }
+
+    #[test]
+    fn deleting_a_task_cascades_its_comments() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "cascade");
+        comment(&agent, id, "one", None);
+        comment(&agent, id, "two", None);
+        let conn = db.lock().unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM comments WHERE task_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "comments must cascade-delete with their task");
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0, "foreign_key_check stays clean");
+    }
+
+    /// The whole point of the feature: a comment wakes a parked agent. The trigger
+    /// (migration 012) catches the write and addresses the TASK with kind=comment, so
+    /// an agent parked on that task in list_changes returns and reads the thread.
+    #[test]
+    fn a_comment_lands_in_the_changes_feed() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "answer me");
+        let before: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        comment(&agent, id, "here is your answer", Some("claude-code"));
+        let conn = db.lock().unwrap();
+        let row: (String, i64, String) = conn
+            .query_row(
+                "SELECT entity, entity_id, kind FROM changes WHERE id > ?1 ORDER BY id DESC LIMIT 1",
+                [before],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("task".to_string(), id, "comment".to_string()),
+            "a comment must emit a change on the TASK with kind=comment"
         );
     }
 

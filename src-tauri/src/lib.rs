@@ -74,6 +74,12 @@ pub fn run() {
             sql: include_str!("../migrations/011_task_ref.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 12,
+            description: "add_comments",
+            sql: include_str!("../migrations/012_comments.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

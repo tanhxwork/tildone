@@ -5,7 +5,7 @@ import type { TaskLink } from "../src/types";
 // the kind and a short label from the URL when the caller doesn't give them, and
 // refuses anything that isn't http(s) — the same guard the Rust add_link enforces.
 
-const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [], links: {} };
+const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [], links: {}, commentCounts: {} };
 
 const addLink = mock(
   async (taskId: number, url: string, label: string, kind: string): Promise<TaskLink> => ({
@@ -23,12 +23,16 @@ const fetchAll = mock(async () => EMPTY_BOARD);
 // updateTask, insertActivity) so this mock covers every store path they exercise,
 // not just the link ones — otherwise combining the suites breaks those files.
 const fetchActivity = mock(async () => []);
+const fetchComments = mock(async () => []);
+const insertComment = mock(async () => ({}));
 const updateTask = mock(async () => {});
 const insertActivity = mock(async () => {});
 
 mock.module("../src/db", () => ({
   fetchAll,
   fetchActivity,
+  fetchComments,
+  insertComment,
   updateTask,
   insertActivity,
   addLink,
