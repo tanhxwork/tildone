@@ -202,18 +202,35 @@ impl TildoneAgent {
         )))
     }
 
-    fn next_position(
+    /// The slot a task takes when it lands in the (project_id, status) group.
+    ///
+    /// `done` inserts at the TOP (MIN-1), the rest append at the BOTTOM (MAX+1):
+    /// a Done column reads newest-first, a To Do column grows downwards.
+    ///
+    /// Top-insert deliberately does NOT renumber the group. Done grows without
+    /// bound, so shifting every card down would cost an UPDATE per card on every
+    /// completion and fire `changes_task_moved` for each one — waking every parked
+    /// agent with the whole board, and getting slower the longer Done gets.
+    /// Nothing requires positions to be a dense 0..N-1 index: they only have to be
+    /// distinct and correctly ordered within the group (RANK_SQL counts the rows
+    /// that sort before a task, and the Kanban just sorts by them). So the cheap
+    /// move is to let `done` drift negative.
+    fn group_slot(
         conn: &Connection,
         project_id: Option<i64>,
         status: &str,
     ) -> Result<i64, rusqlite::Error> {
-        conn.query_row(
+        // COALESCE defaults are chosen so the first card of an empty group is 0.
+        let sql = if status == "done" {
+            "SELECT COALESCE(MIN(position), 1) - 1 FROM tasks
+             WHERE deleted_at IS NULL AND status = ?1
+               AND (project_id IS ?2 OR project_id = ?2)"
+        } else {
             "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks
              WHERE deleted_at IS NULL AND status = ?1
-               AND (project_id IS ?2 OR project_id = ?2)",
-            rusqlite::params![status, project_id],
-            |r| r.get(0),
-        )
+               AND (project_id IS ?2 OR project_id = ?2)"
+        };
+        conn.query_row(sql, rusqlite::params![status, project_id], |r| r.get(0))
     }
 
     fn record_activity(conn: &Connection, task_id: i64, label: &str) {
@@ -461,11 +478,11 @@ impl TildoneAgent {
         tags: Option<Vec<String>>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
-        let current: Option<(String, Option<String>)> = conn
+        let current: Option<(String, Option<i64>, Option<String>)> = conn
             .query_row(
-                "SELECT status, deleted_at FROM tasks WHERE id = ?1",
+                "SELECT status, project_id, deleted_at FROM tasks WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -473,7 +490,7 @@ impl TildoneAgent {
                 other => Err(other),
             })
             .map_err(db_err)?;
-        let Some((old_status, deleted_at)) = current else {
+        let Some((old_status, old_project_id, deleted_at)) = current else {
             return Ok(err(format!("No task with id {id}.")));
         };
         if deleted_at.is_some() {
@@ -503,11 +520,17 @@ impl TildoneAgent {
         if let Some(notes) = notes {
             push(&mut sets, &mut params, "notes", Box::new(notes));
         }
+        // The destination group, when the task is changing group. `None` means
+        // that axis is unchanged.
+        let mut dest_status: Option<String> = None;
+        let mut dest_project: Option<Option<i64>> = None;
+
         if let Some(status) = &status {
             if !STATUSES.contains(&status.as_str()) {
                 return Ok(err("status must be one of: todo, doing, done."));
             }
             if *status != old_status {
+                dest_status = Some(status.clone());
                 push(&mut sets, &mut params, "status", Box::new(status.clone()));
                 let completed: Option<String> =
                     (status == "done").then(now_iso);
@@ -557,9 +580,28 @@ impl TildoneAgent {
                         None => "Moved to Inbox".to_string(),
                     });
                     push(&mut sets, &mut params, "project_id", Box::new(pid));
+                    if pid != old_project_id {
+                        dest_project = Some(pid);
+                    }
                 }
                 Err(msg) => return Ok(err(msg)),
             }
+        }
+
+        // A task that changes (project, status) group would otherwise carry its old
+        // position into the new one, where it collides with whatever already holds
+        // that slot — the column then falls back to sorting by id and the user's
+        // manual order is silently lost. `create_task` has always asked for a slot;
+        // nothing else did. Only recompute when the group actually changed: a Kanban
+        // drag supplies its own positions and never comes through here.
+        if dest_status.is_some() || dest_project.is_some() {
+            let slot = Self::group_slot(
+                &conn,
+                dest_project.unwrap_or(old_project_id),
+                dest_status.as_deref().unwrap_or(&old_status),
+            )
+            .map_err(db_err)?;
+            push(&mut sets, &mut params, "position", Box::new(slot));
         }
 
         if !sets.is_empty() {
@@ -976,7 +1018,7 @@ impl TildoneAgent {
                 Err(msg) => return Ok(err(msg)),
             },
         };
-        let position = Self::next_position(&conn, project_id, &status).map_err(db_err)?;
+        let position = Self::group_slot(&conn, project_id, &status).map_err(db_err)?;
         let completed_at: Option<String> = (status == "done").then(now_iso);
         conn.execute(
             "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at)
@@ -1566,6 +1608,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -2309,6 +2352,276 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(positions, vec![0, 1, 2]);
+    }
+
+    /// Every (project, status) group of live tasks must hold distinct positions.
+    /// Duplicates are the whole bug: the Kanban sorts by `position, id`, so a tie
+    /// silently falls through to id order and the user's manual order is gone.
+    /// Returns the group's task ids in board order.
+    fn group_order(conn: &Connection, project_id: Option<i64>, status: &str) -> Vec<i64> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, position FROM tasks
+                 WHERE deleted_at IS NULL AND status = ?1
+                   AND (project_id IS ?2 OR project_id = ?2)
+                 ORDER BY position, id",
+            )
+            .unwrap();
+        let rows: Vec<(i64, i64)> = stmt
+            .query_map(rusqlite::params![status, project_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (id, pos) in &rows {
+            assert!(
+                seen.insert(*pos),
+                "duplicate position {pos} in ({project_id:?}, {status}) — task {id} \
+                 collides, so the column falls back to sorting by id"
+            );
+        }
+        rows.into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn new_task(agent: &TildoneAgent, title: &str) -> i64 {
+        let (is_err, v) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+        v["id"].as_i64().unwrap()
+    }
+
+    fn set_status(agent: &TildoneAgent, id: i64, status: &str) {
+        let (is_err, v) = extract(
+            &agent
+                .update_task(Parameters(UpdateTaskParams {
+                    id,
+                    title: None,
+                    notes: None,
+                    status: Some(status.into()),
+                    priority: None,
+                    due_date: None,
+                    project: None,
+                    tags: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+    }
+
+    /// The regression. Before the fix, `next_position` was only ever called by
+    /// create_task, so a status change carried the old position into the new group:
+    /// three tasks created at todo/0,1,2 and completed all landed on done/0,1,2 —
+    /// every one of them colliding with a card already there. On the author's real
+    /// board this had reached eight tasks sharing done/position 0.
+    #[test]
+    fn completing_tasks_does_not_pile_them_onto_the_same_position() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        let c = new_task(&agent, "c");
+
+        for id in [a, b, c] {
+            let (is_err, v) = extract(&agent.complete_task(Parameters(IdParams { id })).unwrap());
+            assert!(!is_err, "{v}");
+        }
+
+        let conn = agent.db.lock().unwrap();
+        // group_order panics on any duplicate, which is the assertion that matters.
+        let done = group_order(&conn, None, "done");
+        assert_eq!(done.len(), 3);
+        // Approved behaviour: newest completion first.
+        assert_eq!(done, vec![c, b, a], "Done must read newest-first");
+        assert!(group_order(&conn, None, "todo").is_empty());
+    }
+
+    /// Done inserts at the top without renumbering the cards already there, so a
+    /// completion costs one write no matter how long Done has grown.
+    #[test]
+    fn completing_does_not_renumber_the_rest_of_done() {
+        let agent = test_agent();
+        let ids: Vec<i64> = (0..5).map(|i| new_task(&agent, &format!("t{i}"))).collect();
+        for id in &ids[..4] {
+            agent.complete_task(Parameters(IdParams { id: *id })).unwrap();
+        }
+
+        let before: Vec<(i64, i64)> = {
+            let conn = agent.db.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT id, position FROM tasks WHERE status='done' ORDER BY id")
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            v
+        };
+
+        agent.complete_task(Parameters(IdParams { id: ids[4] })).unwrap();
+
+        let conn = agent.db.lock().unwrap();
+        for (id, pos) in before {
+            let now: i64 = conn
+                .query_row("SELECT position FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(now, pos, "task {id} was renumbered by an unrelated completion");
+        }
+        assert_eq!(group_order(&conn, None, "done")[0], ids[4]);
+    }
+
+    /// Moving a task back out of Done must also get a fresh slot, or it collides in
+    /// the group it returns to.
+    #[test]
+    fn reopening_a_task_gives_it_a_fresh_slot_in_todo() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        set_status(&agent, a, "done");
+        set_status(&agent, a, "todo");
+
+        let conn = agent.db.lock().unwrap();
+        // b is still todo/0; a must not land on top of it.
+        assert_eq!(group_order(&conn, None, "todo"), vec![b, a]);
+    }
+
+    /// Same bug on the project axis: a task carried its position into the project it
+    /// moved to, colliding with that project's card in the same slot.
+    #[test]
+    fn moving_project_gives_a_fresh_slot() {
+        let agent = test_agent();
+        agent
+            .create_project(Parameters(CreateProjectParams {
+                name: "work".into(),
+                color: None,
+            }))
+            .unwrap();
+        // Inbox task at todo/0 …
+        let inbox_task = new_task(&agent, "from inbox");
+        // … and a project task also at todo/0 in its own group.
+        let (_, v) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "already in work".into(),
+                    project: Some("work".into()),
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let work_task = v["id"].as_i64().unwrap();
+
+        let (is_err, v) = extract(
+            &agent
+                .update_task(Parameters(UpdateTaskParams {
+                    id: inbox_task,
+                    title: None,
+                    notes: None,
+                    status: None,
+                    priority: None,
+                    due_date: None,
+                    project: Some("work".into()),
+                    tags: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "{v}");
+
+        let conn = agent.db.lock().unwrap();
+        let pid: Option<i64> = conn
+            .query_row("SELECT id FROM projects WHERE name = 'work'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(group_order(&conn, pid, "todo"), vec![work_task, inbox_task]);
+    }
+
+    /// An update that doesn't change group must leave position alone — otherwise
+    /// renaming a card would reshuffle the board.
+    #[test]
+    fn a_non_group_change_leaves_position_untouched() {
+        let agent = test_agent();
+        let a = new_task(&agent, "a");
+        let b = new_task(&agent, "b");
+        let before: i64 = {
+            let conn = agent.db.lock().unwrap();
+            conn.query_row("SELECT position FROM tasks WHERE id = ?1", [a], |r| r.get(0))
+                .unwrap()
+        };
+        agent
+            .update_task(Parameters(UpdateTaskParams {
+                id: a,
+                title: Some("renamed".into()),
+                notes: None,
+                status: None,
+                priority: Some(3),
+                due_date: None,
+                project: None,
+                tags: None,
+            }))
+            .unwrap();
+        let conn = agent.db.lock().unwrap();
+        let after: i64 = conn
+            .query_row("SELECT position FROM tasks WHERE id = ?1", [a], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before, "a rename must not move the card");
+        assert_eq!(group_order(&conn, None, "todo"), vec![a, b]);
+    }
+
+    /// Migration 006 repairs boards that already carry the damage. Mirrors the real
+    /// shape found on the author's board: many tasks stacked on done/position 0.
+    #[test]
+    fn migration_006_repairs_stacked_positions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../migrations/001_init.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/002_trash.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/003_subtasks_activity.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
+
+        // Four done tasks all stacked on position 0, completed at known times.
+        for (id, completed) in [
+            (1, "2026-07-01T00:00:00.000Z"),
+            (2, "2026-07-03T00:00:00.000Z"),
+            (3, "2026-07-02T00:00:00.000Z"),
+            (4, "2026-07-04T00:00:00.000Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, completed_at, created_at)
+                 VALUES (?1, ?2, 'done', 0, ?3, '2026-07-01T00:00:00.000Z')",
+                rusqlite::params![id, format!("done {id}"), completed],
+            )
+            .unwrap();
+        }
+        // Two todo tasks sharing position 2, whose relative order must be preserved.
+        for id in [5, 6] {
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, created_at)
+                 VALUES (?1, ?2, 'todo', 2, '2026-07-01T00:00:00.000Z')",
+                rusqlite::params![id, format!("todo {id}")],
+            )
+            .unwrap();
+        }
+
+        conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
+
+        // Done: newest completion first, dense, no duplicates.
+        assert_eq!(group_order(&conn, None, "done"), vec![4, 2, 3, 1]);
+        // Todo: prior order (position, id) preserved, now distinct.
+        assert_eq!(group_order(&conn, None, "todo"), vec![5, 6]);
     }
 
     /// Drives the real streamable-HTTP endpoint the way an MCP client does:
