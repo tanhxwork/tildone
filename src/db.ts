@@ -1,5 +1,6 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { ActivityEntry, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
+import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
 
 let db: Database | null = null;
 
@@ -26,13 +27,13 @@ export async function fetchAll(): Promise<{
   );
   const subtasks = subtaskRows.map((s) => ({ ...s, done: s.done !== 0 }));
   const projects = await d.select<Project[]>(
-    "SELECT id, name, color, position, folder_path FROM projects ORDER BY position, id",
+    "SELECT id, name, color, position, folder_path, code FROM projects ORDER BY position, id",
   );
   const tags = await d.select<Tag[]>(
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at FROM tasks",
+    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -146,17 +147,33 @@ export async function fetchAgentPresence(): Promise<
   return out;
 }
 
-export async function insertProject(name: string, color: string): Promise<number> {
+export async function insertProject(
+  name: string,
+  color: string,
+): Promise<{ id: number; code: string }> {
   const d = await getDb();
   const max = await d.select<{ p: number | null }[]>(
     "SELECT MAX(position) AS p FROM projects",
   );
   const position = (max[0]?.p ?? -1) + 1;
+  const code = await nextProjectCode(d, name);
   const result = await d.execute(
-    "INSERT INTO projects (name, color, position, created_at) VALUES ($1, $2, $3, $4)",
-    [name, color, position, new Date().toISOString()],
+    "INSERT INTO projects (name, color, position, created_at, code) VALUES ($1, $2, $3, $4, $5)",
+    [name, color, position, new Date().toISOString(), code],
   );
-  return result.lastInsertId ?? 0;
+  return { id: result.lastInsertId ?? 0, code };
+}
+
+/** A unique project code for `name`, derived against the codes already in the DB
+ * (the authoritative set — the UNIQUE index on projects.code is the backstop).
+ * INBOX_CODE is reserved for the Inbox and never handed to a real project. */
+async function nextProjectCode(d: Database, name: string): Promise<string> {
+  const rows = await d.select<{ code: string | null }[]>(
+    "SELECT code FROM projects WHERE code IS NOT NULL",
+  );
+  const taken = new Set<string>([INBOX_CODE]);
+  for (const r of rows) if (r.code) taken.add(r.code);
+  return deriveProjectCode(name, taken);
 }
 
 export async function updateProject(
@@ -196,10 +213,13 @@ export async function insertTask(task: {
   notes?: string;
   completed_at?: string | null;
   created_at: string;
-}): Promise<number> {
+}): Promise<{ id: number; number: number; ref: string }> {
   const d = await getDb();
+  const code = await codeForProject(d, task.project_id);
+  const number = await nextTaskNumber(d, code);
+  const ref = formatRef(code, number);
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     [
       task.project_id,
       task.title,
@@ -210,9 +230,102 @@ export async function insertTask(task: {
       task.notes ?? "",
       task.completed_at ?? null,
       task.created_at,
+      number,
+      ref,
     ],
   );
-  return result.lastInsertId ?? 0;
+  return { id: result.lastInsertId ?? 0, number, ref };
+}
+
+/** The code that mints refs for a task in `project_id` (INBOX_CODE for the Inbox).
+ * A project that somehow still lacks a code — a race ahead of the startup backfill
+ * — gets one minted and persisted here so its tasks never fall back to `#id`. */
+async function codeForProject(d: Database, project_id: number | null): Promise<string> {
+  if (project_id === null) return INBOX_CODE;
+  const rows = await d.select<{ name: string; code: string | null }[]>(
+    "SELECT name, code FROM projects WHERE id = $1",
+    [project_id],
+  );
+  const row = rows[0];
+  if (!row) return INBOX_CODE;
+  if (row.code) return row.code;
+  const code = await nextProjectCode(d, row.name);
+  await d.execute("UPDATE projects SET code = $1 WHERE id = $2", [code, project_id]);
+  return code;
+}
+
+/** Next per-code counter: one past the highest `number` any task with this code's
+ * ref has ever held — trashed rows included, so a number within a code is never
+ * reused. Scoped by the frozen ref prefix, not project_id, so a task moved between
+ * projects keeps counting against the code it was born in. */
+async function nextTaskNumber(d: Database, code: string): Promise<number> {
+  const rows = await d.select<{ m: number | null }[]>(
+    "SELECT MAX(number) AS m FROM tasks WHERE ref LIKE $1",
+    [`${code}-%`],
+  );
+  return (rows[0]?.m ?? 0) + 1;
+}
+
+/** One-time backfill for rows that predate migration 010: give every code-less
+ * project a code and every ref-less task a number + frozen ref. Idempotent — only
+ * NULLs are touched — so it is safe to run on every startup. */
+export async function backfillRefs(): Promise<void> {
+  const d = await getDb();
+
+  // 1. Project codes, in creation order, unique against whatever already exists.
+  const codeless = await d.select<{ id: number; name: string }[]>(
+    "SELECT id, name FROM projects WHERE code IS NULL ORDER BY id",
+  );
+  if (codeless.length > 0) {
+    const existing = await d.select<{ code: string }[]>(
+      "SELECT code FROM projects WHERE code IS NOT NULL",
+    );
+    const taken = new Set<string>([INBOX_CODE]);
+    for (const r of existing) taken.add(r.code);
+    for (const p of codeless) {
+      const code = deriveProjectCode(p.name, taken);
+      taken.add(code);
+      await d.execute("UPDATE projects SET code = $1 WHERE id = $2", [code, p.id]);
+    }
+  }
+
+  // 2. Task numbers + refs. Every project now has a code; Inbox (NULL) uses
+  //    INBOX_CODE. Assign in (created_at, id) order so the oldest task in each code
+  //    is #1, continuing past any number already issued (so a re-run resumes).
+  const refless = await d.select<{ id: number; project_id: number | null }[]>(
+    "SELECT id, project_id FROM tasks WHERE ref IS NULL ORDER BY created_at, id",
+  );
+  if (refless.length === 0) return;
+  const projects = await d.select<{ id: number; code: string }[]>(
+    "SELECT id, code FROM projects WHERE code IS NOT NULL",
+  );
+  const codeByProject = new Map<number, string>();
+  for (const p of projects) codeByProject.set(p.id, p.code);
+
+  // High-water mark per code from already-assigned refs (CODE-N; codes never
+  // contain '-', so split on the last dash).
+  const counters = new Map<string, number>();
+  const assigned = await d.select<{ ref: string }[]>(
+    "SELECT ref FROM tasks WHERE ref IS NOT NULL",
+  );
+  for (const row of assigned) {
+    const dash = row.ref.lastIndexOf("-");
+    const code = row.ref.slice(0, dash);
+    const n = Number(row.ref.slice(dash + 1));
+    if (Number.isFinite(n)) counters.set(code, Math.max(counters.get(code) ?? 0, n));
+  }
+
+  for (const t of refless) {
+    const code =
+      t.project_id === null ? INBOX_CODE : codeByProject.get(t.project_id) ?? INBOX_CODE;
+    const number = (counters.get(code) ?? 0) + 1;
+    counters.set(code, number);
+    await d.execute("UPDATE tasks SET number = $1, ref = $2 WHERE id = $3", [
+      number,
+      formatRef(code, number),
+      t.id,
+    ]);
+  }
 }
 
 const TASK_COLUMNS = new Set([

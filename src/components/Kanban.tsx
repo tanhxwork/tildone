@@ -32,6 +32,7 @@ import {
   asLinkKind,
 } from "../types";
 import { isRecentPresence, todayStr } from "../utils/dates";
+import { taskRefLabel } from "../utils/ref";
 import { CompletionFlourish } from "./Brand";
 import { IconCheck, LinkKindIcon } from "./Icons";
 import { TaskMeta, reservedState } from "./TaskRow";
@@ -387,7 +388,7 @@ function CardContent({
           <IconCheck size={10} />
         </span>
         <span className="done-title">
-          <span className="card-id" aria-hidden="true">#{task.id}</span> {task.title}
+          <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
         </span>
         <span className="done-meta">
           {showProject && project && (
@@ -417,7 +418,7 @@ function CardContent({
         .join(" ")}
     >
       <span className="card-title">
-        <span className="card-id" aria-hidden="true">#{task.id}</span> {task.title}
+        <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
       </span>
       {mine.length > 0 && (
         <span
