@@ -18,12 +18,20 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
-import type { Status, Task } from "../types";
-import { STATUSES, STATUS_LABELS } from "../types";
+import type { Status, Task, TaskLink } from "../types";
+import {
+  LINK_KIND_COLORS,
+  LINK_KIND_LABELS,
+  STATUSES,
+  STATUS_LABELS,
+  asLinkKind,
+} from "../types";
 import { CompletionFlourish } from "./Brand";
+import { LinkKindIcon } from "./Icons";
 import { TaskMeta, reservedState } from "./TaskRow";
 
 type Columns = Record<Status, number[]>;
@@ -258,6 +266,21 @@ function Card({
   );
 }
 
+/** The short label a card chip shows inline: a PR number or a 7-char SHA. Long
+ *  names (branch, worktree) are icon-only, so this returns null for them. */
+function cardLinkShort(link: TaskLink): string | null {
+  const kind = asLinkKind(link.kind);
+  if (kind === "pr") {
+    const m = link.label.match(/\d+/);
+    return m ? `#${m[0]}` : null;
+  }
+  if (kind === "commit") {
+    const m = link.label.match(/[0-9a-f]{7,40}/i);
+    return (m ? m[0] : link.label).slice(0, 7);
+  }
+  return null;
+}
+
 function CardContent({
   task,
   overlay,
@@ -271,7 +294,9 @@ function CardContent({
 }) {
   const subtasks = useStore((s) => s.subtasks);
   const tags = useStore((s) => s.tags);
+  const links = useStore((s) => s.links);
   const mine = subtasks.filter((s) => s.task_id === task.id);
+  const cardLinks = links[task.id] ?? [];
   const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
 
@@ -301,6 +326,30 @@ function CardContent({
           <span className="card-progress-count">
             {done}/{mine.length}
           </span>
+        </span>
+      )}
+      {cardLinks.length > 0 && (
+        <span className="card-links">
+          {cardLinks.map((link) => {
+            const kind = asLinkKind(link.kind);
+            const short = cardLinkShort(link);
+            return (
+              <button
+                key={link.id}
+                className="card-link"
+                style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
+                title={`${LINK_KIND_LABELS[kind]} · ${link.label} · ${link.url}`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void openUrl(link.url);
+                }}
+              >
+                <LinkKindIcon kind={link.kind} size={13} />
+                {short && <span className="card-link-label">{short}</span>}
+              </button>
+            );
+          })}
         </span>
       )}
       <TaskMeta task={task} showProject hideStatus />

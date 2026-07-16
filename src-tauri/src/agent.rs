@@ -125,6 +125,32 @@ fn valid_date(s: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
+const LINK_KINDS: [&str; 5] = ["pr", "branch", "commit", "worktree", "other"];
+
+/// Only http(s) links are clickable. The app opens a link with
+/// tauri-plugin-opener, which hands the string to the OS to open with whatever
+/// handles its scheme — so `file://`, `javascript:`, `mailto:` and custom app
+/// schemes are a local-code-execution surface dressed as a convenience. Refuse
+/// everything but http/https at the write boundary, so a bad link can never reach
+/// the UI. The agent is trusted; "trusted" is not a reason to accept `file:///`.
+fn valid_http_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    ["http://", "https://"]
+        .iter()
+        .any(|scheme| lower.strip_prefix(scheme).is_some_and(|rest| !rest.is_empty()))
+}
+
+/// The URL's last non-empty path segment — the default label when the caller
+/// gives none (".../pull/12" -> "12", ".../tree/fix/x" -> "x").
+fn link_label_from_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    trimmed
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 fn err(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.into())])
 }
@@ -748,6 +774,20 @@ struct UpdateTaskParams {
     tags: Option<Vec<String>>,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AddLinkParams {
+    #[schemars(description = "Id of the task to attach the link to")]
+    task_id: i64,
+    #[schemars(description = "The URL to open. Must be http(s) — other schemes are refused.")]
+    url: String,
+    #[schemars(
+        description = "What to show on the chip (e.g. \"PR #12\", a branch name, a short SHA). Defaults to the URL's last path segment."
+    )]
+    label: Option<String>,
+    #[schemars(description = "One of: pr, branch, commit, worktree, other. Defaults to other.")]
+    kind: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Tools
 
@@ -984,6 +1024,22 @@ impl TildoneAgent {
             .collect::<Result<_, _>>()
             .map_err(db_err)?;
         task["subtasks"] = json!(subtasks);
+        let mut link_stmt = conn
+            .prepare("SELECT id, url, label, kind FROM task_links WHERE task_id = ?1 ORDER BY id")
+            .map_err(db_err)?;
+        let links: Vec<Value> = link_stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "url": r.get::<_, String>(1)?,
+                    "label": r.get::<_, String>(2)?,
+                    "kind": r.get::<_, String>(3)?,
+                }))
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        task["links"] = json!(links);
         ok_json(&task)
     }
 
@@ -1338,7 +1394,96 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "Attach a repo link to a task — a branch, PR, commit or worktree URL — rendered as a clickable chip on the card. You supply the url and label: the app never guesses one, since only you (standing in the checkout) know the remote, the host convention and the repo. Only http(s) URLs are accepted."
+    )]
+    fn add_link(
+        &self,
+        Parameters(AddLinkParams {
+            task_id,
+            url,
+            label,
+            kind,
+        }): Parameters<AddLinkParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let url = url.trim().to_string();
+        if !valid_http_url(&url) {
+            return Ok(err(
+                "url must be an http(s) link; other schemes (file, javascript, mailto, custom app schemes) are refused.",
+            ));
+        }
+        let kind = kind
+            .map(|k| k.trim().to_ascii_lowercase())
+            .filter(|k| !k.is_empty())
+            .unwrap_or_else(|| "other".to_string());
+        if !LINK_KINDS.contains(&kind.as_str()) {
+            return Ok(err("kind must be one of: pr, branch, commit, worktree, other."));
+        }
+        let label = label
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| link_label_from_url(&url));
+
+        let conn = self.db.lock().unwrap();
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        conn.execute(
+            "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task_id, url, label, kind, now_iso()],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        Self::record_activity(&conn, task_id, &format!("Link added: {label}"));
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": id,
+            "task_id": task_id,
+            "url": url,
+            "label": label,
+            "kind": kind,
+        }))
+    }
+
+    #[tool(
+        description = "Remove a repo link from a task by its link id (from get_task's `links`). Hard delete — there is no trash for links."
+    )]
+    fn delete_link(
+        &self,
+        Parameters(IdParams { id }): Parameters<IdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let found: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT task_id, label FROM task_links WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let Some((task_id, label)) = found else {
+            return Ok(err(format!("No link with id {id}.")));
+        };
+        conn.execute("DELETE FROM task_links WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        Self::record_activity(&conn, task_id, &format!("Link removed: {label}"));
+        drop(conn);
+        self.notify();
+        ok_json(&json!({ "deleted": id, "task_id": task_id }))
+    }
+
+    #[tool(
+        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
         &self,
@@ -1609,6 +1754,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/007_task_links.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -1627,6 +1773,196 @@ mod tests {
             TildoneAgent::new(db.clone(), Arc::new(|| {}), CancellationToken::new()),
             db,
         )
+    }
+
+    // ---- item 7: task <-> repo links ----
+
+    fn a_task(agent: &TildoneAgent, title: &str) -> i64 {
+        let (is_err, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: title.into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {task}");
+        task["id"].as_i64().unwrap()
+    }
+
+    fn attach(
+        agent: &TildoneAgent,
+        task_id: i64,
+        url: &str,
+        label: Option<&str>,
+        kind: Option<&str>,
+    ) -> (bool, Value) {
+        extract(
+            &agent
+                .add_link(Parameters(AddLinkParams {
+                    task_id,
+                    url: url.into(),
+                    label: label.map(Into::into),
+                    kind: kind.map(Into::into),
+                }))
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn add_link_attaches_an_https_url_and_get_task_returns_it() {
+        let agent = test_agent();
+        let id = a_task(&agent, "Ship item 7");
+        let (is_err, link) = attach(
+            &agent,
+            id,
+            "https://github.com/tanhxwork/tildone/pull/12",
+            Some("PR #12"),
+            Some("pr"),
+        );
+        assert!(!is_err, "add_link errored: {link}");
+        assert_eq!(link["label"], "PR #12");
+        assert_eq!(link["kind"], "pr");
+
+        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let links = task["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["url"], "https://github.com/tanhxwork/tildone/pull/12");
+        assert_eq!(links[0]["kind"], "pr");
+    }
+
+    /// The whole security surface of the feature: an MCP tool that opens arbitrary
+    /// URIs is a local-code-execution primitive. Only http(s) may pass, and a
+    /// refusal writes nothing.
+    #[test]
+    fn add_link_refuses_non_http_schemes_and_writes_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "guard");
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "mailto:x@example.com",
+            "ftp://example.com/x",
+        ] {
+            let (is_err, msg) = attach(&agent, id, bad, None, None);
+            assert!(is_err, "expected refusal for {bad}, got {msg}");
+        }
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM task_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused link must write nothing");
+    }
+
+    #[test]
+    fn add_link_on_a_trashed_task_is_refused() {
+        let agent = test_agent();
+        let id = a_task(&agent, "doomed");
+        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, _) = attach(&agent, id, "https://example.com/x", None, None);
+        assert!(is_err, "a link on a trashed task must be refused");
+    }
+
+    #[test]
+    fn add_link_defaults_label_to_last_path_segment_and_explicit_label_wins() {
+        let agent = test_agent();
+        let id = a_task(&agent, "labels");
+        let (_, defaulted) = attach(&agent, id, "https://github.com/x/y/pull/34", None, Some("pr"));
+        assert_eq!(
+            defaulted["label"], "34",
+            "default label is the URL's last path segment"
+        );
+        let (_, explicit) = attach(
+            &agent,
+            id,
+            "https://github.com/x/y/pull/35",
+            Some("PR #35"),
+            Some("pr"),
+        );
+        assert_eq!(explicit["label"], "PR #35", "an explicit label wins");
+    }
+
+    #[test]
+    fn a_worktree_kind_is_accepted_and_unknown_kinds_refused() {
+        let agent = test_agent();
+        let id = a_task(&agent, "kinds");
+        let (is_err, link) =
+            attach(&agent, id, "https://example.com/wt", Some("item7"), Some("worktree"));
+        assert!(!is_err, "worktree must be a valid kind: {link}");
+        assert_eq!(link["kind"], "worktree");
+        let (bad, _) = attach(&agent, id, "https://example.com/z", None, Some("banana"));
+        assert!(bad, "an unknown kind must be refused");
+    }
+
+    #[test]
+    fn deleting_a_task_cascades_its_links() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "cascade");
+        attach(&agent, id, "https://example.com/a", None, None);
+        attach(&agent, id, "https://example.com/b", None, None);
+        let conn = db.lock().unwrap();
+        // Hard delete — delete_task only trashes; the FK cascade is what we test.
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_links WHERE task_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "links must cascade-delete with their task");
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0, "foreign_key_check must be clean");
+    }
+
+    #[test]
+    fn delete_link_removes_it_and_missing_id_errors() {
+        let agent = test_agent();
+        let id = a_task(&agent, "remove");
+        let (_, link) = attach(&agent, id, "https://example.com/a", None, None);
+        let link_id = link["id"].as_i64().unwrap();
+        let (is_err, _) =
+            extract(&agent.delete_link(Parameters(IdParams { id: link_id })).unwrap());
+        assert!(!is_err);
+        let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(task["links"].as_array().unwrap().len(), 0);
+        let (missing, _) = extract(&agent.delete_link(Parameters(IdParams { id: 9999 })).unwrap());
+        assert!(missing, "deleting a non-existent link errors, not panics");
+    }
+
+    /// The change-feed trigger catches the attach so a parked agent wakes. It
+    /// addresses the TASK (kind=link), because an agent parks on a task, not a link.
+    #[test]
+    fn attaching_a_link_lands_in_the_changes_feed() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "wake me");
+        let before: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        attach(&agent, id, "https://github.com/x/y/pull/9", Some("PR #9"), Some("pr"));
+        let conn = db.lock().unwrap();
+        let row: (String, i64, String) = conn
+            .query_row(
+                "SELECT entity, entity_id, kind FROM changes WHERE id > ?1 ORDER BY id DESC LIMIT 1",
+                [before],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("task".to_string(), id, "link".to_string()),
+            "attaching a link must emit a change on the TASK with kind=link"
+        );
     }
 
     /// AGENT_PORT is a contract: an agent's MCP config points at a fixed URL, so

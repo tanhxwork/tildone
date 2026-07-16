@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Project, Status, Subtask, Tag, Task } from "./types";
+import type { ActivityEntry, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
 
 let db: Database | null = null;
 
@@ -17,6 +17,7 @@ export async function fetchAll(): Promise<{
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
+  links: Record<number, TaskLink[]>;
 }> {
   const d = await getDb();
   const subtaskRows = await d.select<(Omit<Subtask, "done"> & { done: number })[]>(
@@ -45,7 +46,33 @@ export async function fetchAll(): Promise<{
     ...row,
     tag_ids: tagsByTask.get(row.id) ?? [],
   }));
-  return { projects, tasks, tags, subtasks };
+  const linkRows = await d.select<TaskLink[]>(
+    "SELECT id, task_id, url, label, kind FROM task_links ORDER BY id",
+  );
+  const linksByTask: Record<number, TaskLink[]> = {};
+  for (const row of linkRows) {
+    (linksByTask[row.task_id] ??= []).push(row);
+  }
+  return { projects, tasks, tags, subtasks, links: linksByTask };
+}
+
+export async function addLink(
+  taskId: number,
+  url: string,
+  label: string,
+  kind: string,
+): Promise<TaskLink> {
+  const d = await getDb();
+  const result = await d.execute(
+    "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES ($1, $2, $3, $4, $5)",
+    [taskId, url, label, kind, new Date().toISOString()],
+  );
+  return { id: result.lastInsertId ?? 0, task_id: taskId, url, label, kind };
+}
+
+export async function deleteLink(id: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM task_links WHERE id = $1", [id]);
 }
 
 export async function insertSubtask(taskId: number, title: string, position: number): Promise<number> {

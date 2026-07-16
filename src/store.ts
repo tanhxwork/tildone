@@ -2,16 +2,19 @@ import { create } from "zustand";
 import * as db from "./db";
 import type {
   ActivityEntry,
+  LinkKind,
   Project,
   Selection,
   Status,
   Subtask,
   Tag,
   Task,
+  TaskLink,
   ViewMode,
 } from "./types";
 import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
 import { dueLabel, toIsoUtc } from "./utils/dates";
+import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 
 export interface ImportedTask {
   title: string;
@@ -31,6 +34,8 @@ interface Store {
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
+  /** Repo links per task: links[task_id] = [{id, url, label, kind}]. */
+  links: Record<number, TaskLink[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
 
@@ -86,6 +91,8 @@ interface Store {
   toggleSubtask: (id: number) => Promise<void>;
   renameSubtask: (id: number, title: string) => Promise<void>;
   removeSubtask: (id: number) => Promise<void>;
+  addLink: (taskId: number, url: string, label?: string, kind?: LinkKind) => Promise<void>;
+  removeLink: (taskId: number, linkId: number) => Promise<void>;
   loadActivity: (taskId: number) => Promise<void>;
 
   addTag: (name: string) => Promise<number>;
@@ -137,6 +144,7 @@ export const useStore = create<Store>()((set, get) => ({
   tasks: [],
   tags: [],
   subtasks: [],
+  links: {},
   activity: [],
 
   selection: { type: "today" },
@@ -341,11 +349,16 @@ export const useStore = create<Store>()((set, get) => ({
 
   destroyTask: async (id) => {
     await db.deleteTask(id);
-    set((s) => ({
-      tasks: s.tasks.filter((t) => t.id !== id),
-      subtasks: s.subtasks.filter((x) => x.task_id !== id),
-      editingTaskId: s.editingTaskId === id ? null : s.editingTaskId,
-    }));
+    set((s) => {
+      const links = { ...s.links };
+      delete links[id];
+      return {
+        tasks: s.tasks.filter((t) => t.id !== id),
+        subtasks: s.subtasks.filter((x) => x.task_id !== id),
+        links,
+        editingTaskId: s.editingTaskId === id ? null : s.editingTaskId,
+      };
+    });
   },
 
   emptyTrash: async () => {
@@ -434,6 +447,27 @@ export const useStore = create<Store>()((set, get) => ({
   removeSubtask: async (id) => {
     await db.deleteSubtask(id);
     set((s) => ({ subtasks: s.subtasks.filter((x) => x.id !== id) }));
+  },
+
+  addLink: async (taskId, url, label, kind) => {
+    const trimmed = url.trim();
+    if (!isHttpUrl(trimmed)) return;
+    const k = kind ?? deriveLinkKind(trimmed);
+    const l = (label ?? "").trim() || deriveLinkLabel(trimmed, k);
+    const link = await db.addLink(taskId, trimmed, l, k);
+    set((s) => ({
+      links: { ...s.links, [taskId]: [...(s.links[taskId] ?? []), link] },
+    }));
+  },
+
+  removeLink: async (taskId, linkId) => {
+    await db.deleteLink(linkId);
+    set((s) => ({
+      links: {
+        ...s.links,
+        [taskId]: (s.links[taskId] ?? []).filter((x) => x.id !== linkId),
+      },
+    }));
   },
 
   loadActivity: async (taskId) => {
