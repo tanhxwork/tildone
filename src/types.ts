@@ -13,6 +13,19 @@ export interface Project {
   name: string;
   color: string;
   position: number;
+  /** Source folder Tildone discovers an icon from. See migration 010:
+   *  null = auto-guess ~/projects/<name>; "" = icon disabled (colour dot);
+   *  "<path>" = use this folder. */
+  folder_path: string | null;
+}
+
+/** Result of icon discovery for one project (Rust: discover_project_icon). */
+export interface ProjectIcon {
+  /** The folder actually scanned — the resolved guess or the override. */
+  folder: string;
+  iconPath: string | null;
+  /** data: URI to render, or null to fall back to the colour dot. */
+  dataUri: string | null;
 }
 
 export interface Tag {

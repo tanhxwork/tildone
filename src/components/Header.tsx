@@ -1,6 +1,8 @@
 import type { RefObject } from "react";
 import { useStore } from "../store";
 import { isPageSelection } from "../types";
+import type { Project } from "../types";
+import { ProjectGlyph } from "./ProjectGlyph";
 import {
   IconBoard,
   IconCalendar,
@@ -30,7 +32,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
   } = useStore();
 
   let title = "";
-  let dotColor: string | null = null;
+  let headerProject: Project | undefined;
   switch (selection.type) {
     case "today":
       title = "Today";
@@ -54,9 +56,8 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
       title = "Completed";
       break;
     case "project": {
-      const project = projects.find((p) => p.id === selection.projectId);
-      title = project?.name ?? "Project";
-      dotColor = project?.color ?? null;
+      headerProject = projects.find((p) => p.id === selection.projectId);
+      title = headerProject?.name ?? "Project";
       break;
     }
   }
@@ -68,7 +69,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     <header className="header">
       <div className="header-top" data-tauri-drag-region>
         <h1 className="view-title" data-tauri-drag-region>
-          {dotColor && <span className="project-dot large" style={{ background: dotColor }} />}
+          {headerProject && <ProjectGlyph project={headerProject} size={20} large />}
           {title}
         </h1>
 

@@ -1,5 +1,6 @@
 mod agent;
 mod ai;
+mod icons;
 
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -61,6 +62,12 @@ pub fn run() {
             sql: include_str!("../migrations/009_activity_actor.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "add_project_folder",
+            sql: include_str!("../migrations/010_project_folder.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -104,6 +111,7 @@ pub fn run() {
             agent::agent_server_stop,
             agent::agent_server_status,
             agent::agent_server_endpoint,
+            icons::discover_project_icon,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

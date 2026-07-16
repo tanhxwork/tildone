@@ -173,7 +173,7 @@ export function TagManager() {
                     onDone={(name) => {
                       setRenamingProject(null);
                       if (name && name !== project.name) {
-                        void editProject(project.id, name, project.color);
+                        void editProject(project.id, name, project.color, project.folder_path);
                       }
                     }}
                   />
@@ -197,7 +197,7 @@ export function TagManager() {
                       className={`color-swatch mini ${project.color === color ? "selected" : ""}`}
                       style={{ background: color }}
                       aria-label={`Set color ${color}`}
-                      onClick={() => void editProject(project.id, project.name, color)}
+                      onClick={() => void editProject(project.id, project.name, color, project.folder_path)}
                     />
                   ))}
                 </span>

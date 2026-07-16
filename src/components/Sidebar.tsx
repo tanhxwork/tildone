@@ -9,6 +9,8 @@ import {
   IconArchive,
   IconCalendar,
   IconChart,
+  IconChevronDown,
+  IconChevronRight,
   IconColumns,
   IconInbox,
   IconLayers,
@@ -21,6 +23,7 @@ import {
   IconX,
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 function isSelected(a: Selection, b: Selection): boolean {
   if (a.type !== b.type) return false;
@@ -45,6 +48,8 @@ export function Sidebar() {
   const aiMode = useAI((s) => s.config.mode);
   const openAISettings = useAI((s) => s.openSettings);
   const openSettings = useSettings((s) => s.openSettings);
+  const tagsCollapsed = useSettings((s) => s.tagsCollapsed);
+  const setTagsCollapsed = useSettings((s) => s.setTagsCollapsed);
   const setTagManagerOpen = useStore((s) => s.setTagManagerOpen);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
 
@@ -94,6 +99,7 @@ export function Sidebar() {
         Tildone
       </div>
 
+      <div className="sidebar-scroll">
       <nav className="sidebar-section">
         {smartLists.map((item) => (
           <button
@@ -147,7 +153,7 @@ export function Sidebar() {
               tabIndex={0}
               onKeyDown={(e) => e.key === "Enter" && select(sel)}
             >
-              <span className="project-dot" style={{ background: project.color }} />
+              <ProjectGlyph project={project} size={16} />
               <span className="nav-label">{project.name}</span>
               <button
                 className="icon-btn row-action"
@@ -173,9 +179,20 @@ export function Sidebar() {
 
       {tags.length > 0 && (
         <div className="sidebar-section">
-          <div className="section-header">
-            <span>Tags</span>
-          </div>
+          <button
+            className="section-header section-toggle"
+            aria-expanded={!tagsCollapsed}
+            onClick={() => setTagsCollapsed(!tagsCollapsed)}
+          >
+            <span className="section-toggle-label">
+              {tagsCollapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+              Tags
+            </span>
+            {tagsCollapsed && activeTagIds.length > 0 && (
+              <span className="section-badge">{activeTagIds.length}</span>
+            )}
+          </button>
+          {!tagsCollapsed && (
           <div className="tag-cloud">
             {tags.map((tag) => (
               <span
@@ -223,8 +240,10 @@ export function Sidebar() {
               </span>
             ))}
           </div>
+          )}
         </div>
       )}
+      </div>
 
       <div className="sidebar-footer">
         <button className="nav-item" onClick={openAISettings}>

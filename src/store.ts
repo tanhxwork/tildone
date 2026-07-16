@@ -1,9 +1,11 @@
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import * as db from "./db";
 import type {
   ActivityEntry,
   LinkKind,
   Project,
+  ProjectIcon,
   Selection,
   Status,
   Subtask,
@@ -33,6 +35,8 @@ export interface ImportedTask {
 interface Store {
   loaded: boolean;
   projects: Project[];
+  /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
+  projectIcons: Record<number, ProjectIcon>;
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
@@ -72,9 +76,18 @@ interface Store {
   setTagManagerOpen: (open: boolean) => void;
 
   addProject: (name: string, color: string) => Promise<void>;
-  editProject: (id: number, name: string, color: string) => Promise<void>;
+  editProject: (
+    id: number,
+    name: string,
+    color: string,
+    folderPath: string | null,
+  ) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
   moveProject: (id: number, delta: -1 | 1) => Promise<void>;
+  /** Discover one project's icon from disk (Rust); merge into projectIcons. */
+  loadProjectIcon: (project: Project) => Promise<void>;
+  /** Discover every project's icon; called after each full data load. */
+  loadProjectIcons: () => Promise<void>;
 
   addTask: (input: {
     title: string;
@@ -126,6 +139,56 @@ function colorForName(name: string): string {
 const TRASH_RETENTION_DAYS = 30;
 
 /**
+ * Last-viewed selection + view mode, persisted so relaunch lands where the user
+ * left off instead of resetting to Today/list. A project selection is validated
+ * against the loaded projects in `init` — a deleted project falls back to Today.
+ */
+const NAV_STORAGE_KEY = "tildone-nav";
+const VIEW_MODES: ViewMode[] = ["list", "board", "table", "calendar"];
+const SELECTION_TYPES: Selection["type"][] = [
+  "today",
+  "upcoming",
+  "inbox",
+  "all",
+  "week",
+  "review",
+  "completed",
+  "project",
+];
+
+function loadNav(): { selection: Selection; viewMode: ViewMode } {
+  const fallback = { selection: { type: "today" } as Selection, viewMode: "list" as ViewMode };
+  try {
+    const raw = localStorage.getItem(NAV_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    const viewMode: ViewMode = VIEW_MODES.includes(parsed.viewMode)
+      ? parsed.viewMode
+      : "list";
+    const sel = parsed.selection;
+    let selection: Selection = fallback.selection;
+    if (sel && SELECTION_TYPES.includes(sel.type)) {
+      if (sel.type === "project") {
+        if (typeof sel.projectId === "number") selection = { type: "project", projectId: sel.projectId };
+      } else {
+        selection = { type: sel.type };
+      }
+    }
+    return { selection, viewMode };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistNav(selection: Selection, viewMode: ViewMode) {
+  try {
+    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ selection, viewMode }));
+  } catch {
+    // ignore quota/serialization errors — persistence is best-effort
+  }
+}
+
+/**
  * The slot a task takes when it lands in the (project_id, status) group.
  * Mirrors `Store::group_slot` in src-tauri/src/agent.rs — the Rust MCP server and
  * this store both write `tasks` directly, so the rule has to exist in both.
@@ -154,6 +217,7 @@ export function groupSlot(
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   projects: [],
+  projectIcons: {},
   tasks: [],
   tags: [],
   subtasks: [],
@@ -161,8 +225,7 @@ export const useStore = create<Store>()((set, get) => ({
   activity: [],
   presence: {},
 
-  selection: { type: "today" },
-  viewMode: "list",
+  ...loadNav(),
   search: "",
   activeTagIds: [],
   priorityFilter: 0,
@@ -178,11 +241,23 @@ export const useStore = create<Store>()((set, get) => ({
     await db.purgeTrashedBefore(cutoff);
     const data = await db.fetchAll();
     set({ ...data, loaded: true });
+    // A restored project selection may point at a project deleted in another
+    // session; fall back to Today so we never land on a dead view.
+    const { selection } = get();
+    if (
+      selection.type === "project" &&
+      !data.projects.some((p) => p.id === selection.projectId)
+    ) {
+      set({ selection: { type: "today" } });
+    }
+    // Icons resolve async off the main load — the dot shows until they land.
+    void get().loadProjectIcons();
   },
 
   reload: async () => {
     const data = await db.fetchAll();
     set({ ...data });
+    void get().loadProjectIcons();
     // fetchAll has no activity in it, so an open task's log would sit frozen while
     // an agent writes to it — the one place the user is actually watching.
     const { editingTaskId } = get();
@@ -209,17 +284,48 @@ export const useStore = create<Store>()((set, get) => ({
 
   addProject: async (name, color) => {
     const id = await db.insertProject(name, color);
+    const project: Project = { id, name, color, position: get().projects.length, folder_path: null };
     set((s) => ({
-      projects: [...s.projects, { id, name, color, position: s.projects.length }],
+      projects: [...s.projects, project],
       selection: { type: "project", projectId: id },
     }));
+    void get().loadProjectIcon(project);
   },
 
-  editProject: async (id, name, color) => {
-    await db.updateProject(id, name, color);
+  editProject: async (id, name, color, folderPath) => {
+    await db.updateProject(id, name, color, folderPath);
     set((s) => ({
-      projects: s.projects.map((p) => (p.id === id ? { ...p, name, color } : p)),
+      projects: s.projects.map((p) =>
+        p.id === id ? { ...p, name, color, folder_path: folderPath } : p,
+      ),
     }));
+    const updated = get().projects.find((p) => p.id === id);
+    if (updated) void get().loadProjectIcon(updated);
+  },
+
+  loadProjectIcon: async (project) => {
+    // "" is an explicit opt-out: never scan, never show an icon.
+    if (project.folder_path === "") {
+      set((s) => {
+        const next = { ...s.projectIcons };
+        delete next[project.id];
+        return { projectIcons: next };
+      });
+      return;
+    }
+    try {
+      const icon = await invoke<ProjectIcon>("discover_project_icon", {
+        name: project.name,
+        folder: project.folder_path ?? null,
+      });
+      set((s) => ({ projectIcons: { ...s.projectIcons, [project.id]: icon } }));
+    } catch {
+      // Discovery is best-effort; on any failure the colour dot stands in.
+    }
+  },
+
+  loadProjectIcons: async () => {
+    await Promise.all(get().projects.map((p) => get().loadProjectIcon(p)));
   },
 
   removeProject: async (id) => {
@@ -630,6 +736,18 @@ export const useStore = create<Store>()((set, get) => ({
     return imported;
   },
 }));
+
+// Persist the last-viewed selection + view mode whenever either changes, so a
+// relaunch lands where the user left off (validated in `init`).
+let lastSelection = useStore.getState().selection;
+let lastViewMode = useStore.getState().viewMode;
+useStore.subscribe((state) => {
+  if (state.selection !== lastSelection || state.viewMode !== lastViewMode) {
+    lastSelection = state.selection;
+    lastViewMode = state.viewMode;
+    persistNav(state.selection, state.viewMode);
+  }
+});
 
 /** Persist an activity entry and refresh the log if that task's details are open. */
 async function recordActivity(taskId: number, label: string): Promise<void> {
