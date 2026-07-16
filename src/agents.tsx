@@ -124,22 +124,22 @@ export function AgentPresence({ taskId }: { taskId: number }) {
   const entry = useStore((s) => s.presence[taskId]);
   if (!entry || !isRecentPresence(entry.at)) return null;
   const { label, color, Mark } = agentIdentity(entry.name);
-  // Spin + pulse only while the agent is actively writing (a fresh row within the
-  // active window); it settles to static as the timestamp ages. Event-driven off
-  // the same reload every write already triggers — no heartbeat, no timer.
+  // The mark alone identifies the agent — no name text. It breathes (pulse) only
+  // while the agent is actively writing (a fresh row within the active window),
+  // then settles to static as the timestamp ages. Event-driven off the same reload
+  // every write already triggers — no heartbeat, no timer. The name lives on hover
+  // (title) and for assistive tech (aria-label).
   const working = isActivelyWorking(entry.at);
+  const when = timeAgo(entry.at);
   return (
     <span
       className="card-presence"
       style={{ ["--agent-color" as string]: color }}
-      title={`${label} · ${working ? "working now · " : ""}last active ${timeAgo(entry.at)}`}
+      title={`${label} · ${working ? "working now · " : ""}last active ${when}`}
+      aria-label={`${label}${working ? ", working now" : ""}, last active ${when}`}
     >
-      <Mark className={`card-presence-mark${working ? " working" : ""}`} size={13} />
-      <span className="card-presence-name">{label}</span>
-      <span className="card-presence-dot" aria-hidden="true">
-        ·
-      </span>
-      <span className="card-presence-time">{timeAgo(entry.at)}</span>
+      <Mark className={`card-presence-mark${working ? " working" : ""}`} size={14} />
+      <span className="card-presence-time">{when}</span>
     </span>
   );
 }

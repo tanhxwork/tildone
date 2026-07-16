@@ -1015,17 +1015,6 @@ textarea:focus-visible,
   flex-shrink: 0;
 }
 
-.card-presence-name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.card-presence-dot {
-  color: var(--text-faint);
-}
-
 .card-presence-time {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -1057,30 +1046,26 @@ textarea:focus-visible,
   max-width: 120px;
 }
 
-/* While an agent is actively writing (a fresh activity row within the short active
-   window), its mark spins and pulses, then settles to static once the writes stop
-   and the timestamp ages out. Event-driven off the reload every write triggers —
+/* The mark is now the whole identity — no name beside it — so "running" is shown by
+   a breathing pulse, not a spin: the shape stays legible (you can still tell which
+   agent it is) while it scales and brightens. Runs only while the agent is actively
+   writing (a fresh activity row within the short active window), then settles to
+   static as the timestamp ages out. Event-driven off the reload every write triggers —
    never a heartbeat — so it can only under-claim, never fake a live state. */
 .card-presence-mark.working {
-  animation: presence-spinpulse 2s ease-in-out infinite;
+  animation: presence-pulse 1.4s ease-in-out infinite;
   transform-origin: center;
 }
 
-@keyframes presence-spinpulse {
-  0% {
-    transform: rotate(0deg) scale(1);
-  }
-  25% {
-    transform: rotate(90deg) scale(1.18);
+@keyframes presence-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
   }
   50% {
-    transform: rotate(180deg) scale(1);
-  }
-  75% {
-    transform: rotate(270deg) scale(1.18);
-  }
-  100% {
-    transform: rotate(360deg) scale(1);
+    transform: scale(1.22);
+    opacity: 1;
   }
 }
 
