@@ -1,0 +1,31 @@
+/* Tildone brand tokens — source of truth for the logo/icon assets in this folder.
+   The app's UI theme lives in src/App.css and already resolves to these values for
+   indigo/ink/muted/faint; it additionally carries a dark theme, which the brand
+   kit (light-only) does not define. Keep the two in sync by hand. */
+:root{
+  /* Brand */
+  --tld-indigo: #5645d4;
+  --tld-indigo-hover: #4536c0;
+  --tld-indigo-tint: #eae7fb;
+
+  /* Ink & text */
+  --tld-ink: #37352f;
+  --tld-muted: #787671;
+  --tld-faint: #a4a097;
+
+  /* Surfaces */
+  --tld-paper: #efedea;
+  --tld-surface: #faf9f8;
+  --tld-white: #ffffff;
+
+  /* Lines */
+  --tld-border: #e6e3de;
+  --tld-border-soft: #eeece8;
+
+  /* Accents */
+  --tld-success: #3f9868;
+  --tld-amber: #dfa63a;
+
+  /* Type */
+  --tld-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}

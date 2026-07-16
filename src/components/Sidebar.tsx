@@ -4,6 +4,7 @@ import { useSettings } from "../settings";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { todayStr } from "../utils/dates";
+import { TildoneMark } from "./Brand";
 import {
   IconArchive,
   IconCalendar,
@@ -89,6 +90,7 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-titlebar" data-tauri-drag-region />
       <div className="sidebar-brand" data-tauri-drag-region>
+        <TildoneMark className="sidebar-brand-mark" />
         Tildone
       </div>
 

@@ -160,10 +160,18 @@ textarea:focus-visible,
 }
 
 .sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.2px;
   padding: 0 8px 10px;
+}
+
+.sidebar-brand-mark {
+  color: var(--accent);
+  flex: none;
 }
 
 .sidebar-section {
