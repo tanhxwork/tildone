@@ -105,6 +105,32 @@ function colorForName(name: string): string {
 
 const TRASH_RETENTION_DAYS = 30;
 
+/**
+ * The slot a task takes when it lands in the (project_id, status) group.
+ * Mirrors `Store::group_slot` in src-tauri/src/agent.rs — the Rust MCP server and
+ * this store both write `tasks` directly, so the rule has to exist in both.
+ *
+ * `done` inserts at the top (MIN-1) so the newest completion reads first; the rest
+ * append at the bottom (MAX+1). Top-insert does not renumber the group: Done grows
+ * without bound and shifting every card down on each completion would get slower
+ * the longer it gets, and fire a `changes_task_moved` per card. Positions only have
+ * to be distinct and ordered within the group, never a dense index — so `done` is
+ * simply allowed to drift negative.
+ */
+export function groupSlot(
+  tasks: Task[],
+  project_id: number | null,
+  status: Status,
+): number {
+  const group = tasks.filter(
+    (t) =>
+      t.deleted_at === null && t.status === status && t.project_id === project_id,
+  );
+  if (group.length === 0) return 0;
+  const positions = group.map((t) => t.position);
+  return status === "done" ? Math.min(...positions) - 1 : Math.max(...positions) + 1;
+}
+
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   projects: [],
@@ -207,10 +233,7 @@ export const useStore = create<Store>()((set, get) => ({
 
   addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [] }) => {
     const { tasks } = get();
-    const position =
-      tasks
-        .filter((t) => t.project_id === project_id && t.status === "todo")
-        .reduce((max, t) => Math.max(max, t.position), -1) + 1;
+    const position = groupSlot(tasks, project_id, "todo");
     const created_at = new Date().toISOString();
     const id = await db.insertTask({
       project_id,
@@ -246,6 +269,16 @@ export const useStore = create<Store>()((set, get) => ({
     const full = { ...patch };
     if (patch.status && patch.status !== current.status) {
       full.completed_at = patch.status === "done" ? new Date().toISOString() : null;
+    }
+    // Changing group without a fresh slot would carry the old position into the new
+    // group and collide with whatever already sits there, dropping the column back
+    // to sorting by id. A drag doesn't come through here — it calls applyPositions
+    // with positions of its own — so recomputing whenever the group moved is safe.
+    const destStatus = patch.status ?? current.status;
+    const destProject =
+      patch.project_id !== undefined ? patch.project_id : current.project_id;
+    if (destStatus !== current.status || destProject !== current.project_id) {
+      full.position = groupSlot(get().tasks, destProject, destStatus);
     }
     await db.updateTask(id, full);
     set((s) => ({
@@ -292,9 +325,17 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   restoreTask: async (id) => {
-    await db.updateTask(id, { deleted_at: null });
+    const task = get().tasks.find((t) => t.id === id);
+    if (!task) return;
+    // Coming back from the trash is a group change too: the task has been out of
+    // its (project, status) group long enough for its old slot to be taken, so it
+    // needs a fresh one like any other arrival.
+    const position = groupSlot(get().tasks, task.project_id, task.status);
+    await db.updateTask(id, { deleted_at: null, position });
     set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === id ? { ...t, deleted_at: null } : t)),
+      tasks: s.tasks.map((t) =>
+        t.id === id ? { ...t, deleted_at: null, position } : t,
+      ),
     }));
   },
 
