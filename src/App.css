@@ -642,8 +642,13 @@ textarea:focus-visible,
 
 .task-id {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
   font-variant-numeric: tabular-nums;
   user-select: none;
 }
@@ -937,9 +942,18 @@ textarea:focus-visible,
 }
 
 .card-id {
-  font-weight: 400;
-  color: var(--text-faint);
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin-right: 2px;
   font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+  text-decoration: none;
 }
 
 .board-card .task-meta {
