@@ -55,6 +55,41 @@ export interface ActivityEntry {
   created_at: string;
 }
 
+export interface TaskLink {
+  id: number;
+  task_id: number;
+  url: string;
+  label: string;
+  kind: string; // pr | branch | commit | worktree | other
+}
+
+export type LinkKind = "pr" | "branch" | "commit" | "worktree" | "other";
+
+export const LINK_KINDS: LinkKind[] = ["pr", "branch", "commit", "worktree", "other"];
+
+export const LINK_KIND_LABELS: Record<LinkKind, string> = {
+  pr: "Pull request",
+  branch: "Branch",
+  commit: "Commit",
+  worktree: "Worktree",
+  other: "Link",
+};
+
+// Per-kind accent, hardcoded like PRIORITY_COLORS and picked to read on both themes.
+export const LINK_KIND_COLORS: Record<LinkKind, string> = {
+  pr: "#8250df",
+  branch: "#1a7f5a",
+  commit: "#dd5b00",
+  worktree: "#2a9d99",
+  other: "#787671",
+};
+
+/** A stored kind string is untrusted (an older or hand-written row); fold anything
+ *  unrecognised to "other" so the UI always has a colour and icon. */
+export function asLinkKind(kind: string): LinkKind {
+  return (LINK_KINDS as string[]).includes(kind) ? (kind as LinkKind) : "other";
+}
+
 export type Selection =
   | { type: "today" }
   | { type: "upcoming" }

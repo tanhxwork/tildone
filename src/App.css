@@ -3218,3 +3218,107 @@ textarea:focus-visible,
   line-height: 1.7;
   color: var(--text-muted);
 }
+
+/* ---- Repo links (item 7) ---- */
+
+/* Editor: full chips (icon + label) with an open action and a remove button. */
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--link-color) 35%, var(--border));
+  background: color-mix(in srgb, var(--link-color) 10%, transparent);
+  padding: 1px 3px 1px 4px;
+}
+.link-chip-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+.link-chip-open:hover .link-chip-label {
+  text-decoration: underline;
+}
+.link-chip-open svg {
+  color: var(--link-color);
+  flex: none;
+}
+.link-delete {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.link-chip:hover .link-delete {
+  color: var(--danger);
+}
+.detail-link-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+}
+.detail-link-add svg {
+  flex: none;
+}
+.detail-link-add input {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  min-width: 180px;
+}
+
+/* Card: compact icon (+ short label where short), opens in the browser on click. */
+.card-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+}
+.card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.card-link:hover {
+  background: var(--bg-hover);
+}
+.card-link svg {
+  color: var(--link-color);
+  flex: none;
+}
+.card-link-label {
+  color: var(--text-muted);
+}
