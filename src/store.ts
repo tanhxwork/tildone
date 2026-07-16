@@ -139,6 +139,56 @@ function colorForName(name: string): string {
 const TRASH_RETENTION_DAYS = 30;
 
 /**
+ * Last-viewed selection + view mode, persisted so relaunch lands where the user
+ * left off instead of resetting to Today/list. A project selection is validated
+ * against the loaded projects in `init` — a deleted project falls back to Today.
+ */
+const NAV_STORAGE_KEY = "tildone-nav";
+const VIEW_MODES: ViewMode[] = ["list", "board", "table", "calendar"];
+const SELECTION_TYPES: Selection["type"][] = [
+  "today",
+  "upcoming",
+  "inbox",
+  "all",
+  "week",
+  "review",
+  "completed",
+  "project",
+];
+
+function loadNav(): { selection: Selection; viewMode: ViewMode } {
+  const fallback = { selection: { type: "today" } as Selection, viewMode: "list" as ViewMode };
+  try {
+    const raw = localStorage.getItem(NAV_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    const viewMode: ViewMode = VIEW_MODES.includes(parsed.viewMode)
+      ? parsed.viewMode
+      : "list";
+    const sel = parsed.selection;
+    let selection: Selection = fallback.selection;
+    if (sel && SELECTION_TYPES.includes(sel.type)) {
+      if (sel.type === "project") {
+        if (typeof sel.projectId === "number") selection = { type: "project", projectId: sel.projectId };
+      } else {
+        selection = { type: sel.type };
+      }
+    }
+    return { selection, viewMode };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistNav(selection: Selection, viewMode: ViewMode) {
+  try {
+    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ selection, viewMode }));
+  } catch {
+    // ignore quota/serialization errors — persistence is best-effort
+  }
+}
+
+/**
  * The slot a task takes when it lands in the (project_id, status) group.
  * Mirrors `Store::group_slot` in src-tauri/src/agent.rs — the Rust MCP server and
  * this store both write `tasks` directly, so the rule has to exist in both.
@@ -175,8 +225,7 @@ export const useStore = create<Store>()((set, get) => ({
   activity: [],
   presence: {},
 
-  selection: { type: "today" },
-  viewMode: "list",
+  ...loadNav(),
   search: "",
   activeTagIds: [],
   priorityFilter: 0,
@@ -192,6 +241,15 @@ export const useStore = create<Store>()((set, get) => ({
     await db.purgeTrashedBefore(cutoff);
     const data = await db.fetchAll();
     set({ ...data, loaded: true });
+    // A restored project selection may point at a project deleted in another
+    // session; fall back to Today so we never land on a dead view.
+    const { selection } = get();
+    if (
+      selection.type === "project" &&
+      !data.projects.some((p) => p.id === selection.projectId)
+    ) {
+      set({ selection: { type: "today" } });
+    }
     // Icons resolve async off the main load — the dot shows until they land.
     void get().loadProjectIcons();
   },
@@ -678,6 +736,18 @@ export const useStore = create<Store>()((set, get) => ({
     return imported;
   },
 }));
+
+// Persist the last-viewed selection + view mode whenever either changes, so a
+// relaunch lands where the user left off (validated in `init`).
+let lastSelection = useStore.getState().selection;
+let lastViewMode = useStore.getState().viewMode;
+useStore.subscribe((state) => {
+  if (state.selection !== lastSelection || state.viewMode !== lastViewMode) {
+    lastSelection = state.selection;
+    lastViewMode = state.viewMode;
+    persistNav(state.selection, state.viewMode);
+  }
+});
 
 /** Persist an activity entry and refresh the log if that task's details are open. */
 async function recordActivity(taskId: number, label: string): Promise<void> {
