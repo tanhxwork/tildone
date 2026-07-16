@@ -996,6 +996,42 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+/* Presence: which agent last touched the card, and how long ago. A quiet line,
+   not a badge — it is ambient status, not an action. The agent's brand colour
+   tints only the mark; the text stays in the muted token so a row of cards reads
+   as one system regardless of which agents are on them. --agent-color is set
+   inline per agent (src/agents.tsx). */
+.card-presence {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.card-presence-mark {
+  color: var(--agent-color, var(--text-muted));
+  flex-shrink: 0;
+}
+
+.card-presence-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-presence-dot {
+  color: var(--text-faint);
+}
+
+.card-presence-time {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
 /* Compact Done cards. A finished card is history, not work in flight, so it
    collapses to one line: check, strikethrough title, project dot, completion time.
    The Done column is a recent window (today + backfill to a limit); the rest lives

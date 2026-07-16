@@ -9,7 +9,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo},
     schemars,
-    service::NotificationContext,
+    service::{NotificationContext, RequestContext},
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
@@ -259,11 +259,43 @@ impl TildoneAgent {
         conn.query_row(sql, rusqlite::params![status, project_id], |r| r.get(0))
     }
 
-    fn record_activity(conn: &Connection, task_id: i64, label: &str) {
+    /// Record one activity row **as an agent**.
+    ///
+    /// `actor_kind` is hard-coded `'agent'`, and that is the design rather than a
+    /// shortcut: every path that reaches this function arrived over MCP, so this
+    /// file *cannot* record a user write even by accident. `insertActivity`
+    /// (src/db.ts) is its mirror and hard-codes `'user'` for the same reason.
+    ///
+    /// This is why attribution needs no trigger. `changes` uses triggers precisely
+    /// because they catch writers that do not know the feed exists (that is what
+    /// catches the drag). Attribution needs the opposite: a stamp applied by the one
+    /// site that cannot be wrong about who it is.
+    ///
+    /// `agent` is the client's own name for itself and may be `None` when the
+    /// handshake carried none — recorded as an unnamed agent, never as the user.
+    fn record_activity(conn: &Connection, task_id: i64, label: &str, agent: Option<&str>) {
         let _ = conn.execute(
-            "INSERT INTO task_activity (task_id, label, created_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![task_id, label, now_iso()],
+            "INSERT INTO task_activity (task_id, label, created_at, actor_kind, actor_name)
+             VALUES (?1, ?2, ?3, 'agent', ?4)",
+            rusqlite::params![task_id, label, now_iso(), agent],
         );
+    }
+
+    /// The calling MCP client's own name for itself (e.g. `claude-code`), from the
+    /// `initialize` handshake.
+    ///
+    /// Only trustworthy because this server runs in rmcp's **stateful** mode:
+    /// `StreamableHttpServerConfig::default()` sets `stateful_mode: true` and
+    /// `server_config` does not override it. In stateless mode rmcp keeps no
+    /// handshake and synthesises `client_info` from `Implementation::default()`,
+    /// which is `from_build_env()` — *Tildone's own* name and version. That would
+    /// not read as "unknown", it would read as a confident lie. So if this server
+    /// ever moves to stateless, attribution must be switched off rather than left
+    /// to fall back.
+    fn client_name(ctx: &RequestContext<RoleServer>) -> Option<String> {
+        let info = ctx.peer.peer_info()?;
+        let name = info.client_info.name.trim();
+        (!name.is_empty()).then(|| name.to_string())
     }
 
     /// Highest change id ever issued.
@@ -502,6 +534,7 @@ impl TildoneAgent {
         due_date: Option<String>,
         project: Option<String>,
         tags: Option<Vec<String>>,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let current: Option<(String, Option<i64>, Option<String>)> = conn
@@ -644,7 +677,7 @@ impl TildoneAgent {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
         for label in &activity {
-            Self::record_activity(&conn, id, label);
+            Self::record_activity(&conn, id, label, agent);
         }
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
@@ -1047,6 +1080,15 @@ impl TildoneAgent {
     fn create_task(
         &self,
         Parameters(p): Parameters<CreateTaskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.create_task_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn create_task_as(
+        &self,
+        p: CreateTaskParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let title = p.title.trim().to_string();
         if title.is_empty() {
@@ -1096,7 +1138,7 @@ impl TildoneAgent {
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
-        Self::record_activity(&conn, id, "Task created");
+        Self::record_activity(&conn, id, "Task created", agent);
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
         self.notify();
@@ -1107,9 +1149,18 @@ impl TildoneAgent {
     fn update_task(
         &self,
         Parameters(p): Parameters<UpdateTaskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.update_task_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn update_task_as(
+        &self,
+        p: UpdateTaskParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         self.apply_task_update(
-            p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags,
+            p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, agent,
         )
     }
 
@@ -1166,7 +1217,16 @@ impl TildoneAgent {
     )]
     fn add_subtask(
         &self,
-        Parameters(AddSubtaskParams { task_id, title }): Parameters<AddSubtaskParams>,
+        Parameters(p): Parameters<AddSubtaskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.add_subtask_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn add_subtask_as(
+        &self,
+        AddSubtaskParams { task_id, title }: AddSubtaskParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let title = title.trim().to_string();
         if title.is_empty() {
@@ -1195,7 +1255,7 @@ impl TildoneAgent {
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
-        Self::record_activity(&conn, task_id, &format!("Subtask added: {title}"));
+        Self::record_activity(&conn, task_id, &format!("Subtask added: {title}"), agent);
         let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
         drop(conn);
         self.notify();
@@ -1211,7 +1271,16 @@ impl TildoneAgent {
     #[tool(description = "Tick, untick or rename a subtask. Only the provided fields change.")]
     fn set_subtask(
         &self,
-        Parameters(SetSubtaskParams { id, done, title }): Parameters<SetSubtaskParams>,
+        Parameters(p): Parameters<SetSubtaskParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.set_subtask_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn set_subtask_as(
+        &self,
+        SetSubtaskParams { id, done, title }: SetSubtaskParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         if done.is_none() && title.is_none() {
             return Ok(err("Nothing to change — pass done and/or title."));
@@ -1235,7 +1304,7 @@ impl TildoneAgent {
                 rusqlite::params![title, id],
             )
             .map_err(db_err)?;
-            Self::record_activity(&conn, task_id, &format!("Subtask renamed: {title}"));
+            Self::record_activity(&conn, task_id, &format!("Subtask renamed: {title}"), agent);
         }
         if let Some(done) = done {
             conn.execute(
@@ -1255,6 +1324,7 @@ impl TildoneAgent {
                     "Subtask {}: {current}",
                     if done { "completed" } else { "reopened" }
                 ),
+                agent,
             );
         }
         let (done_count, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
@@ -1272,7 +1342,16 @@ impl TildoneAgent {
     )]
     fn delete_subtask(
         &self,
-        Parameters(IdParams { id }): Parameters<IdParams>,
+        Parameters(p): Parameters<IdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.delete_subtask_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn delete_subtask_as(
+        &self,
+        IdParams { id }: IdParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let Some((task_id, trashed)) = Self::parent_task_of(&conn, id).map_err(db_err)? else {
@@ -1290,7 +1369,7 @@ impl TildoneAgent {
             .map_err(db_err)?;
         conn.execute("DELETE FROM subtasks WHERE id = ?1", [id])
             .map_err(db_err)?;
-        Self::record_activity(&conn, task_id, &format!("Subtask removed: {title}"));
+        Self::record_activity(&conn, task_id, &format!("Subtask removed: {title}"), agent);
         let (done, total) = Self::subtask_progress(&conn, task_id).map_err(db_err)?;
         drop(conn);
         self.notify();
@@ -1306,7 +1385,16 @@ impl TildoneAgent {
     )]
     fn log_progress(
         &self,
-        Parameters(LogProgressParams { task_id, text }): Parameters<LogProgressParams>,
+        Parameters(p): Parameters<LogProgressParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.log_progress_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn log_progress_as(
+        &self,
+        LogProgressParams { task_id, text }: LogProgressParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -1322,7 +1410,7 @@ impl TildoneAgent {
             }
             Some(false) => {}
         }
-        Self::record_activity(&conn, task_id, &text);
+        Self::record_activity(&conn, task_id, &text, agent);
         drop(conn);
         self.notify();
         // A receipt, like every other write: the entry is on screen, echoing it back
@@ -1333,7 +1421,16 @@ impl TildoneAgent {
     #[tool(description = "Mark a task as done.")]
     fn complete_task(
         &self,
-        Parameters(IdParams { id }): Parameters<IdParams>,
+        Parameters(p): Parameters<IdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.complete_task_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn complete_task_as(
+        &self,
+        IdParams { id }: IdParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         self.apply_task_update(
             id,
@@ -1344,6 +1441,7 @@ impl TildoneAgent {
             None,
             None,
             None,
+            agent,
         )
     }
 
@@ -1398,12 +1496,21 @@ impl TildoneAgent {
     )]
     fn add_link(
         &self,
-        Parameters(AddLinkParams {
+        Parameters(p): Parameters<AddLinkParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.add_link_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn add_link_as(
+        &self,
+        AddLinkParams {
             task_id,
             url,
             label,
             kind,
-        }): Parameters<AddLinkParams>,
+        }: AddLinkParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = url.trim().to_string();
         if !valid_http_url(&url) {
@@ -1439,7 +1546,7 @@ impl TildoneAgent {
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
-        Self::record_activity(&conn, task_id, &format!("Link added: {label}"));
+        Self::record_activity(&conn, task_id, &format!("Link added: {label}"), agent);
         drop(conn);
         self.notify();
         ok_json(&json!({
@@ -1456,7 +1563,16 @@ impl TildoneAgent {
     )]
     fn delete_link(
         &self,
-        Parameters(IdParams { id }): Parameters<IdParams>,
+        Parameters(p): Parameters<IdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.delete_link_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn delete_link_as(
+        &self,
+        IdParams { id }: IdParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let found: Option<(i64, String)> = conn
@@ -1476,7 +1592,7 @@ impl TildoneAgent {
         };
         conn.execute("DELETE FROM task_links WHERE id = ?1", [id])
             .map_err(db_err)?;
-        Self::record_activity(&conn, task_id, &format!("Link removed: {label}"));
+        Self::record_activity(&conn, task_id, &format!("Link removed: {label}"), agent);
         drop(conn);
         self.notify();
         ok_json(&json!({ "deleted": id, "task_id": task_id }))
@@ -1756,6 +1872,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/007_archived_at.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/008_task_links.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/009_activity_actor.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -1781,7 +1898,7 @@ mod tests {
     fn a_task(agent: &TildoneAgent, title: &str) -> i64 {
         let (is_err, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -1789,7 +1906,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "create_task failed: {task}");
@@ -1805,12 +1922,12 @@ mod tests {
     ) -> (bool, Value) {
         extract(
             &agent
-                .add_link(Parameters(AddLinkParams {
+                .add_link_as(AddLinkParams {
                     task_id,
                     url: url.into(),
                     label: label.map(Into::into),
                     kind: kind.map(Into::into),
-                }))
+                }, None)
                 .unwrap(),
         )
     }
@@ -1931,11 +2048,11 @@ mod tests {
         let (_, link) = attach(&agent, id, "https://example.com/a", None, None);
         let link_id = link["id"].as_i64().unwrap();
         let (is_err, _) =
-            extract(&agent.delete_link(Parameters(IdParams { id: link_id })).unwrap());
+            extract(&agent.delete_link_as(IdParams { id: link_id }, None).unwrap());
         assert!(!is_err);
         let (_, task) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
         assert_eq!(task["links"].as_array().unwrap().len(), 0);
-        let (missing, _) = extract(&agent.delete_link(Parameters(IdParams { id: 9999 })).unwrap());
+        let (missing, _) = extract(&agent.delete_link_as(IdParams { id: 9999 }, None).unwrap());
         assert!(missing, "deleting a non-existent link errors, not panics");
     }
 
@@ -2028,7 +2145,7 @@ mod tests {
         );
         extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Ship it".into(),
                     project: Some("Work".into()),
                     notes: None,
@@ -2036,7 +2153,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
 
@@ -2060,7 +2177,7 @@ mod tests {
         let agent = test_agent();
         let (_, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Logged work".into(),
                     project: None,
                     notes: Some("Goal: ship it".into()),
@@ -2068,7 +2185,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let id = task["id"].as_i64().unwrap();
@@ -2163,7 +2280,7 @@ mod tests {
         // Project must exist before tasks can target it.
         let (is_err, v) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Ship it".into(),
                     project: Some("Work".into()),
                     notes: None,
@@ -2171,7 +2288,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(is_err, "unknown project must be a tool error: {v}");
@@ -2191,7 +2308,7 @@ mod tests {
         // Create under the project by name, with tags + due date + priority.
         let (is_err, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Ship it".into(),
                     project: Some("work".into()), // case-insensitive
                     notes: Some("the big one".into()),
@@ -2199,7 +2316,7 @@ mod tests {
                     priority: Some(3),
                     tags: Some(vec!["release".into()]),
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "create_task failed: {task}");
@@ -2218,7 +2335,7 @@ mod tests {
         // Inbox task (no project) gets position 0 in its own group.
         let (_, inbox_task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Loose end".into(),
                     project: None,
                     notes: None,
@@ -2226,7 +2343,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert_eq!(inbox_task["project"], Value::Null);
@@ -2249,7 +2366,7 @@ mod tests {
 
         // complete_task sets completed_at; done tasks drop out of default list.
         let (is_err, done) = extract(
-            &agent.complete_task(Parameters(IdParams { id })).unwrap(),
+            &agent.complete_task_as(IdParams { id }, None).unwrap(),
         );
         assert!(!is_err);
         assert_eq!(done["status"], "done");
@@ -2271,7 +2388,7 @@ mod tests {
         // update_task: back to todo clears completed_at, move to inbox.
         let (_, updated) = extract(
             &agent
-                .update_task(Parameters(UpdateTaskParams {
+                .update_task_as(UpdateTaskParams {
                     id,
                     title: None,
                     notes: None,
@@ -2280,7 +2397,7 @@ mod tests {
                     due_date: Some("".into()),
                     project: Some("inbox".into()),
                     tags: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert_eq!(updated["status"], "todo");
@@ -2292,7 +2409,7 @@ mod tests {
         let (is_err, msg) = extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
         assert!(!is_err, "{msg}");
         let (is_err, msg) = extract(
-            &agent.complete_task(Parameters(IdParams { id })).unwrap(),
+            &agent.complete_task_as(IdParams { id }, None).unwrap(),
         );
         assert!(is_err);
         assert!(msg.as_str().unwrap().contains("trash"));
@@ -2332,7 +2449,7 @@ mod tests {
         let agent = test_agent();
         let (_, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Logged work".into(),
                     project: None,
                     notes: Some(CANONICAL_NOTES.into()),
@@ -2340,7 +2457,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let id = task["id"].as_i64().unwrap();
@@ -2373,7 +2490,7 @@ mod tests {
         let agent = test_agent();
         let (_, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Build it".into(),
                     project: None,
                     notes: Some(CANONICAL_NOTES.into()),
@@ -2381,17 +2498,17 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let id = task["id"].as_i64().unwrap();
 
         let (is_err, ack) = extract(
             &agent
-                .log_progress(Parameters(LogProgressParams {
+                .log_progress_as(LogProgressParams {
                     task_id: id,
                     text: "  tests written (RED, 5 failing)  ".into(),
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "log_progress failed: {ack}");
@@ -2420,7 +2537,7 @@ mod tests {
         let agent = test_agent();
         let (_, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Build it".into(),
                     project: None,
                     notes: None,
@@ -2428,27 +2545,27 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let id = task["id"].as_i64().unwrap();
 
         let (is_err, _) = extract(
             &agent
-                .log_progress(Parameters(LogProgressParams {
+                .log_progress_as(LogProgressParams {
                     task_id: id,
                     text: "   ".into(),
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(is_err, "empty log text must be refused");
 
         let (is_err, _) = extract(
             &agent
-                .log_progress(Parameters(LogProgressParams {
+                .log_progress_as(LogProgressParams {
                     task_id: 999_999,
                     text: "ghost".into(),
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(is_err, "unknown task must be refused");
@@ -2457,10 +2574,10 @@ mod tests {
         extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
         let (is_err, out) = extract(
             &agent
-                .log_progress(Parameters(LogProgressParams {
+                .log_progress_as(LogProgressParams {
                     task_id: id,
                     text: "still going".into(),
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(is_err, "trashed task must refuse a log entry: {out}");
@@ -2473,7 +2590,7 @@ mod tests {
         let agent = test_agent();
         let (_, task) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Build it".into(),
                     project: None,
                     notes: None,
@@ -2481,7 +2598,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let task_id = task["id"].as_i64().unwrap();
@@ -2490,10 +2607,10 @@ mod tests {
         for title in ["write test", "implement", "verify"] {
             let (is_err, out) = extract(
                 &agent
-                    .add_subtask(Parameters(AddSubtaskParams {
+                    .add_subtask_as(AddSubtaskParams {
                         task_id,
                         title: title.into(),
-                    }))
+                    }, None)
                     .unwrap(),
             );
             assert!(!is_err, "add_subtask failed: {out}");
@@ -2502,11 +2619,11 @@ mod tests {
 
         let (_, out) = extract(
             &agent
-                .set_subtask(Parameters(SetSubtaskParams {
+                .set_subtask_as(SetSubtaskParams {
                     id: ids[0],
                     done: Some(true),
                     title: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert_eq!(out["progress"]["done"], 1);
@@ -2522,7 +2639,7 @@ mod tests {
 
         let (_, out) = extract(
             &agent
-                .delete_subtask(Parameters(IdParams { id: ids[2] }))
+                .delete_subtask_as(IdParams { id: ids[2] }, None)
                 .unwrap(),
         );
         assert_eq!(out["progress"]["total"], 2);
@@ -2530,11 +2647,11 @@ mod tests {
         // Untick walks progress back down.
         let (_, out) = extract(
             &agent
-                .set_subtask(Parameters(SetSubtaskParams {
+                .set_subtask_as(SetSubtaskParams {
                     id: ids[0],
                     done: Some(false),
                     title: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert_eq!(out["progress"]["done"], 0);
@@ -2544,11 +2661,11 @@ mod tests {
             .unwrap();
         let (is_err, _) = extract(
             &agent
-                .set_subtask(Parameters(SetSubtaskParams {
+                .set_subtask_as(SetSubtaskParams {
                     id: ids[1],
                     done: Some(true),
                     title: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(is_err, "a trashed parent must refuse subtask writes");
@@ -2563,7 +2680,7 @@ mod tests {
         let agent = test_agent();
         for (title, due) in [("top", "2099-01-01"), ("bottom", "2000-01-01")] {
             agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -2571,7 +2688,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap();
         }
         let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
@@ -2602,7 +2719,7 @@ mod tests {
         let agent = test_agent();
         for title in ["a", "b", "c"] {
             agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -2610,7 +2727,7 @@ mod tests {
                     priority: None,
                     tags: (title == "c").then(|| vec!["find-me".to_string()]),
                     status: None,
-                }))
+                }, None)
                 .unwrap();
         }
         let (_, out) = extract(
@@ -2642,7 +2759,7 @@ mod tests {
             ("work-doing", Some("Work"), Some("doing")),
         ] {
             agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: project.map(Into::into),
                     notes: None,
@@ -2650,7 +2767,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: status.map(Into::into),
-                }))
+                }, None)
                 .unwrap();
         }
         let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
@@ -2669,7 +2786,7 @@ mod tests {
         let agent = test_agent();
         for title in ["a", "b", "c"] {
             agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -2677,7 +2794,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap();
         }
         let conn = agent.db.lock().unwrap();
@@ -2725,7 +2842,7 @@ mod tests {
     fn new_task(agent: &TildoneAgent, title: &str) -> i64 {
         let (is_err, v) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -2733,7 +2850,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "{v}");
@@ -2743,7 +2860,7 @@ mod tests {
     fn set_status(agent: &TildoneAgent, id: i64, status: &str) {
         let (is_err, v) = extract(
             &agent
-                .update_task(Parameters(UpdateTaskParams {
+                .update_task_as(UpdateTaskParams {
                     id,
                     title: None,
                     notes: None,
@@ -2752,7 +2869,7 @@ mod tests {
                     due_date: None,
                     project: None,
                     tags: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "{v}");
@@ -2771,7 +2888,7 @@ mod tests {
         let c = new_task(&agent, "c");
 
         for id in [a, b, c] {
-            let (is_err, v) = extract(&agent.complete_task(Parameters(IdParams { id })).unwrap());
+            let (is_err, v) = extract(&agent.complete_task_as(IdParams { id }, None).unwrap());
             assert!(!is_err, "{v}");
         }
 
@@ -2791,7 +2908,7 @@ mod tests {
         let agent = test_agent();
         let ids: Vec<i64> = (0..5).map(|i| new_task(&agent, &format!("t{i}"))).collect();
         for id in &ids[..4] {
-            agent.complete_task(Parameters(IdParams { id: *id })).unwrap();
+            agent.complete_task_as(IdParams { id: *id }, None).unwrap();
         }
 
         let before: Vec<(i64, i64)> = {
@@ -2807,7 +2924,7 @@ mod tests {
             v
         };
 
-        agent.complete_task(Parameters(IdParams { id: ids[4] })).unwrap();
+        agent.complete_task_as(IdParams { id: ids[4] }, None).unwrap();
 
         let conn = agent.db.lock().unwrap();
         for (id, pos) in before {
@@ -2850,7 +2967,7 @@ mod tests {
         // … and a project task also at todo/0 in its own group.
         let (_, v) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "already in work".into(),
                     project: Some("work".into()),
                     notes: None,
@@ -2858,14 +2975,14 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let work_task = v["id"].as_i64().unwrap();
 
         let (is_err, v) = extract(
             &agent
-                .update_task(Parameters(UpdateTaskParams {
+                .update_task_as(UpdateTaskParams {
                     id: inbox_task,
                     title: None,
                     notes: None,
@@ -2874,7 +2991,7 @@ mod tests {
                     due_date: None,
                     project: Some("work".into()),
                     tags: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err, "{v}");
@@ -2899,7 +3016,7 @@ mod tests {
                 .unwrap()
         };
         agent
-            .update_task(Parameters(UpdateTaskParams {
+            .update_task_as(UpdateTaskParams {
                 id: a,
                 title: Some("renamed".into()),
                 notes: None,
@@ -2908,7 +3025,7 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
-            }))
+            }, None)
             .unwrap();
         let conn = agent.db.lock().unwrap();
         let after: i64 = conn
@@ -3316,7 +3433,7 @@ mod tests {
         let (agent, _db) = test_agent_with_db();
         let (_, created) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "Work".into(),
                     project: None,
                     notes: None,
@@ -3324,7 +3441,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         let id = created["id"].as_i64().unwrap();
@@ -3333,7 +3450,7 @@ mod tests {
         let base = base_v["cursor"].as_i64().unwrap();
 
         agent
-            .update_task(Parameters(UpdateTaskParams {
+            .update_task_as(UpdateTaskParams {
                 id,
                 title: None,
                 notes: None,
@@ -3342,7 +3459,7 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
-            }))
+            }, None)
             .unwrap();
 
         let (_, v) = extract(&agent.list_changes(no_wait(Some(base))).await.unwrap());
@@ -3545,7 +3662,7 @@ mod tests {
         let started = std::time::Instant::now();
         let (is_err, _) = extract(
             &agent
-                .create_task(Parameters(CreateTaskParams {
+                .create_task_as(CreateTaskParams {
                     title: "while you were waiting".into(),
                     project: None,
                     notes: None,
@@ -3553,7 +3670,7 @@ mod tests {
                     priority: None,
                     tags: None,
                     status: None,
-                }))
+                }, None)
                 .unwrap(),
         );
         assert!(!is_err);
@@ -3566,5 +3683,177 @@ mod tests {
         // And that write is exactly what wakes the parked call.
         let (_, v) = extract(&handle.await.unwrap().unwrap());
         assert!(!v["changes"].as_array().unwrap().is_empty());
+    }
+
+    /// Read the (actor_kind, actor_name) of the most recent activity row on a task.
+    fn last_actor(db: &Db, task_id: i64) -> (Option<String>, Option<String>) {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT actor_kind, actor_name FROM task_activity
+             WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+            [task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// Every activity row this file writes is an agent write, by construction — the
+    /// only way to reach it is over MCP. So the actor is stamped, and it carries the
+    /// client's own name when the handshake gave one.
+    #[test]
+    fn an_agent_write_is_stamped_agent_with_its_name() {
+        let (agent, db) = test_agent_with_db();
+        let (_, task) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Build it".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        status: None,
+                    },
+                    Some("claude-code"),
+                )
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        extract(
+            &agent
+                .log_progress_as(
+                    LogProgressParams { task_id: id, text: "tests green".into() },
+                    Some("claude-code"),
+                )
+                .unwrap(),
+        );
+
+        assert_eq!(
+            last_actor(&db, id),
+            (Some("agent".to_string()), Some("claude-code".to_string())),
+        );
+    }
+
+    /// A client that sent no usable name is still an agent — recorded as an unnamed
+    /// agent, never mislabelled as the user. This is why kind and name are separate
+    /// columns: `actor_kind` is known even when `actor_name` is not.
+    #[test]
+    fn an_unnamed_agent_is_still_agent_kind() {
+        let (agent, db) = test_agent_with_db();
+        let (_, task) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Anon".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        status: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+        assert_eq!(last_actor(&db, id), (Some("agent".to_string()), None));
+    }
+
+    /// The point of the feature: the Rust MCP writer and the TS UI writer emit the
+    /// identical label for the same semantic change ("Status changed to Done"). Here
+    /// we drive the agent path and simulate the UI path the way db.ts does — same
+    /// label, but the actor column now tells them apart. If this ever fails, the feed
+    /// is anonymous again.
+    #[test]
+    fn the_same_label_from_agent_and_user_is_told_apart_by_actor() {
+        let (agent, db) = test_agent_with_db();
+        let (_, task) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Ship".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        status: None,
+                    },
+                    Some("codex"),
+                )
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        // Agent completes the task -> "Status changed to Done", actor agent/codex.
+        extract(&agent.complete_task_as(IdParams { id }, Some("codex")).unwrap());
+
+        // The UI writer (src/db.ts insertActivity) hard-codes 'user' and no name.
+        // Simulate its exact INSERT so both rows share the label but not the actor.
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO task_activity (task_id, label, created_at, actor_kind, actor_name)
+                 VALUES (?1, 'Status changed to Done', ?2, 'user', NULL)",
+                rusqlite::params![id, now_iso()],
+            )
+            .unwrap();
+        }
+
+        let conn = db.lock().unwrap();
+        let mut kinds: Vec<(String, Option<String>)> = conn
+            .prepare(
+                "SELECT actor_kind, actor_name FROM task_activity
+                 WHERE task_id = ?1 AND label = 'Status changed to Done' ORDER BY id",
+            )
+            .unwrap()
+            .query_map([id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![
+                ("agent".to_string(), Some("codex".to_string())),
+                ("user".to_string(), None),
+            ],
+            "same label, different actor — the feed can now say who did it"
+        );
+    }
+
+    /// Migration 006 is additive: pre-existing rows keep NULL actor columns and are
+    /// still readable exactly as before. A legacy row must not read as a user or an
+    /// agent — it is genuinely unknown, and NULL is how the UI knows to show neither.
+    #[test]
+    fn legacy_rows_have_null_actor() {
+        let conn = migrated_conn();
+        // A row written the pre-006 way: no actor columns named at all.
+        conn.execute(
+            "INSERT INTO tasks (title, status, position, created_at)
+             VALUES ('old', 'todo', 0, ?1)",
+            rusqlite::params![now_iso()],
+        )
+        .unwrap();
+        let tid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO task_activity (task_id, label, created_at)
+             VALUES (?1, 'Task created', ?2)",
+            rusqlite::params![tid, now_iso()],
+        )
+        .unwrap();
+        let (kind, name): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT actor_kind, actor_name FROM task_activity WHERE task_id = ?1",
+                [tid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((kind, name), (None, None));
     }
 }

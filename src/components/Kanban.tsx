@@ -35,6 +35,7 @@ import { todayStr } from "../utils/dates";
 import { CompletionFlourish } from "./Brand";
 import { IconCheck, LinkKindIcon } from "./Icons";
 import { TaskMeta, reservedState } from "./TaskRow";
+import { AgentPresence } from "../agents";
 
 type Columns = Record<Status, number[]>;
 
@@ -438,6 +439,7 @@ function CardContent({
         </span>
       )}
       <TaskMeta task={task} showProject hideStatus />
+      <AgentPresence taskId={task.id} />
       {flourishKey !== null && (
         <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
       )}

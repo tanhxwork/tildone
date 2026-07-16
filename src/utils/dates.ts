@@ -104,3 +104,20 @@ export function timeAgo(timestamp: string): string {
   const sameYear = date.getFullYear() === new Date().getFullYear();
   return format(date, sameYear ? "MMM d" : "MMM d, yyyy");
 }
+
+/** How long an agent's last activity keeps surfacing as presence on the card. */
+export const PRESENCE_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Whether an agent touch is recent enough to surface on the card.
+ *
+ * This is NOT a live/dead verdict — the card shows the honest "2m ago" / "3h ago"
+ * and lets the reader judge. It is only the point past which a timestamp stops
+ * being *presence* and becomes *history* (still in the Activity feed). Beyond the
+ * window, a card an agent touched last week carries no stale badge.
+ */
+export function isRecentPresence(timestamp: string): boolean {
+  const t = new Date(toIsoUtc(timestamp)).getTime();
+  if (isNaN(t)) return false;
+  return Date.now() - t < PRESENCE_WINDOW_MS;
+}

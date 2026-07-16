@@ -17,6 +17,7 @@ export async function fetchAll(): Promise<{
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
+  presence: Record<number, { name: string | null; at: string }>;
   links: Record<number, TaskLink[]>;
 }> {
   const d = await getDb();
@@ -46,6 +47,7 @@ export async function fetchAll(): Promise<{
     ...row,
     tag_ids: tagsByTask.get(row.id) ?? [],
   }));
+  const presence = await fetchAgentPresence();
   const linkRows = await d.select<TaskLink[]>(
     "SELECT id, task_id, url, label, kind FROM task_links ORDER BY id",
   );
@@ -53,7 +55,7 @@ export async function fetchAll(): Promise<{
   for (const row of linkRows) {
     (linksByTask[row.task_id] ??= []).push(row);
   }
-  return { projects, tasks, tags, subtasks, links: linksByTask };
+  return { projects, tasks, tags, subtasks, presence, links: linksByTask };
 }
 
 export async function addLink(
@@ -104,10 +106,13 @@ export async function deleteSubtask(id: number): Promise<void> {
   await d.execute("DELETE FROM subtasks WHERE id = $1", [id]);
 }
 
+// actor_kind is hard-coded 'user' here for the same reason agent.rs hard-codes
+// 'agent': every write through this module came from the person using the app.
+// The two writers are mirror images, and neither can mislabel the other's rows.
 export async function insertActivity(taskId: number, label: string): Promise<void> {
   const d = await getDb();
   await d.execute(
-    "INSERT INTO task_activity (task_id, label, created_at) VALUES ($1, $2, $3)",
+    "INSERT INTO task_activity (task_id, label, created_at, actor_kind) VALUES ($1, $2, $3, 'user')",
     [taskId, label, new Date().toISOString()],
   );
 }
@@ -115,9 +120,30 @@ export async function insertActivity(taskId: number, label: string): Promise<voi
 export async function fetchActivity(taskId: number): Promise<ActivityEntry[]> {
   const d = await getDb();
   return d.select<ActivityEntry[]>(
-    "SELECT id, task_id, label, created_at FROM task_activity WHERE task_id = $1 ORDER BY id DESC LIMIT 50",
+    "SELECT id, task_id, label, created_at, actor_kind, actor_name FROM task_activity WHERE task_id = $1 ORDER BY id DESC LIMIT 50",
     [taskId],
   );
+}
+
+// Newest agent activity per task — the read that *is* presence. "An agent is on
+// this task" = this timestamp is recent; a dead session simply stops writing and
+// the value ages on its own, so nothing is ever stored or cleared. Returns a map
+// of task_id -> { name, at } for tasks touched by an agent.
+export async function fetchAgentPresence(): Promise<
+  Record<number, { name: string | null; at: string }>
+> {
+  const d = await getDb();
+  const rows = await d.select<
+    { task_id: number; actor_name: string | null; at: string }[]
+  >(
+    `SELECT task_id, actor_name, MAX(created_at) AS at
+       FROM task_activity
+      WHERE actor_kind = 'agent'
+      GROUP BY task_id`,
+  );
+  const out: Record<number, { name: string | null; at: string }> = {};
+  for (const r of rows) out[r.task_id] = { name: r.actor_name, at: r.at };
+  return out;
 }
 
 export async function insertProject(name: string, color: string): Promise<number> {

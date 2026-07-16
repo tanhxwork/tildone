@@ -23,6 +23,7 @@ import {
   IconX,
   LinkKindIcon,
 } from "./Icons";
+import { agentIdentity } from "../agents";
 
 export function TaskEditor() {
   const {
@@ -432,12 +433,31 @@ export function TaskEditor() {
             <section className="detail-section">
               <h3 className="detail-section-title">Activity</h3>
               <div className="detail-activity">
-                {activity.map((entry) => (
-                  <div key={entry.id} className="detail-activity-row">
-                    <span className="detail-activity-time">{timeAgo(entry.created_at)}</span>
-                    <span className="detail-activity-label">{entry.label}</span>
-                  </div>
-                ))}
+                {activity.map((entry) => {
+                  // Legacy rows (pre-006) have no actor and render as before — no
+                  // mark, so an unknown author is shown as unknown, not guessed.
+                  const agent =
+                    entry.actor_kind === "agent"
+                      ? agentIdentity(entry.actor_name)
+                      : null;
+                  return (
+                    <div key={entry.id} className="detail-activity-row">
+                      <span className="detail-activity-time">
+                        {timeAgo(entry.created_at)}
+                      </span>
+                      {agent && (
+                        <span
+                          className="detail-activity-actor"
+                          style={{ ["--agent-color" as string]: agent.color }}
+                          title={`${agent.label} (agent)`}
+                        >
+                          <agent.Mark size={12} />
+                        </span>
+                      )}
+                      <span className="detail-activity-label">{entry.label}</span>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
