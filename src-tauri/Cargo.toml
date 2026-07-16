@@ -36,6 +36,7 @@ rmcp = { version = "2.1.0", features = ["server", "transport-streamable-http-ser
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tokio-util = "0.7.18"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

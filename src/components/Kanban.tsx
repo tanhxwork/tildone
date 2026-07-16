@@ -363,10 +363,14 @@ function CardContent({
   const tags = useStore((s) => s.tags);
   const links = useStore((s) => s.links);
   const projects = useStore((s) => s.projects);
+  const selection = useStore((s) => s.selection);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const cardLinks = links[task.id] ?? [];
   const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
+  // Inside a single-project board (or the Inbox), every card carries the same
+  // project — the chip is noise. Match the list view's rule (TaskList.tsx).
+  const showProject = selection.type !== "project" && selection.type !== "inbox";
   const project =
     task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
 
@@ -386,7 +390,7 @@ function CardContent({
           <span className="card-id" aria-hidden="true">#{task.id}</span> {task.title}
         </span>
         <span className="done-meta">
-          {project && (
+          {showProject && project && (
             <span className="project-label" title={project.name}>
               <span className="project-dot" style={{ background: project.color }} />
             </span>
@@ -432,7 +436,7 @@ function CardContent({
         </span>
       )}
       <TaskMeta task={task} hideStatus />
-      <CardProvenance task={task} project={project} links={cardLinks} />
+      <CardProvenance task={task} project={showProject ? project : undefined} links={cardLinks} />
       {flourishKey !== null && (
         <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
       )}

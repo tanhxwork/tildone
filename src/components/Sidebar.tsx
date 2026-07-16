@@ -23,6 +23,7 @@ import {
   IconX,
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 function isSelected(a: Selection, b: Selection): boolean {
   if (a.type !== b.type) return false;
@@ -152,7 +153,7 @@ export function Sidebar() {
               tabIndex={0}
               onKeyDown={(e) => e.key === "Enter" && select(sel)}
             >
-              <span className="project-dot" style={{ background: project.color }} />
+              <ProjectGlyph project={project} size={16} />
               <span className="nav-label">{project.name}</span>
               <button
                 className="icon-btn row-action"
