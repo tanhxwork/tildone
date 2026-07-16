@@ -31,7 +31,7 @@ export async function fetchAll(): Promise<{
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at FROM tasks",
+    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -195,6 +195,7 @@ const TASK_COLUMNS = new Set([
   "position",
   "completed_at",
   "deleted_at",
+  "archived_at",
 ]);
 
 export async function updateTask(

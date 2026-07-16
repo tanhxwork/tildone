@@ -1754,7 +1754,8 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/004_iso_timestamps.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/005_changes.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/006_repair_positions.sql")).unwrap();
-        conn.execute_batch(include_str!("../migrations/007_task_links.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/007_archived_at.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/008_task_links.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }

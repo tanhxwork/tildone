@@ -1,8 +1,9 @@
+import { format } from "date-fns";
 import { useMemo, useState } from "react";
 import { liveTasks, trashedTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Task } from "../types";
-import { dueLabel } from "../utils/dates";
+import { dueLabel, todayStr } from "../utils/dates";
 import { IconCheck, IconTrash } from "./Icons";
 
 type Tab = "completed" | "trash";
@@ -33,7 +34,8 @@ function groupByDay(tasks: Task[], stamp: (t: Task) => string): { day: string; t
 }
 
 export function CompletedView() {
-  const { tasks, projects, patchTask, restoreTask, destroyTask, emptyTrash } = useStore();
+  const { tasks, projects, patchTask, restoreTask, destroyTask, emptyTrash, archiveOlderDone } =
+    useStore();
   const [tab, setTab] = useState<Tab>("completed");
   const [confirmEmpty, setConfirmEmpty] = useState(false);
 
@@ -46,6 +48,18 @@ export function CompletedView() {
         .sort((a, b) => (a.completed_at! > b.completed_at! ? -1 : 1)),
     [tasks],
   );
+
+  // How many completed cards are still sitting in the board's Done window that the
+  // "Move older off board" button would clear now: not finished today, not already
+  // cleared. When zero, the button has nothing to do and stays hidden.
+  const clearableOlder = useMemo(() => {
+    const today = todayStr();
+    return completed.filter(
+      (t) =>
+        t.archived_at === null &&
+        format(new Date(t.completed_at!), "yyyy-MM-dd") !== today,
+    ).length;
+  }, [completed]);
 
   const trashed = useMemo(
     () =>
@@ -72,6 +86,15 @@ export function CompletedView() {
             Trash{trashed.length > 0 ? ` ${trashed.length}` : ""}
           </button>
         </div>
+        {tab === "completed" && clearableOlder > 0 && (
+          <button
+            className="btn small"
+            title="Clear every not-today card from the board's Done column. They stay here in Completed."
+            onClick={() => void archiveOlderDone()}
+          >
+            Move older off board
+          </button>
+        )}
         {tab === "trash" && trashed.length > 0 && (
           <button
             className={`btn small ${confirmEmpty ? "danger" : "ghost-danger"}`}

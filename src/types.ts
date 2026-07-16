@@ -33,6 +33,10 @@ export interface Task {
   created_at: string;
   completed_at: string | null;
   deleted_at: string | null;
+  /** Set only by "Move older off board"; NULL keeps a done task eligible for the
+   * board's Done window. Cleared when a task leaves Done. Not a delete — the task
+   * still shows in Completed. */
+  archived_at: string | null;
   tag_ids: number[];
 }
 

@@ -44,8 +44,14 @@ pub fn run() {
         },
         Migration {
             version: 7,
+            description: "archived_at",
+            sql: include_str!("../migrations/007_archived_at.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 8,
             description: "add_task_links",
-            sql: include_str!("../migrations/007_task_links.sql"),
+            sql: include_str!("../migrations/008_task_links.sql"),
             kind: MigrationKind::Up,
         },
     ];
