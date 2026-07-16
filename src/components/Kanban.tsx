@@ -23,7 +23,7 @@ import { format } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
-import type { Status, Task, TaskLink } from "../types";
+import type { Project, Status, Task, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -31,7 +31,7 @@ import {
   STATUS_LABELS,
   asLinkKind,
 } from "../types";
-import { todayStr } from "../utils/dates";
+import { isRecentPresence, todayStr } from "../utils/dates";
 import { CompletionFlourish } from "./Brand";
 import { IconCheck, LinkKindIcon } from "./Icons";
 import { TaskMeta, reservedState } from "./TaskRow";
@@ -367,6 +367,8 @@ function CardContent({
   const cardLinks = links[task.id] ?? [];
   const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
+  const project =
+    task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
 
   // A finished card is history, not work in flight: collapse it to one line —
   // check, strikethrough title, project dot, completion time. The full meta
@@ -374,8 +376,6 @@ function CardContent({
   // except for today's completions (`full`), which stay full so the day's work
   // keeps its detail; older done cards still collapse.
   if (task.status === "done" && !full) {
-    const project =
-      task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
     const time = task.completed_at ? format(new Date(task.completed_at), "h:mm a") : "";
     return (
       <div className={["board-card", "done", "compact", overlay ? "overlay" : ""].filter(Boolean).join(" ")}>
@@ -431,9 +431,45 @@ function CardContent({
           </span>
         </span>
       )}
-      {cardLinks.length > 0 && (
+      <TaskMeta task={task} hideStatus />
+      <CardProvenance task={task} project={project} links={cardLinks} />
+      {flourishKey !== null && (
+        <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The card's provenance footer: project · repo links · which agent last touched it.
+ *
+ * Separated from the classification row (state / priority / tags) by a hairline so
+ * the two never blur together — human labels above, tooling facts below. Renders
+ * nothing when the task has no project, no links, and no recent agent presence.
+ */
+function CardProvenance({
+  task,
+  project,
+  links,
+}: {
+  task: Task;
+  project: Project | undefined;
+  links: TaskLink[];
+}) {
+  const entry = useStore((s) => s.presence[task.id]);
+  const hasPresence = !!entry && isRecentPresence(entry.at);
+  if (!project && links.length === 0 && !hasPresence) return null;
+  return (
+    <span className="card-provenance">
+      {project && (
+        <span className="project-label" title={project.name}>
+          <span className="project-dot" style={{ background: project.color }} />
+          {project.name}
+        </span>
+      )}
+      {links.length > 0 && (
         <span className="card-links">
-          {cardLinks.map((link) => {
+          {links.map((link) => {
             const kind = asLinkKind(link.kind);
             const short = cardLinkShort(link);
             return (
@@ -455,11 +491,7 @@ function CardContent({
           })}
         </span>
       )}
-      <TaskMeta task={task} showProject hideStatus />
       <AgentPresence taskId={task.id} />
-      {flourishKey !== null && (
-        <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
-      )}
-    </div>
+    </span>
   );
 }
