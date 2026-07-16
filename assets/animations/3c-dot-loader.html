@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tildone · Dot loader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;display:grid;place-items:center;background:#faf9f8;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;color:#37352f;}
+  .stage{transform:scale(1.6);transform-origin:center;}
+  @keyframes tld-draw{0%{stroke-dashoffset:1}32%{stroke-dashoffset:0}80%{stroke-dashoffset:0}100%{stroke-dashoffset:-1}}
+  @keyframes tld-ring{0%{stroke-dashoffset:283}44%{stroke-dashoffset:71}84%{stroke-dashoffset:71}100%{stroke-dashoffset:283}}
+  @keyframes tld-pop{0%,34%{opacity:0;transform:scale(.55)}54%{opacity:1;transform:scale(1)}84%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(.55)}}
+  @keyframes tld-dot{0%{stroke-dashoffset:1}38%{stroke-dashoffset:0}80%{stroke-dashoffset:0}100%{stroke-dashoffset:-1}}
+  @keyframes tld-bob{0%{transform:translateX(-50%) translateY(-2px)}38%{transform:translateX(-50%) translateY(0)}100%{transform:translateX(-50%) translateY(0)}}
+  @keyframes tld-stretch{0%{width:11px}20%{width:150px}50%{width:150px}70%{width:11px}100%{width:11px}}
+  @keyframes tld-done{0%,56%{opacity:0;transform:translateX(-8px)}72%{opacity:1;transform:translateX(0)}92%{opacity:1;transform:translateX(0)}100%{opacity:0;transform:translateX(-8px)}}
+  @keyframes tld-checkin{0%,68%{opacity:0;transform:scale(.3)}82%{opacity:1;transform:scale(1.18)}88%{transform:scale(1)}94%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(.3)}}
+  @keyframes tld-markpop{0%,30%{transform:scale(1)}37%{transform:scale(1.15)}45%{transform:scale(.975)}53%{transform:scale(1)}100%{transform:scale(1)}}
+  @keyframes tld-spark{0%,32%{opacity:0;transform:scale(0) rotate(-40deg)}45%{opacity:1;transform:scale(1) rotate(15deg)}62%{opacity:0;transform:scale(1.45) rotate(55deg)}100%{opacity:0;transform:scale(1.45)}}
+  @keyframes s-til{0%{opacity:0;transform:translate(0,7px)}5%{opacity:1;transform:translate(0,0)}68%{opacity:1;transform:translate(0,0)}71%{transform:translate(-7px,0)}76%{transform:translate(2px,0)}80%{transform:translate(0,0)}94%{opacity:1;transform:translate(0,0)}100%{opacity:0;transform:translate(0,0)}}
+  @keyframes s-dot1{0%,10%{opacity:0}14%{opacity:1}42%{opacity:1}46%{opacity:0}100%{opacity:0}}
+  @keyframes s-dot2{0%,16%{opacity:0}20%{opacity:1}42%{opacity:1}46%{opacity:0}100%{opacity:0}}
+  @keyframes s-dot3{0%,22%{opacity:0}26%{opacity:1}42%{opacity:1}46%{opacity:0}100%{opacity:0}}
+  @keyframes s-mfade{0%,42%{opacity:0}46%{opacity:1}96%{opacity:1}100%{opacity:0}}
+  @keyframes s-fly{0%,69%{transform:translate(54px,43px) scale(1.25)}74%{transform:translate(-30px,38px) scale(1.15)}79%{transform:translate(-40px,-2px) scale(1.05)}83%{transform:translate(-6px,-14px) scale(1)}87%{transform:translate(0,0) scale(1)}100%{transform:translate(0,0) scale(1)}}
+  @keyframes s-done{0%,58%{opacity:0;transform:translateX(52px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}63%{opacity:1;transform:translateX(40px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}69%{opacity:1;transform:translateX(-20px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}72%{transform:translateX(-20px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}76%{transform:translateX(-2px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}80%{transform:translateX(-9px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}88%{-webkit-text-fill-color:#3f9868}93%{-webkit-text-fill-color:#37352f}97%{opacity:1;transform:translateX(-9px);-webkit-text-fill-color:#37352f}100%{opacity:0;transform:translateX(-9px);-webkit-text-fill-color:#37352f}}
+  @keyframes s2-dot1{0%,7%{opacity:0}11%{opacity:1}30%{opacity:1}34%{opacity:0}100%{opacity:0}}
+  @keyframes s2-dot2{0%,13%{opacity:0}17%{opacity:1}30%{opacity:1}34%{opacity:0}100%{opacity:0}}
+  @keyframes s2-dot3{0%,19%{opacity:0}23%{opacity:1}30%{opacity:1}34%{opacity:0}100%{opacity:0}}
+  @keyframes s2-clock{0%,30%{opacity:0;transform:scale(.55)}35%{opacity:1;transform:scale(1)}70%{opacity:1;transform:scale(1)}75%{opacity:0;transform:scale(1.15)}100%{opacity:0;transform:scale(1.15)}}
+  @keyframes s2-mfade{0%,69%{opacity:0}72%{opacity:1}96%{opacity:1}100%{opacity:0}}
+  @keyframes s2-fly{0%,71%{transform:translate(54px,43px) scale(1.25)}75%{transform:translate(-28px,38px) scale(1.15)}80%{transform:translate(-40px,-2px) scale(1.05)}84%{transform:translate(-6px,-14px) scale(1)}88%{transform:translate(0,0) scale(1)}100%{transform:translate(0,0) scale(1)}}
+  @keyframes s2-done{0%,60%{opacity:0;transform:translateX(52px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}65%{opacity:1;transform:translateX(40px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}71%{opacity:1;transform:translateX(-20px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}74%{transform:translateX(-20px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}78%{transform:translateX(-2px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}82%{transform:translateX(-9px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}89%{-webkit-text-fill-color:#3f9868}94%{-webkit-text-fill-color:#37352f}98%{opacity:1;transform:translateX(-9px);-webkit-text-fill-color:#37352f}100%{opacity:0;transform:translateX(-9px);-webkit-text-fill-color:#37352f}}
+  @keyframes s3-til{0%{opacity:0;transform:translate(0,7px)}4%{opacity:1;transform:translate(0,0)}73%{transform:translate(0,0)}76%{transform:translate(-7px,0)}80%{transform:translate(2px,0)}84%{transform:translate(0,0)}96%{opacity:1;transform:translate(0,0)}100%{opacity:0;transform:translate(0,0)}}
+  @keyframes s3-dotenv{0%,7%{opacity:0}12%{opacity:1}50%{opacity:1}54%{opacity:0}100%{opacity:0}}
+  @keyframes s3-bounce{0%,70%,100%{transform:translateY(0)}35%{transform:translateY(-8px)}}
+  @keyframes s3-mfade{0%,50%{opacity:0}54%{opacity:1}97%{opacity:1}100%{opacity:0}}
+  @keyframes s3-fly{0%,74%{transform:translate(54px,43px) scale(1.25)}78%{transform:translate(-30px,38px) scale(1.15)}83%{transform:translate(-40px,-2px) scale(1.05)}87%{transform:translate(-6px,-14px) scale(1)}90%{transform:translate(0,0) scale(1)}100%{transform:translate(0,0) scale(1)}}
+  @keyframes s3-done{0%,64%{opacity:0;transform:translateX(52px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}69%{opacity:1;transform:translateX(40px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}74%{opacity:1;transform:translateX(-20px);-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f}77%{transform:translateX(-20px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}81%{transform:translateX(-2px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}85%{transform:translateX(-9px);-webkit-text-fill-color:#3f9868;-webkit-text-stroke:0px #3f9868}91%{-webkit-text-fill-color:#3f9868}95%{-webkit-text-fill-color:#37352f}98%{opacity:1;transform:translateX(-9px);-webkit-text-fill-color:#37352f}100%{opacity:0;transform:translateX(-9px);-webkit-text-fill-color:#37352f}}
+  @keyframes s4-til{0%{opacity:0;transform:translate(0,7px)}4%{opacity:1;transform:translate(0,0)}92%{transform:translate(0,0)}94%{transform:translate(0,3px)}96%{transform:translate(0,0)}98%{opacity:1;transform:translate(0,0)}100%{opacity:0;transform:translate(0,0)}}
+  @keyframes s4-dn{0%,59%{opacity:0;transform:translateY(-80px)}63%{opacity:1;transform:translateY(-80px)}69%{opacity:1;transform:translateY(6px)}72%{transform:translateY(0)}98%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(0)}}
+  @keyframes s4-o{0%,59%{opacity:0;transform:translateY(-140px)}62%{opacity:1;transform:translateY(-140px)}67%{transform:translateY(-54px)}68.5%{transform:translateY(-49px)}70%{transform:translateY(-54px)}72.5%{transform:translateY(-54px)}75%{transform:translateY(-33px)}77.5%{transform:translateY(-36px)}80%{transform:translateY(-36px)}82%{transform:translateY(-52px)}83.5%{transform:translateY(-22px)}86%{transform:translateY(0)}98%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div class="stage">
+<div style="position:relative;width:300px;height:96px;font-family:'Inter',sans-serif;font-weight:800;font-size:52px;letter-spacing:-.03em;line-height:1;color:#37352f;">
+            <div style="position:absolute;left:44px;top:24px;animation:s3-til 7s ease-in-out infinite;">tıl</div>
+            <div style="position:absolute;left:104px;top:60px;display:flex;gap:11px;">
+              <span style="width:9px;height:9px;border-radius:50%;background:#a4a097;transform-origin:center;animation:s3-dotenv 7s ease-in-out infinite,s3-bounce .9s ease-in-out infinite;animation-delay:0s,0s;"></span>
+              <span style="width:9px;height:9px;border-radius:50%;background:#a4a097;transform-origin:center;animation:s3-dotenv 7s ease-in-out infinite,s3-bounce .9s ease-in-out infinite;animation-delay:0s,.15s;"></span>
+              <span style="width:9px;height:9px;border-radius:50%;background:#a4a097;transform-origin:center;animation:s3-dotenv 7s ease-in-out infinite,s3-bounce .9s ease-in-out infinite;animation-delay:0s,.3s;"></span>
+            </div>
+            <svg width="40" height="24" viewBox="0 0 44 26" fill="none" style="position:absolute;left:55px;top:5px;transform-box:fill-box;transform-origin:center;animation:s3-fly 7s ease-in-out infinite,s3-mfade 7s ease-in-out infinite;"><path d="M6,15 C11,15 16,15 21,15 C26,15 31,15 37,15" stroke="#a4a097" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><animate attributeName="d" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.52;0.57;0.63;0.68;0.73;0.87;1" values="M6,15 C11,15 16,15 21,15 C26,15 31,15 37,15;M6,15 C11,15 16,15 21,15 C26,15 31,15 37,15;M9,4 C9,10 9,15 9,20 C15,20 22,20 28,20;M9,4 C9,10 9,15 9,20 C15,20 22,20 28,20;M8,12 C10,14 13,16 16,20 C23,14 29,9 36,3;M8,12 C10,14 13,16 16,20 C23,14 29,9 36,3;M6,15 C11,8 16,8 21,13 C26,18 31,18 37,11;M6,15 C11,8 16,8 21,13 C26,18 31,18 37,11" keySplines="0 0 1 1;.34 0 .5 1;0 0 1 1;.34 0 .66 1;0 0 1 1;.4 0 .5 1;0 0 1 1"/><animate attributeName="stroke" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.56;0.70;0.74;0.87;1" values="#a4a097;#a4a097;#3f9868;#3f9868;#5645d4;#5645d4" keySplines="0 0 1 1;.4 0 .6 1;0 0 1 1;.4 0 .6 1;0 0 1 1"/><animateTransform attributeName="transform" type="rotate" dur="7s" repeatCount="indefinite" calcMode="spline" keyTimes="0;0.68;0.693;0.707;0.72;0.74;0.87;1" values="0 20 13;0 20 13;-14 20 13;12 20 13;-6 20 13;0 20 13;-360 20 13;-360 20 13" keySplines="0 0 1 1;.3 0 .4 1;.3 0 .4 1;.3 0 .4 1;.3 0 .4 1;.45 0 .55 1;0 0 1 1"/></path></svg>
+            <div style="position:absolute;left:98px;top:24px;-webkit-text-fill-color:#ffffff;-webkit-text-stroke:1.6px #37352f;transform-origin:left center;animation:s3-done 7s ease-in-out infinite;">done</div>
+          </div>
+</div>
+</body>
+</html>
