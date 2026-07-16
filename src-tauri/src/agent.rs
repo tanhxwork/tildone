@@ -47,8 +47,11 @@ const COLOR_CHOICES: [&str; 8] = [
     "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899", "#8b5cf6", "#64748b",
 ];
 
+/// The endpoint is stored alongside the token because the port is not known
+/// until bind time: a dev build asks the OS for a free one (see `requested_port`),
+/// so nothing may assume it is `AGENT_PORT`.
 #[derive(Default)]
-pub struct AgentServer(Mutex<Option<CancellationToken>>);
+pub struct AgentServer(Mutex<Option<(CancellationToken, String)>>);
 
 type Db = Arc<Mutex<Connection>>;
 
@@ -289,6 +292,20 @@ impl TildoneAgent {
             [],
         )?;
         Ok(())
+    }
+
+    /// `Some(trashed)` for an existing task, `None` when there is no such task.
+    fn task_trashed(conn: &Connection, task_id: i64) -> Result<Option<bool>, rusqlite::Error> {
+        conn.query_row(
+            "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
     }
 
     /// `(done, total)` for a task's subtasks — returned by every subtask write so
@@ -617,6 +634,16 @@ struct ListChangesParams {
         description = "Block up to this many milliseconds waiting for a change before returning (max 60000). Omit or 0 to return immediately. Ignored when `since` is omitted."
     )]
     wait_ms: Option<i64>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct LogProgressParams {
+    #[schemars(description = "Id of the task")]
+    task_id: i64,
+    #[schemars(
+        description = "One short, factual line in the present tense — e.g. \"tests written (RED, 5 failing)\""
+    )]
+    text: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1048,19 +1075,7 @@ impl TildoneAgent {
             return Ok(err("Subtask title cannot be empty."));
         }
         let conn = self.db.lock().unwrap();
-        let trashed: Option<bool> = conn
-            .query_row(
-                "SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ?1",
-                [task_id],
-                |r| r.get(0),
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })
-            .map_err(db_err)?;
-        match trashed {
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
             None => return Ok(err(format!("No task with id {task_id}."))),
             Some(true) => {
                 return Ok(err(format!(
@@ -1186,6 +1201,35 @@ impl TildoneAgent {
             "deleted": id,
             "progress": {"done": done, "total": total},
         }))
+    }
+
+    #[tool(
+        description = "Log one line of narrative progress on a task — what you just did, found or decided. It lands in the task's Activity feed in the app, timestamped, so the user can watch the work happen. Prefer this over keeping a `## Log` section inside `notes`: it costs the same however long the history gets, it cannot clobber anything, and it leaves notes as prose. Use subtasks for the plan checklist and this for the running commentary."
+    )]
+    fn log_progress(
+        &self,
+        Parameters(LogProgressParams { task_id, text }): Parameters<LogProgressParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Ok(err("Log text cannot be empty."));
+        }
+        let conn = self.db.lock().unwrap();
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with id {task_id}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_id} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        Self::record_activity(&conn, task_id, &text);
+        drop(conn);
+        self.notify();
+        // A receipt, like every other write: the entry is on screen, echoing it back
+        // would only pay for the same bytes twice.
+        ok_json(&json!({ "task_id": task_id, "logged": text }))
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -1351,11 +1395,41 @@ impl ServerHandler for TildoneAgent {
 /// of that, reject any browser-originated request outright: web pages always
 /// send an Origin header and can never legitimately talk to this server, while
 /// real MCP clients (CLIs, desktop apps) send none and pass.
-fn server_config() -> StreamableHttpServerConfig {
+fn server_config(port: u16) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default().with_allowed_origins([
-        format!("http://127.0.0.1:{AGENT_PORT}"),
-        format!("http://localhost:{AGENT_PORT}"),
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
     ])
+}
+
+/// The port to *request* at bind time.
+///
+/// `AGENT_PORT` is the contract: an agent's MCP config points at a fixed URL, so
+/// the installed app must always own it. Every other instance has to get out of
+/// the way — `tauri dev` and each git worktree would otherwise all grab the same
+/// port, and only the first would win. Worse, that loss is silent (the frontend
+/// discards the bind error), so a dev build looks healthy with no board at all.
+///
+/// Hence: a debug build asks for port 0 and lets the OS hand out a free one, so
+/// any number of dev instances coexist. `TILDONE_AGENT_PORT` overrides both, for
+/// when a dev genuinely needs a known port (e.g. pointing an agent at a dev build).
+fn resolve_port(env_override: Option<&str>, is_dev_build: bool) -> u16 {
+    if let Some(raw) = env_override {
+        if let Ok(port) = raw.trim().parse::<u16>() {
+            return port;
+        }
+        eprintln!("tildone: ignoring unparseable TILDONE_AGENT_PORT={raw:?}");
+    }
+    if is_dev_build {
+        0
+    } else {
+        AGENT_PORT
+    }
+}
+
+fn requested_port() -> u16 {
+    let env_override = std::env::var("TILDONE_AGENT_PORT").ok();
+    resolve_port(env_override.as_deref(), cfg!(debug_assertions))
 }
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -1382,19 +1456,31 @@ pub async fn agent_server_start(
     app: AppHandle,
     state: State<'_, AgentServer>,
 ) -> Result<String, String> {
-    let endpoint = format!("http://127.0.0.1:{AGENT_PORT}/mcp");
     {
         let guard = state.0.lock().unwrap();
-        if let Some(ct) = guard.as_ref() {
+        if let Some((ct, endpoint)) = guard.as_ref() {
             if !ct.is_cancelled() {
-                return Ok(endpoint);
+                return Ok(endpoint.clone());
             }
         }
     }
 
+    // Bind before configuring: with a requested port of 0 the real port only
+    // exists once the OS has assigned it, and both the endpoint we hand back and
+    // the allowed-origins list have to name that port, not AGENT_PORT.
+    let requested = requested_port();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", requested))
+        .await
+        .map_err(|e| format!("cannot listen on port {requested}: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("cannot resolve the bound address: {e}"))?
+        .port();
+    let endpoint = format!("http://127.0.0.1:{port}/mcp");
+
     let db: Db = Arc::new(Mutex::new(open_db(&app)?));
     let ct = CancellationToken::new();
-    let config = server_config().with_cancellation_token(ct.child_token());
+    let config = server_config(port).with_cancellation_token(ct.child_token());
     let emitter = app.clone();
     let on_change: Notify = Arc::new(move || {
         let _ = emitter.emit("agent-db-changed", ());
@@ -1409,9 +1495,6 @@ pub async fn agent_server_start(
             config,
         );
     let router = axum::Router::new().nest_service("/mcp", service);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", AGENT_PORT))
-        .await
-        .map_err(|e| format!("cannot listen on port {AGENT_PORT}: {e}"))?;
 
     let serve_ct = ct.clone();
     tauri::async_runtime::spawn(async move {
@@ -1420,13 +1503,13 @@ pub async fn agent_server_start(
             .await;
     });
 
-    *state.0.lock().unwrap() = Some(ct);
+    *state.0.lock().unwrap() = Some((ct, endpoint.clone()));
     Ok(endpoint)
 }
 
 #[tauri::command]
 pub fn agent_server_stop(state: State<'_, AgentServer>) {
-    if let Some(ct) = state.0.lock().unwrap().take() {
+    if let Some((ct, _)) = state.0.lock().unwrap().take() {
         ct.cancel();
     }
 }
@@ -1438,13 +1521,26 @@ pub fn agent_server_status(state: State<'_, AgentServer>) -> bool {
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|ct| !ct.is_cancelled())
+        .is_some_and(|(ct, _)| !ct.is_cancelled())
+}
+
+/// The live endpoint, or None when the server is not running. The UI must ask
+/// rather than assume: the port is only fixed for a release build.
+#[tauri::command]
+pub fn agent_server_endpoint(state: State<'_, AgentServer>) -> Option<String> {
+    state
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(ct, _)| !ct.is_cancelled())
+        .map(|(_, endpoint)| endpoint.clone())
 }
 
 /// Called from the app exit hook.
 pub fn shutdown(app: &AppHandle) {
     if let Some(server) = app.try_state::<AgentServer>() {
-        if let Some(ct) = server.0.lock().unwrap().take() {
+        if let Some((ct, _)) = server.0.lock().unwrap().take() {
             ct.cancel();
         }
     }
@@ -1488,6 +1584,34 @@ mod tests {
             TildoneAgent::new(db.clone(), Arc::new(|| {}), CancellationToken::new()),
             db,
         )
+    }
+
+    /// AGENT_PORT is a contract: an agent's MCP config points at a fixed URL, so
+    /// the installed app must own it and nothing else may squat on it. A dev build
+    /// or a worktree that grabbed it first would take the installed app's board
+    /// down — silently, since the frontend discards the bind error.
+    #[test]
+    fn only_a_release_build_asks_for_the_installed_apps_port() {
+        assert_eq!(
+            resolve_port(None, false),
+            AGENT_PORT,
+            "a release build IS the installed app and must own 11502"
+        );
+        assert_eq!(
+            resolve_port(None, true),
+            0,
+            "a dev build must ask the OS for a free port (0), never AGENT_PORT — \
+             otherwise two worktrees fight each other and the installed app"
+        );
+        assert_ne!(resolve_port(None, true), AGENT_PORT);
+
+        // The escape hatch: pointing an agent at a dev build needs a known port.
+        assert_eq!(resolve_port(Some("11599"), true), 11599);
+        assert_eq!(resolve_port(Some("  11599  "), true), 11599);
+
+        // Junk must not silently become port 0 in a release build; fall through.
+        assert_eq!(resolve_port(Some("not-a-port"), false), AGENT_PORT);
+        assert_eq!(resolve_port(Some("70000"), true), 0);
     }
 
     /// We shipped `tools: {}` for months, which tells every client "my tool list
@@ -1805,6 +1929,163 @@ mod tests {
         assert!(n >= 2, "expected creation + status activity, got {n}");
     }
 
+    /// The canonical board-protocol skeleton, where `## Evidence` is last.
+    const CANONICAL_NOTES: &str = "Goal: ship it\n\n\
+         ## Plan\n- [x] write failing test\n- [ ] implement\n\n\
+         ## Log\n- 14:20 started\n\n\
+         ## Evidence\n- tests: 12 passed\n";
+
+    /// Characterization test: pins WHY `log_progress` exists.
+    ///
+    /// `append_note` is strict end-concatenation, so against real notes — where
+    /// `## Evidence` is the last section — a log line lands under `## Evidence`
+    /// rather than `## Log`. The older test appends to notes of "Goal: ship it",
+    /// which has no headings at all, so it never exercises this shape.
+    ///
+    /// This asserts today's behaviour, not desired behaviour. The fix is not to
+    /// make `append_note` section-aware — it is to stop keeping a log in `notes`
+    /// at all and use `log_progress`, after which appends are only ever prose and
+    /// end-concatenation is correct. If someone does make it section-aware, this
+    /// test should fail and be deleted deliberately.
+    #[test]
+    fn append_note_cannot_target_a_section_in_canonical_notes() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Logged work".into(),
+                    project: None,
+                    notes: Some(CANONICAL_NOTES.into()),
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        extract(
+            &agent
+                .append_note(Parameters(AppendNoteParams {
+                    id,
+                    text: "- 14:32 tests written (RED, 5 failing)".into(),
+                }))
+                .unwrap(),
+        );
+
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        let notes = full["notes"].as_str().unwrap();
+        let evidence_at = notes.find("## Evidence").unwrap();
+        let appended_at = notes.find("- 14:32 tests written").unwrap();
+        assert!(
+            appended_at > evidence_at,
+            "append_note is end-only, so the log line lands under ## Evidence — \
+             this is the limitation log_progress removes. notes:\n{notes}"
+        );
+    }
+
+    /// The log half of a checkpoint: narrative goes to the Activity feed, and
+    /// `notes` are left completely alone — that is the whole point, since resending
+    /// the notes blob is what a checkpoint used to cost.
+    #[test]
+    fn log_progress_records_activity_and_never_touches_notes() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: Some(CANONICAL_NOTES.into()),
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        let (is_err, ack) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "  tests written (RED, 5 failing)  ".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "log_progress failed: {ack}");
+        assert_eq!(ack["logged"], "tests written (RED, 5 failing)", "text is trimmed");
+        assert!(ack.get("notes").is_none(), "a receipt must not echo notes: {ack}");
+
+        // The entry is in the feed the app already renders, verbatim.
+        let conn = agent.db.lock().unwrap();
+        let logged: String = conn
+            .query_row(
+                "SELECT label FROM task_activity WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        assert_eq!(logged, "tests written (RED, 5 failing)");
+
+        // notes are byte-identical: the log cost nothing in notes traffic.
+        let (_, full) = extract(&agent.get_task(Parameters(IdParams { id })).unwrap());
+        assert_eq!(full["notes"].as_str().unwrap(), CANONICAL_NOTES);
+    }
+
+    #[test]
+    fn log_progress_rejects_empty_unknown_and_trashed() {
+        let agent = test_agent();
+        let (_, task) = extract(
+            &agent
+                .create_task(Parameters(CreateTaskParams {
+                    title: "Build it".into(),
+                    project: None,
+                    notes: None,
+                    due_date: None,
+                    priority: None,
+                    tags: None,
+                    status: None,
+                }))
+                .unwrap(),
+        );
+        let id = task["id"].as_i64().unwrap();
+
+        let (is_err, _) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "   ".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "empty log text must be refused");
+
+        let (is_err, _) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: 999_999,
+                    text: "ghost".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "unknown task must be refused");
+
+        // Same rule the subtask writes follow: a trashed task takes no writes.
+        extract(&agent.delete_task(Parameters(IdParams { id })).unwrap());
+        let (is_err, out) = extract(
+            &agent
+                .log_progress(Parameters(LogProgressParams {
+                    task_id: id,
+                    text: "still going".into(),
+                }))
+                .unwrap(),
+        );
+        assert!(is_err, "trashed task must refuse a log entry: {out}");
+    }
+
     /// The subtask lifecycle an agent drives: add, tick, read back, delete —
     /// and refuse once the parent is trashed, the rule append_note set.
     #[test]
@@ -2036,14 +2317,16 @@ mod tests {
     async fn mcp_over_streamable_http() {
         let agent = test_agent();
         let ct = CancellationToken::new();
-        // Same config as agent_server_start so origin/host validation is
-        // exercised too.
-        let config = server_config().with_cancellation_token(ct.child_token());
+        // Bind first, then configure from the real port — the same order as
+        // agent_server_start, so origin/host validation is exercised against the
+        // port actually in use rather than against AGENT_PORT.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = server_config(addr.port()).with_cancellation_token(ct.child_token());
         let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(agent.clone()), Default::default(), config);
         let router = axum::Router::new().nest_service("/mcp", service);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let url = format!("http://{addr}/mcp");
         tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
