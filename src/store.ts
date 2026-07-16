@@ -374,7 +374,12 @@ export const useStore = create<Store>()((set, get) => ({
             : u.status === "done"
               ? now
               : null;
-        return { ...u, completed_at };
+        // `changed` gates the DB write; the in-memory update below always runs.
+        const changed =
+          u.status !== prev.status ||
+          u.position !== prev.position ||
+          completed_at !== prev.completed_at;
+        return { ...u, completed_at, changed };
       });
     set((s) => ({
       tasks: s.tasks.map((t) => {
@@ -384,7 +389,13 @@ export const useStore = create<Store>()((set, get) => ({
           : t;
       }),
     }));
+    // A drag recomputes the index of every card in the column, but a within-column
+    // move only actually shifts the cards between source and destination — the rest
+    // keep their index. Writing the unchanged ones costs a SQL round-trip each (the
+    // change-feed trigger's WHEN guard already suppresses the no-op *feed* row, but
+    // not the UPDATE that fires it). Skip them.
     for (const u of resolved) {
+      if (!u.changed) continue;
       await db.updateTask(u.id, {
         status: u.status,
         position: u.position,

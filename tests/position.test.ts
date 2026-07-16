@@ -166,3 +166,66 @@ describe("patchTask keeps positions distinct within a group", () => {
     expect(useStore.getState().tasks[0].position).toBe(3);
   });
 });
+
+describe("applyPositions only writes rows that actually changed", () => {
+  beforeEach(() => {
+    updateTask.mockClear();
+  });
+
+  // A drag rewrites the index of every card in the column, but a within-column move
+  // only actually shifts the cards between source and destination. The change-feed
+  // trigger already suppresses no-op feed rows; this suppresses the wasted UPDATE
+  // that would have fired it.
+  it("skips the DB write for cards whose position is unchanged", async () => {
+    useStore.setState({
+      tasks: [
+        task(1, { position: 0 }),
+        task(2, { position: 1 }),
+        task(3, { position: 2 }),
+      ],
+    });
+
+    // Kanban always recomputes the whole column. Here cards 1 and 2 swap the top
+    // two slots while card 3 keeps position 2 — so only 1 and 2 should hit the DB.
+    await useStore.getState().applyPositions([
+      { id: 2, status: "todo", position: 0 },
+      { id: 1, status: "todo", position: 1 },
+      { id: 3, status: "todo", position: 2 },
+    ]);
+
+    const written = updateTask.mock.calls.map((c) => c[0]);
+    expect(written).toContain(1);
+    expect(written).toContain(2);
+    expect(written).not.toContain(3); // unchanged — no round-trip
+  });
+
+  it("still updates in-memory state for every card, changed or not", async () => {
+    useStore.setState({
+      tasks: [task(1, { position: 0 }), task(2, { position: 1 })],
+    });
+
+    await useStore.getState().applyPositions([
+      { id: 1, status: "todo", position: 0 }, // unchanged
+      { id: 2, status: "todo", position: 5 }, // moved
+    ]);
+
+    const tasks = useStore.getState().tasks;
+    expect(tasks.find((t) => t.id === 2)?.position).toBe(5);
+    expect(tasks.find((t) => t.id === 1)?.position).toBe(0);
+  });
+
+  it("writes a card that changes status even if its position index is the same", async () => {
+    // Dragging todo/0 into an empty Done column: position stays 0 but status flips,
+    // and completed_at must be set. A position-only diff would wrongly skip it.
+    useStore.setState({ tasks: [task(1, { status: "todo", position: 0 })] });
+
+    await useStore.getState().applyPositions([
+      { id: 1, status: "done", position: 0 },
+    ]);
+
+    const patch = patchFor(1);
+    expect(patch).toBeDefined();
+    expect(patch?.status).toBe("done");
+    expect(patch?.completed_at).not.toBeNull();
+  });
+});
