@@ -14,7 +14,10 @@ const MARK_ASPECT = 51 / 103;
 
 type MarkProps = Omit<SVGProps<SVGSVGElement>, "width" | "height"> & { width?: number };
 
-/** Strokes in `currentColor`, so it follows the accent across light and dark. */
+/** Strokes in `currentColor`, so it follows the accent across light and dark.
+ *  `pathLength={1}` normalises the stroke length to 1 unit, so a `stroke-dasharray:1`
+ *  draw-in animation (see .sidebar-brand-mark in App.css) works regardless of the
+ *  path's real length. */
 export function TildoneMark({ width = 20, ...rest }: MarkProps) {
   return (
     <svg
@@ -29,7 +32,34 @@ export function TildoneMark({ width = 20, ...rest }: MarkProps) {
       aria-hidden="true"
       {...rest}
     >
-      <path d={MARK_PATH} />
+      <path d={MARK_PATH} pathLength={1} />
     </svg>
+  );
+}
+
+/** A one-shot wave-to-check flourish, overlaid on a card as it lands in Done.
+ *  The mark self-draws in the success colour, then fades. Purely decorative, so
+ *  it's aria-hidden and drops to a plain fade under prefers-reduced-motion
+ *  (styles + keyframes: .completion-flourish in App.css). `onDone` fires when
+ *  the fade ends, so the caller can unmount it. */
+export function CompletionFlourish({ onDone }: { onDone?: () => void }) {
+  return (
+    <span className="completion-flourish" aria-hidden="true">
+      <svg
+        viewBox={MARK_VIEWBOX}
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path
+          className="completion-flourish-path"
+          d={MARK_PATH}
+          pathLength={1}
+          onAnimationEnd={(e) => {
+            if (e.animationName.startsWith("flourish-fade")) onDone?.();
+          }}
+        />
+      </svg>
+    </span>
   );
 }
