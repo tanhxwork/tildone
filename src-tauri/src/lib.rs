@@ -1,5 +1,6 @@
 mod agent;
 mod ai;
+mod hookinstall;
 mod icons;
 
 use tauri::Manager;
@@ -169,6 +170,9 @@ pub fn run() {
             agent::agent_server_endpoint,
             agent::agent_presence,
             agent::agent_set_notify,
+            hookinstall::hook_status,
+            hookinstall::hook_install,
+            hookinstall::hook_uninstall,
             icons::discover_project_icon,
             debug_trace,
         ])
