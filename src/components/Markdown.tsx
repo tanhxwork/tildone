@@ -1,3 +1,4 @@
+import { Children, createContext, isValidElement, useContext } from "react";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -6,6 +7,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isHttpUrl } from "../utils/links";
 import { remarkTaskRefs, taskUrlTransform, TASK_SCHEME } from "../utils/markdownTaskRefs";
+import { remarkSections } from "../utils/markdownSections";
+import { IconChevronRight } from "./Icons";
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
   const openEditor = useStore((s) => s.openEditor);
@@ -44,8 +47,68 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   );
 }
 
+// Expand/collapse state lives with the caller (NotesView) so it can persist
+// per task and drive the section nav; the renderer only reads and toggles.
+export interface SectionUi {
+  isExpanded: (key: string) => boolean;
+  toggle: (key: string) => void;
+}
+
+const SectionContext = createContext<SectionUi | null>(null);
+
+type SectionProps = {
+  children?: ReactNode;
+  "data-section-key"?: string;
+  "data-section-title"?: string;
+};
+
+function NotesSection({ children, ...rest }: SectionProps) {
+  const ui = useContext(SectionContext);
+  const key = rest["data-section-key"] ?? "";
+  const title = rest["data-section-title"] ?? "";
+  const kids = Children.toArray(children);
+  const headingAt = kids.findIndex((k) => isValidElement(k));
+  const heading = kids[headingAt];
+  const body = kids.slice(headingAt + 1);
+  const expanded = ui ? ui.isExpanded(key) : true;
+
+  // stopPropagation on both events: the whole rendered notes area is
+  // click-to-edit, and a collapse gesture must never open the raw textarea.
+  return (
+    <section className={`md-section${expanded ? "" : " collapsed"}`} data-section-key={key}>
+      <div
+        className="md-section-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} section: ${title}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          ui?.toggle(key);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            ui?.toggle(key);
+          }
+        }}
+      >
+        <IconChevronRight size={12} className={`md-section-chevron${expanded ? " open" : ""}`} />
+        <div className="md-section-heading">{heading}</div>
+      </div>
+      {expanded && <div className="md-section-body">{body}</div>}
+    </section>
+  );
+}
+
 const BLOCK_COMPONENTS: Components = {
   a: MarkdownLink,
+};
+
+const SECTIONED_COMPONENTS: Components = {
+  a: MarkdownLink,
+  section: NotesSection as Components["section"],
 };
 
 // Inline contexts (the Activity feed) collapse the wrapping paragraph so a
@@ -55,20 +118,27 @@ const INLINE_COMPONENTS: Components = {
   p: ({ children }) => <>{children}</>,
 };
 
+const PLUGINS = [remarkGfm, remarkTaskRefs];
+const SECTIONED_PLUGINS = [remarkGfm, remarkTaskRefs, remarkSections];
+
 export function Markdown({
   children,
   inline = false,
+  sections,
 }: {
   children: string;
   inline?: boolean;
+  sections?: SectionUi;
 }) {
-  return (
+  const rendered = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkTaskRefs]}
+      remarkPlugins={sections ? SECTIONED_PLUGINS : PLUGINS}
       urlTransform={taskUrlTransform}
-      components={inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS}
+      components={sections ? SECTIONED_COMPONENTS : inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS}
     >
       {children}
     </ReactMarkdown>
   );
+  if (!sections) return rendered;
+  return <SectionContext.Provider value={sections}>{rendered}</SectionContext.Provider>;
 }

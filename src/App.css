@@ -3394,6 +3394,155 @@ textarea:focus-visible,
   margin-right: 6px;
 }
 
+/* Collapsible note sections + sticky section nav (spec 2026-07-17).
+   Only notes with 2+ headings get any of this chrome. */
+.detail-notes-stack {
+  position: relative;
+}
+
+.md-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  margin: 12px -6px 2px;
+  padding: 3px 6px;
+  user-select: none;
+}
+
+.md-section-header:hover {
+  background: var(--bg-hover);
+}
+
+.md-section-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The heading element keeps its type scale but sheds its block margins —
+   the header row owns the spacing. */
+.md-section-heading {
+  min-width: 0;
+}
+
+.md-section-heading h1,
+.md-section-heading h2,
+.md-section-heading h3,
+.md-section-heading h4 {
+  margin: 0;
+}
+
+.md-section-chevron {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.md-section-chevron.open {
+  transform: rotate(90deg);
+}
+
+.md-section.collapsed .md-section-header {
+  color: var(--text-muted);
+}
+
+/* Jump landings stop clear of the sticky nav bar. */
+.detail-notes-rendered [data-note-heading] {
+  scroll-margin-top: 44px;
+}
+
+.notes-nav {
+  position: sticky;
+  top: -22px; /* bleed over .detail-body's 22px top padding */
+  z-index: 4;
+  margin: 0 -8px;
+  padding: 6px 8px;
+  background: var(--bg-main);
+  border-bottom: 1px solid var(--border);
+}
+
+.notes-nav-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.notes-nav-current:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.notes-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-nav-menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 0;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+}
+
+.notes-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font-size: 12.5px;
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-nav-item:hover {
+  background: var(--bg-hover);
+}
+
+.notes-nav-item.sub {
+  padding-left: 22px;
+  color: var(--text-muted);
+}
+
+.notes-nav-item.active {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.notes-nav-item.action {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.notes-nav-sep {
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
 .detail-section {
   border-top: 1px solid var(--border);
   padding-top: 12px;
