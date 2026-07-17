@@ -10,6 +10,7 @@ import {
 import { dueLabel, isOverdue } from "../utils/dates";
 import { taskRefLabel } from "../utils/ref";
 import { IconCheck, IconFlag } from "./Icons";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 const isReserved = (name: string): name is ReservedTag =>
   (RESERVED_TAGS as readonly string[]).includes(name.toLowerCase());
@@ -85,7 +86,7 @@ export function TaskMeta({
       ))}
       {project && (
         <span className="project-label">
-          <span className="project-dot" style={{ background: project.color }} />
+          <ProjectGlyph project={project} size={14} />
           {project.name}
         </span>
       )}

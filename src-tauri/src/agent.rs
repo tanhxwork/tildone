@@ -1938,9 +1938,46 @@ fn resolve_port(env_override: Option<&str>, is_dev_build: bool) -> u16 {
     }
 }
 
+/// A release build claims `AGENT_PORT` by contract — it is *meant* to be the
+/// installed app. But `cfg!(debug_assertions)` cannot tell an installed bundle
+/// from a `tauri build` run out of a worktree, so a worktree release build binds
+/// 11502 and silently steals the installed app's board. We still bind (a
+/// legitimately relocated install must keep working), but warn when the running
+/// bundle is not under an `/Applications/` dir — the one cheap signal that this
+/// might be a squatter. Pure so the decision is unit-testable without a binary.
+fn should_warn_port_squat(
+    is_dev: bool,
+    port: u16,
+    explicit: Option<u16>,
+    in_applications: bool,
+) -> bool {
+    // Only when a RELEASE build DEFAULTED onto 11502 (not asked for it explicitly)
+    // and is running from outside /Applications.
+    !is_dev && port == AGENT_PORT && explicit != Some(AGENT_PORT) && !in_applications
+}
+
 fn requested_port() -> u16 {
     let env_override = std::env::var("TILDONE_AGENT_PORT").ok();
-    resolve_port(env_override.as_deref(), cfg!(debug_assertions))
+    let is_dev = cfg!(debug_assertions);
+    let explicit = env_override
+        .as_deref()
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    let port = resolve_port(env_override.as_deref(), is_dev);
+    if let Ok(exe) = std::env::current_exe() {
+        // Covers both /Applications and ~/Applications; a worktree target dir has
+        // neither, so it is the honest discriminator here.
+        let in_applications = exe.to_string_lossy().contains("/Applications/");
+        if should_warn_port_squat(is_dev, port, explicit, in_applications) {
+            eprintln!(
+                "tildone: WARNING — this release build ({}) is claiming port {AGENT_PORT} \
+                 but is not installed under /Applications. If the installed Tildone is \
+                 running, this steals its agent board. Quit this build, or set \
+                 TILDONE_AGENT_PORT to point it elsewhere.",
+                exe.display()
+            );
+        }
+    }
+    port
 }
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -2447,6 +2484,27 @@ mod tests {
         // Junk must not silently become port 0 in a release build; fall through.
         assert_eq!(resolve_port(Some("not-a-port"), false), AGENT_PORT);
         assert_eq!(resolve_port(Some("70000"), true), 0);
+    }
+
+    /// The gap resolve_port cannot close: a RELEASE build built in a worktree also
+    /// asks for 11502, so it silently steals the installed app's board. We keep
+    /// binding (a relocated install is legitimate) but warn — this is exactly when.
+    #[test]
+    fn warns_when_a_release_build_outside_applications_claims_the_port() {
+        // The squatter: release build, defaulted onto 11502, not in /Applications.
+        assert!(should_warn_port_squat(false, AGENT_PORT, None, false));
+
+        // The installed app: same port, but under /Applications — no warning.
+        assert!(!should_warn_port_squat(false, AGENT_PORT, None, true));
+
+        // A dev build never claims 11502, so it is never the squatter.
+        assert!(!should_warn_port_squat(true, 0, None, false));
+
+        // An explicit override to 11502 is a deliberate choice, not an accident.
+        assert!(!should_warn_port_squat(false, AGENT_PORT, Some(AGENT_PORT), false));
+
+        // An explicit override to some *other* port means we aren't on 11502 at all.
+        assert!(!should_warn_port_squat(false, 11599, Some(11599), false));
     }
 
     /// We shipped `tools: {}` for months, which tells every client "my tool list

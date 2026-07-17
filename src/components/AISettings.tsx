@@ -323,7 +323,7 @@ export function AISettings() {
                   <div className="ai-progress">
                     <div
                       className="ai-progress-fill"
-                      style={{ width: pct !== null ? `${pct}%` : "8%" }}
+                      style={{ transform: `scaleX(${pct !== null ? pct / 100 : 0.08})` }}
                     />
                   </div>
                 </div>

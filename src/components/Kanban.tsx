@@ -35,6 +35,7 @@ import { isRecentPresence, todayStr } from "../utils/dates";
 import { taskRefLabel } from "../utils/ref";
 import { CompletionFlourish } from "./Brand";
 import { IconCheck, LinkKindIcon } from "./Icons";
+import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
 import { AgentPresence } from "../agents";
 
@@ -393,7 +394,7 @@ function CardContent({
         <span className="done-meta">
           {showProject && project && (
             <span className="project-label" title={project.name}>
-              <span className="project-dot" style={{ background: project.color }} />
+              <ProjectGlyph project={project} size={12} />
             </span>
           )}
           {time && <span className="done-time">{time}</span>}
@@ -468,7 +469,7 @@ function CardProvenance({
     <span className="card-provenance">
       {project && (
         <span className="project-label" title={project.name}>
-          <span className="project-dot" style={{ background: project.color }} />
+          <ProjectGlyph project={project} size={14} />
           {project.name}
         </span>
       )}

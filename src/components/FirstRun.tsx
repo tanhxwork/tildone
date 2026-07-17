@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { todayStr, tomorrowStr } from "../utils/dates";
+import { TildoneMark } from "./Brand";
 
 const DISMISS_KEY = "tildone-first-run-dismissed";
 
@@ -93,6 +94,7 @@ export function FirstRun({ onDone }: { onDone: () => void }) {
   return (
     <div className="modal-overlay firstrun-overlay">
       <div className="modal firstrun" onClick={(e) => e.stopPropagation()}>
+        <TildoneMark width={52} className="firstrun-mark" />
         <h2 className="firstrun-title">Welcome to Tildone</h2>
         <p className="firstrun-blurb">
           Everything stays on this Mac — no account, no cloud. Start with a template or a blank

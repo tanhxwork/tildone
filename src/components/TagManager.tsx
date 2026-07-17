@@ -3,6 +3,7 @@ import { liveTasks } from "../selectors";
 import { useStore } from "../store";
 import { COLOR_CHOICES } from "../types";
 import { IconChevronDown, IconChevronUp, IconX } from "./Icons";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 export function TagManager() {
   const {
@@ -183,7 +184,7 @@ export function TagManager() {
                     title="Click to rename"
                     onClick={() => setRenamingProject(project.id)}
                   >
-                    <span className="project-dot" style={{ background: project.color }} />
+                    <ProjectGlyph project={project} size={16} />
                     {project.name}
                   </button>
                 )}

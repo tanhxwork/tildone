@@ -4,6 +4,7 @@ import { liveTasks } from "../selectors";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import { dueLabel, isOverdue, toDateStr, todayStr, weekDates } from "../utils/dates";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 /** completed_at is an ISO timestamp (or SQLite datetime); compare on the date part. */
 function completedDate(completedAt: string): string {
@@ -129,7 +130,7 @@ export function ReviewView() {
                 className="review-project"
                 onClick={() => select({ type: "project", projectId: project.id })}
               >
-                <span className="project-dot" style={{ background: project.color }} />
+                <ProjectGlyph project={project} size={16} />
                 <span className="review-project-name">{project.name}</span>
                 <span className="review-project-counts">
                   {done}/{total}

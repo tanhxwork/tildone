@@ -121,10 +121,18 @@ textarea:focus-visible,
 
 .app-loading {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   height: 100vh;
   color: var(--text-muted);
+}
+
+/* The mark sits a touch quieter than the label so it reads as a calm brand
+ * presence, not a spinner. Static — motion was deliberately kept out (TIL-42). */
+.app-loading-mark {
+  color: var(--text-faint);
 }
 
 .main {
@@ -806,6 +814,11 @@ textarea:focus-visible,
   gap: 4px;
   padding: 80px 20px;
   text-align: center;
+}
+
+.empty-mark {
+  color: var(--text-faint);
+  margin-bottom: 6px;
 }
 
 .empty-title {
@@ -1730,11 +1743,16 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+/* scaleX rather than width: an engine-download tick should not relayout the
+   settings panel. The parent (.ai-progress) clips, so the full-width bar is
+   scaled from its left edge. */
 .ai-progress-fill {
+  width: 100%;
   height: 100%;
   border-radius: 3px;
   background: var(--accent);
-  transition: width 0.3s;
+  transform-origin: left center;
+  transition: transform 0.3s ease-out;
 }
 
 .ai-engine-status {
@@ -2820,6 +2838,12 @@ textarea:focus-visible,
   text-align: center;
   padding: 28px;
   gap: 18px;
+}
+
+/* Accent-coloured on the welcome screen — the one place the mark is a greeting
+ * rather than a quiet wayfinding cue. Static (TIL-42 kept motion out). */
+.firstrun-mark {
+  color: var(--accent);
 }
 
 .firstrun-title {

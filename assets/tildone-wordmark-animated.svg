@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="300" height="96" viewBox="0 0 300 96" fill="none">
-
+<style>
+.wt{font-family:Inter,-apple-system,'Segoe UI',Arial,sans-serif;font-size:52px;font-weight:800;letter-spacing:-1.5px;fill:#37352f}
+.tilp{stroke-dasharray:1;transform-box:fill-box;transform-origin:center;animation:tld-dot 2.8s ease-in-out infinite,w-bob 2.8s ease-in-out infinite}
+@keyframes tld-dot{0%{stroke-dashoffset:1}38%{stroke-dashoffset:0}80%{stroke-dashoffset:0}100%{stroke-dashoffset:-1}}
+@keyframes w-bob{0%{transform:translateY(-2px)}38%{transform:translateY(0)}100%{transform:translateY(0)}}
+@media (prefers-reduced-motion:reduce){.tilp{animation:none;stroke-dashoffset:0}}
+</style>
 <text class="wt" x="6" y="66">tıldone</text>
 <g class="til" transform="translate(18,3)">
   <path class="tilp" d="M4,11 C10,3 16,3 21,9 C25,14 31,14 36,7" stroke="#5645d4" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" pathLength="1"></path>

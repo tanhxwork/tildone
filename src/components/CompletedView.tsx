@@ -4,7 +4,9 @@ import { liveTasks, trashedTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Task } from "../types";
 import { dueLabel, todayStr } from "../utils/dates";
+import { TildoneMark } from "./Brand";
 import { IconCheck, IconTrash } from "./Icons";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 type Tab = "completed" | "trash";
 
@@ -121,6 +123,7 @@ export function CompletedView() {
 
       {groups.length === 0 && (
         <div className="empty-state">
+          <TildoneMark width={36} className="empty-mark" />
           <p className="empty-title">
             {tab === "completed" ? "Nothing completed yet" : "Trash is empty"}
           </p>
@@ -150,7 +153,7 @@ export function CompletedView() {
                 <span className="history-meta">
                   {project && (
                     <span className="project-label">
-                      <span className="project-dot" style={{ background: project.color }} />
+                      <ProjectGlyph project={project} size={14} />
                       {project.name}
                     </span>
                   )}

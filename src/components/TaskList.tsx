@@ -3,6 +3,7 @@ import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Task } from "../types";
 import { compareTasks, dueLabel, todayStr } from "../utils/dates";
+import { TildoneMark } from "./Brand";
 import { DailyPlan } from "./DailyPlan";
 import { TaskRow } from "./TaskRow";
 
@@ -97,6 +98,7 @@ export function TaskList() {
   if (isEmpty) {
     return (
       <div className="empty-state">
+        <TildoneMark width={36} className="empty-mark" />
         <p className="empty-title">
           {search || activeTagIds.length > 0 || priorityFilter
             ? "No tasks match your filters"

@@ -25,6 +25,7 @@ import {
 } from "./Icons";
 import { agentIdentity } from "../agents";
 import { Markdown } from "./Markdown";
+import { ProjectGlyph } from "./ProjectGlyph";
 
 export function TaskEditor() {
   const {
@@ -173,7 +174,7 @@ export function TaskEditor() {
           <span className="detail-breadcrumb">
             {project ? (
               <>
-                <span className="project-dot" style={{ background: project.color }} />
+                <ProjectGlyph project={project} size={14} />
                 {project.name}
               </>
             ) : (

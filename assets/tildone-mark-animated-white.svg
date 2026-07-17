@@ -1,5 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" fill="none">
-
+<style>
+.m{stroke-dasharray:1;transform-box:fill-box;transform-origin:center;animation:tld-draw 2.8s ease-in-out infinite,tld-markpop 2.8s ease-in-out infinite}
+.s{transform-box:fill-box;transform-origin:center;animation:tld-spark 2.8s ease-in-out infinite}
+.s2{animation-delay:.12s}
+@keyframes tld-draw{0%{stroke-dashoffset:1}32%{stroke-dashoffset:0}80%{stroke-dashoffset:0}100%{stroke-dashoffset:-1}}
+@keyframes tld-markpop{0%,30%{transform:scale(1)}37%{transform:scale(1.15)}45%{transform:scale(.975)}53%{transform:scale(1)}100%{transform:scale(1)}}
+@keyframes tld-spark{0%,32%{opacity:0;transform:scale(0) rotate(-40deg)}45%{opacity:1;transform:scale(1) rotate(15deg)}62%{opacity:0;transform:scale(1.45) rotate(55deg)}100%{opacity:0;transform:scale(1.45)}}
+@media (prefers-reduced-motion:reduce){.m,.s{animation:none}.m{stroke-dashoffset:0}}
+</style>
 <path class="m" d="M16,60 C24,45 35,45 45,57 C51,64 57,65 64,58 C71,52 76,58 80,73 L108,33" pathLength="1" stroke="#ffffff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"></path>
 <g transform="translate(94,17)"><path class="s" d="M0,-7 C1,-2 2,-1 7,0 C2,1 1,2 0,7 C-1,2 -2,1 -7,0 C-2,-1 -1,-2 0,-7 Z" fill="#ffffff"></path></g>
 <g transform="translate(113,47)"><path class="s s2" d="M0,-5 C.7,-1.4 1.4,-.7 5,0 C1.4,.7 .7,1.4 0,5 C-.7,1.4 -1.4,.7 -5,0 C-1.4,-.7 -.7,-1.4 0,-5 Z" fill="#c9c2f6"></path></g>
