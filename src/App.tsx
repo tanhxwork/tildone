@@ -106,8 +106,13 @@ function App() {
       void useStore.getState().reload();
     });
     // The landing action shared by tildone://task/<REF> deep links and a click on
-    // an agent notification (Rust emits both): open that task's editor. The editor
-    // renders independent of the current selection, so no view switching is needed.
+    // an agent notification (Rust emits both): open that task's editor, in the
+    // task's context. If the current view already contains the task — All Tasks,
+    // the task's own project, or Inbox for a projectless task — stay put; from
+    // anywhere else, switch to the task's project (or Inbox) first, so closing
+    // the editor leaves the user beside the card, not on an unrelated page. The
+    // current view mode is kept either way. select() clears editingTaskId, so
+    // the switch must happen before openEditor.
     // A miss gets one reload-and-retry — the ref may be seconds old, arriving ahead
     // of the store — and a ref that still resolves to nothing is silently ignored:
     // a deep link must never error at the user.
@@ -121,7 +126,22 @@ function App() {
         await useStore.getState().reload();
         task = byRef();
       }
-      if (task) useStore.getState().openEditor(task.id);
+      if (!task) return;
+      const st = useStore.getState();
+      const sel = st.selection;
+      const alreadyThere =
+        sel.type === "all" ||
+        (task.project_id !== null
+          ? sel.type === "project" && sel.projectId === task.project_id
+          : sel.type === "inbox");
+      if (!alreadyThere) {
+        st.select(
+          task.project_id !== null
+            ? { type: "project", projectId: task.project_id }
+            : { type: "inbox" },
+        );
+      }
+      useStore.getState().openEditor(task.id);
     });
     // Presence is POLLED, not pushed, and that is the whole reason it is affordable.
     // A heartbeat fires on every tool call of every agent; routing those through
