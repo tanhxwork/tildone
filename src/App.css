@@ -3471,15 +3471,30 @@ textarea:focus-visible,
   position: relative;
 }
 
+/* An expanded section is its content — the header is a quiet handle above it.
+   A collapsed one has no content to show, so the header becomes the content:
+   a filled outline row carrying the title and the size of what it hides. The
+   two states must never be told apart by chevron angle alone. */
+.md-section {
+  margin: 16px 0;
+}
+
+.md-section.collapsed {
+  margin: 3px 0;
+}
+
 .md-section-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   cursor: pointer;
   border-radius: var(--radius-sm);
-  margin: 12px -6px 2px;
-  padding: 3px 6px;
+  margin: 0 -8px;
+  padding: 4px 8px;
   user-select: none;
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .md-section-header:hover {
@@ -3492,7 +3507,9 @@ textarea:focus-visible,
 }
 
 /* The heading element keeps its type scale but sheds its block margins —
-   the header row owns the spacing. */
+   the header row owns the spacing. Truncation has to live on the heading
+   itself: ellipsis applies to a box's own inline text, so setting it on the
+   wrapper only clips the h2 mid-word and lets it run under the count. */
 .md-section-heading {
   min-width: 0;
 }
@@ -3502,20 +3519,86 @@ textarea:focus-visible,
 .md-section-heading h3,
 .md-section-heading h4 {
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .md-section-chevron {
   flex: none;
-  color: var(--text-faint);
-  transition: transform 120ms ease;
+  color: var(--text-muted);
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .md-section-chevron.open {
   transform: rotate(90deg);
 }
 
+/* The lede — everything above the first section. It's the note's answer before
+   the outline, so it reads a step above body copy rather than identical to it. */
+.md-note-lede {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+/* The lede always closes with a rule, so the outline starts against an edge
+   rather than fading out of prose. If the author drew their own (a "=====" run
+   is one, once remarkAsciiRules reads it), that one closes it and we add none —
+   two hairlines stacked is the tell of a rule nobody thought about. */
+.md-note-lede:not(:has(> hr:last-child)) {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.md-note-lede > :first-child {
+  margin-top: 0;
+}
+
+.md-note-lede > :last-child {
+  margin-bottom: 0;
+}
+
+/* An expanded body indents to sit under its heading's text, past the chevron
+   gutter, so the section reads as one unit instead of prose that happens to
+   follow a heading. This is the whole difference between an open section and
+   loose markdown. */
+.md-section-body {
+  padding-left: 19px;
+}
+
+/* Collapsed: a closed drawer, not a bare heading. */
 .md-section.collapsed .md-section-header {
-  color: var(--text-muted);
+  background: var(--bg-inset);
+  padding: 6px 8px;
+}
+
+/* --bg-hover is translucent, so over --bg-inset it composites to within ~3/255
+   of the rest state — an invisible hover on a row whose whole job is to be
+   clicked. The ring echoes the nav chip's hover instead: one vocabulary, no
+   layout shift, and it reads in both themes. */
+.md-section.collapsed .md-section-header:hover {
+  background: var(--bg-inset);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* The size of what's folded away — the reason to open it, or not. */
+.md-section-count {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-section-chevron,
+  .md-section-header {
+    transition: none;
+  }
 }
 
 /* Jump landings stop clear of the sticky nav bar. */
@@ -3533,24 +3616,50 @@ textarea:focus-visible,
   border-bottom: 1px solid var(--border);
 }
 
+/* A jump menu has to look like a control you can press. Bordered chip over
+   the bar's own surface, so it reads as a trigger rather than a stray label. */
 .notes-nav-current {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   max-width: 100%;
-  border: none;
-  background: none;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-muted);
+  color: var(--text);
   padding: 3px 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 
 .notes-nav-current:hover {
   background: var(--bg-hover);
-  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.notes-nav-current:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.notes-nav-icon {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.notes-nav-caret {
+  flex: none;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-nav-current {
+    transition: none;
+  }
 }
 
 .notes-nav-label {

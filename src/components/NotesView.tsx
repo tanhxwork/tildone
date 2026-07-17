@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parseNoteSections, shouldAutoCollapse } from "../utils/markdownSections";
-import { IconChevronDown } from "./Icons";
+import { IconChevronDown, IconList } from "./Icons";
 import { Markdown } from "./Markdown";
 
 // Per-task expand/collapse memory for the lifetime of the app run — by
@@ -141,8 +141,9 @@ export function NotesView({
             title="Jump to a section"
             onClick={() => setMenuOpen((o) => !o)}
           >
+            <IconList size={12} className="notes-nav-icon" />
             <span className="notes-nav-label">{currentTitle}</span>
-            <IconChevronDown size={11} />
+            <IconChevronDown size={11} className="notes-nav-caret" />
           </button>
           {menuOpen && (
             <div className="notes-nav-menu" role="menu">

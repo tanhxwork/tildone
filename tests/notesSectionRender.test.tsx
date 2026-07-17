@@ -1,0 +1,38 @@
+import { describe, expect, it } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement as h } from "react";
+import { Markdown } from "../src/components/Markdown";
+
+// Renders <Markdown sections> the way NotesView does. The plugin-level tests in
+// markdownSections.test.ts prove the section attributes are emitted; these prove
+// the component actually reads them and puts the size on a collapsed row.
+function render(md: string, expanded: boolean): string {
+  return renderToStaticMarkup(
+    h(Markdown, { sections: { isExpanded: () => expanded, toggle: () => {} } }, md) as never,
+  );
+}
+
+// SSR splits adjacent text nodes with comment markers; compare on the text.
+const text = (html: string) => html.replace(/<!--[^>]*-->/g, "").replace(/<[^>]+>/g, " ");
+
+describe("collapsed section rows", () => {
+  it("shows how many lines a collapsed section hides", () => {
+    expect(text(render("## Alpha\n\n- one\n- two\n- three", false))).toContain("3 lines");
+  });
+
+  it("says line, not lines, for a single hidden line", () => {
+    const out = text(render("## Alpha\n\nsolo", false));
+    expect(out).toContain("1 line");
+    expect(out).not.toContain("1 lines");
+  });
+
+  it("omits the count on an expanded section and shows its body instead", () => {
+    const out = render("## Alpha\n\n- one\n- two\n- three", true);
+    expect(out).not.toContain("md-section-count");
+    expect(out).toContain("<li>one</li>");
+  });
+
+  it("omits the count for a heading with no body to hide", () => {
+    expect(render("## Empty\n\n## Beta\n\nbody", false)).not.toContain(">0 lines");
+  });
+});

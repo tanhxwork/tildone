@@ -7,7 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isHttpUrl } from "../utils/links";
 import { remarkTaskRefs, taskUrlTransform, TASK_SCHEME } from "../utils/markdownTaskRefs";
-import { remarkSections } from "../utils/markdownSections";
+import { remarkAsciiRules, remarkSections } from "../utils/markdownSections";
 import { IconChevronRight } from "./Icons";
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
@@ -60,12 +60,14 @@ type SectionProps = {
   children?: ReactNode;
   "data-section-key"?: string;
   "data-section-title"?: string;
+  "data-section-lines"?: string;
 };
 
 function NotesSection({ children, ...rest }: SectionProps) {
   const ui = useContext(SectionContext);
   const key = rest["data-section-key"] ?? "";
   const title = rest["data-section-title"] ?? "";
+  const lines = Number(rest["data-section-lines"] ?? 0);
   const kids = Children.toArray(children);
   const headingAt = kids.findIndex((k) => isValidElement(k));
   const heading = kids[headingAt];
@@ -96,6 +98,11 @@ function NotesSection({ children, ...rest }: SectionProps) {
       >
         <IconChevronRight size={12} className={`md-section-chevron${expanded ? " open" : ""}`} />
         <div className="md-section-heading">{heading}</div>
+        {!expanded && lines > 0 && (
+          <span className="md-section-count">
+            {lines} {lines === 1 ? "line" : "lines"}
+          </span>
+        )}
       </div>
       {expanded && <div className="md-section-body">{body}</div>}
     </section>
@@ -118,8 +125,8 @@ const INLINE_COMPONENTS: Components = {
   p: ({ children }) => <>{children}</>,
 };
 
-const PLUGINS = [remarkGfm, remarkTaskRefs];
-const SECTIONED_PLUGINS = [remarkGfm, remarkTaskRefs, remarkSections];
+const PLUGINS = [remarkGfm, remarkTaskRefs, remarkAsciiRules];
+const SECTIONED_PLUGINS = [remarkGfm, remarkTaskRefs, remarkAsciiRules, remarkSections];
 
 export function Markdown({
   children,
