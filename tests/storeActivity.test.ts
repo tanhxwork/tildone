@@ -6,13 +6,23 @@ import type { ActivityEntry } from "../src/types";
 // knows nothing about — so refreshing the board does not refresh the log unless
 // reload() asks for it.
 
-const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [], presence: {}, links: {} };
+const EMPTY_BOARD = {
+  projects: [],
+  tasks: [],
+  tags: [],
+  subtasks: [],
+  presence: {},
+  links: {},
+  commentCounts: {},
+};
 
 let feed: ActivityEntry[] = [];
 const fetchActivity = mock(async (taskId: number) => feed.filter((e) => e.task_id === taskId));
+const fetchComments = mock(async () => []);
+const insertComment = mock(async () => ({}));
 const fetchAll = mock(async () => EMPTY_BOARD);
 
-mock.module("../src/db", () => ({ fetchAll, fetchActivity }));
+mock.module("../src/db", () => ({ fetchAll, fetchActivity, fetchComments, insertComment }));
 
 const { useStore } = await import("../src/store");
 

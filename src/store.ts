@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import * as db from "./db";
 import type {
   ActivityEntry,
+  Comment,
   LinkKind,
   Project,
   ProjectIcon,
@@ -44,6 +45,11 @@ interface Store {
   links: Record<number, TaskLink[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
+  /** Comment thread for the task currently open in the details view. */
+  comments: Comment[];
+  /** Comment count per task_id, for the card badge. Bodies load only on open
+   * (loadComments); this is refreshed by the same reload every agent write triggers. */
+  commentCounts: Record<number, number>;
   /**
    * Newest agent activity per task_id — this is presence. Derived from
    * task_activity on every load, never stored: a dead session stops writing and
@@ -120,6 +126,8 @@ interface Store {
   addLink: (taskId: number, url: string, label?: string, kind?: LinkKind) => Promise<void>;
   removeLink: (taskId: number, linkId: number) => Promise<void>;
   loadActivity: (taskId: number) => Promise<void>;
+  addComment: (taskId: number, body: string) => Promise<void>;
+  loadComments: (taskId: number) => Promise<void>;
 
   addTag: (name: string) => Promise<number>;
   removeTag: (id: number) => Promise<void>;
@@ -223,6 +231,8 @@ export const useStore = create<Store>()((set, get) => ({
   subtasks: [],
   links: {},
   activity: [],
+  comments: [],
+  commentCounts: {},
   presence: {},
 
   ...loadNav(),
@@ -261,10 +271,15 @@ export const useStore = create<Store>()((set, get) => ({
     const data = await db.fetchAll();
     set({ ...data });
     void get().loadProjectIcons();
-    // fetchAll has no activity in it, so an open task's log would sit frozen while
-    // an agent writes to it — the one place the user is actually watching.
+    // fetchAll has no activity or comment bodies in it, so an open task's log and
+    // thread would sit frozen while an agent writes to them — the one place the user
+    // is actually watching, and the whole point of comments (the agent's answer must
+    // appear live).
     const { editingTaskId } = get();
-    if (editingTaskId !== null) await get().loadActivity(editingTaskId);
+    if (editingTaskId !== null) {
+      await get().loadActivity(editingTaskId);
+      await get().loadComments(editingTaskId);
+    }
   },
 
   select: (selection) => set({ selection, editingTaskId: null }),
@@ -279,8 +294,11 @@ export const useStore = create<Store>()((set, get) => ({
   setPriorityFilter: (priorityFilter) => set({ priorityFilter }),
   toggleShowCompleted: () => set((s) => ({ showCompleted: !s.showCompleted })),
   openEditor: (editingTaskId) => {
-    set({ editingTaskId, activity: [] });
-    if (editingTaskId !== null) void get().loadActivity(editingTaskId);
+    set({ editingTaskId, activity: [], comments: [] });
+    if (editingTaskId !== null) {
+      void get().loadActivity(editingTaskId);
+      void get().loadComments(editingTaskId);
+    }
   },
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
@@ -627,6 +645,25 @@ export const useStore = create<Store>()((set, get) => ({
     const activity = await db.fetchActivity(taskId);
     // The user may have switched tasks while we were fetching.
     if (get().editingTaskId === taskId) set({ activity });
+  },
+
+  addComment: async (taskId, body) => {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const comment = await db.insertComment(taskId, trimmed);
+    set((s) => ({
+      comments: s.editingTaskId === taskId ? [...s.comments, comment] : s.comments,
+      commentCounts: {
+        ...s.commentCounts,
+        [taskId]: (s.commentCounts[taskId] ?? 0) + 1,
+      },
+    }));
+  },
+
+  loadComments: async (taskId) => {
+    const comments = await db.fetchComments(taskId);
+    // The user may have switched tasks while we were fetching.
+    if (get().editingTaskId === taskId) set({ comments });
   },
 
   addTag: async (name) => {

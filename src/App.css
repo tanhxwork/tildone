@@ -1075,6 +1075,22 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+/* Comment count: an agent's question is invisible until the card is opened, so it
+   earns a mark of its own beside the subtask progress. Same quiet weight as the
+   progress count — a signal the thread exists, not a call to action. */
+.card-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.card-comments svg {
+  flex-shrink: 0;
+}
+
 /* Presence: which agent last touched the card, and how long ago. A quiet line,
    not a badge — it is ambient status, not an action. The agent's brand colour
    tints only the mark; the text stays in the muted token so a row of cards reads
@@ -3454,6 +3470,90 @@ textarea:focus-visible,
 
 .detail-activity-label {
   color: var(--text-muted);
+}
+
+/* ---------- Comments: the channel back to an agent ---------- */
+
+.detail-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.detail-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* The author byline. Same rule as card presence: the agent's brand colour tints
+   only the mark, the name stays in a neutral weight so a thread of mixed authors
+   reads as one conversation. --agent-color is set inline per agent (agents.tsx). */
+.detail-comment-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-comment-author.agent svg {
+  color: var(--agent-color, var(--text-muted));
+  flex-shrink: 0;
+}
+
+.detail-comment-time {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A faint rail on the left marks the body as one person's turn, and indents the
+   thread so authors scan down the left edge. Markdown inside inherits the app's
+   body styles (same as notes and activity). */
+.detail-comment-body {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.detail-comment-body > :first-child {
+  margin-top: 0;
+}
+.detail-comment-body > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-comment-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.detail-comment-add svg {
+  flex: none;
+}
+.detail-comment-add input {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  flex: 1;
+  min-width: 180px;
+}
+.detail-comment-add input::placeholder {
+  color: var(--text-faint);
 }
 
 .detail-footer {

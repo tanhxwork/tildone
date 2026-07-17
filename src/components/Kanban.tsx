@@ -34,7 +34,7 @@ import {
 import { isRecentPresence, todayStr } from "../utils/dates";
 import { taskRefLabel } from "../utils/ref";
 import { CompletionFlourish } from "./Brand";
-import { IconCheck, LinkKindIcon } from "./Icons";
+import { IconCheck, IconMessage, LinkKindIcon } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
 import { AgentPresence } from "../agents";
@@ -366,6 +366,7 @@ function CardContent({
   const links = useStore((s) => s.links);
   const projects = useStore((s) => s.projects);
   const selection = useStore((s) => s.selection);
+  const commentCount = useStore((s) => s.commentCounts[task.id] ?? 0);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const cardLinks = links[task.id] ?? [];
   const done = mine.filter((s) => s.done).length;
@@ -435,6 +436,16 @@ function CardContent({
           <span className="card-progress-count">
             {done}/{mine.length}
           </span>
+        </span>
+      )}
+      {commentCount > 0 && (
+        <span
+          className="card-comments"
+          title={`${commentCount} comment${commentCount === 1 ? "" : "s"}`}
+          aria-label={`${commentCount} comment${commentCount === 1 ? "" : "s"}`}
+        >
+          <IconMessage size={12} />
+          {commentCount}
         </span>
       )}
       <TaskMeta task={task} hideStatus />

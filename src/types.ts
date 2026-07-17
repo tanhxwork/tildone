@@ -91,6 +91,18 @@ export interface TaskLink {
   kind: string; // pr | branch | commit | worktree | other
 }
 
+export interface Comment {
+  id: number;
+  task_id: number;
+  body: string;
+  // 'user' | 'agent'. Unlike ActivityEntry this is never null — every comment is
+  // authored at write time by a caller that knows which it is (migration 012).
+  actor_kind: string;
+  // The agent's own MCP client name (e.g. 'claude-code'); null for the user.
+  actor_name: string | null;
+  created_at: string;
+}
+
 export type LinkKind = "pr" | "branch" | "commit" | "worktree" | "other";
 
 export const LINK_KINDS: LinkKind[] = ["pr", "branch", "commit", "worktree", "other"];

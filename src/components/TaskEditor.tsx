@@ -17,6 +17,7 @@ import { isHttpUrl } from "../utils/links";
 import {
   IconCheck,
   IconLink,
+  IconMessage,
   IconPlus,
   IconSparkles,
   IconTrash,
@@ -47,6 +48,8 @@ export function TaskEditor() {
     links,
     addLink,
     removeLink,
+    comments,
+    addComment,
   } = useStore();
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
@@ -60,6 +63,7 @@ export function TaskEditor() {
   const [tagInput, setTagInput] = useState("");
   const [subtaskInput, setSubtaskInput] = useState("");
   const [linkInput, setLinkInput] = useState("");
+  const [commentInput, setCommentInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -71,6 +75,7 @@ export function TaskEditor() {
       setTagInput("");
       setSubtaskInput("");
       setLinkInput("");
+      setCommentInput("");
       setConfirmDelete(false);
       setAiError("");
       setEditingNotes(false);
@@ -130,6 +135,13 @@ export function TaskEditor() {
     if (!isHttpUrl(url)) return;
     await addLink(task!.id, url);
     setLinkInput("");
+  }
+
+  async function addCommentFromInput() {
+    const body = commentInput.trim();
+    if (!body) return;
+    await addComment(task!.id, body);
+    setCommentInput("");
   }
 
   async function breakIntoSubtasks() {
@@ -471,6 +483,55 @@ export function TaskEditor() {
                   aria-label="Add link"
                   onChange={(e) => setLinkInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void addLinkFromInput()}
+                />
+              </div>
+            </div>
+          </section>
+
+          <section className="detail-section">
+            <h3 className="detail-section-title">
+              Comments
+              {comments.length > 0 && (
+                <span className="detail-section-count">{comments.length}</span>
+              )}
+            </h3>
+            <div className="detail-comments">
+              {comments.map((c) => {
+                // Every comment is authored (migration 012 makes actor_kind NOT NULL),
+                // so — unlike the activity feed's legacy rows — there is always an
+                // author to show. Agents render through the same identity mapping the
+                // activity feed uses; the user is simply "You".
+                const agent = c.actor_kind === "agent" ? agentIdentity(c.actor_name) : null;
+                return (
+                  <div key={c.id} className="detail-comment">
+                    <div className="detail-comment-head">
+                      {agent ? (
+                        <span
+                          className="detail-comment-author agent"
+                          style={{ ["--agent-color" as string]: agent.color }}
+                        >
+                          <agent.Mark size={13} />
+                          {agent.label}
+                        </span>
+                      ) : (
+                        <span className="detail-comment-author">You</span>
+                      )}
+                      <span className="detail-comment-time">{timeAgo(c.created_at)}</span>
+                    </div>
+                    <div className="detail-comment-body">
+                      <Markdown>{c.body}</Markdown>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="detail-comment-add">
+                <IconMessage size={13} />
+                <input
+                  value={commentInput}
+                  placeholder="Write a comment — an agent watching this task will see it"
+                  aria-label="Add comment"
+                  onChange={(e) => setCommentInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void addCommentFromInput()}
                 />
               </div>
             </div>
