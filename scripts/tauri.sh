@@ -59,7 +59,10 @@ fi
 icons="icons-dev"
 if command -v magick >/dev/null 2>&1; then
   gen="src-tauri/icons-dev/$slug"
-  if [ ! -e "$gen/32x32.png" ]; then
+  # icon.icns must exist too: in dev, tauri sets the DOCK icon from the
+  # first .icns in bundle.icon and otherwise falls back to the untinted
+  # icons/icon.png — a purple dock on a tinted instance (seen live).
+  if [ ! -e "$gen/32x32.png" ] || [ ! -e "$gen/icon.icns" ]; then
     hash=$(printf '%s' "$slug" | cksum | cut -d' ' -f1)
     hue=$((hash % 360))
     if [ "$hue" -ge 217 ] && [ "$hue" -le 277 ]; then hue=$(((hue + 90) % 360)); fi
@@ -67,12 +70,23 @@ if command -v magick >/dev/null 2>&1; then
     mod=$((100 + delta * 100 / 180))
     mkdir -p "$gen"
     ok=1
-    for f in 32x32.png 128x128.png 128x128@2x.png; do
+    for f in 32x32.png 128x128.png 128x128@2x.png icon.png; do
       magick "src-tauri/icons/$f" -modulate "100,100,$mod" "PNG32:$gen/$f" 2>/dev/null || { ok=0; break; }
     done
+    if [ "$ok" = 1 ]; then
+      iconset=$(mktemp -d)/icon.iconset
+      mkdir -p "$iconset"
+      for s in 16 32 128 256 512; do
+        sips -z "$s" "$s" "$gen/icon.png" --out "$iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || ok=0
+        d=$((s * 2))
+        sips -z "$d" "$d" "$gen/icon.png" --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || ok=0
+      done
+      [ "$ok" = 1 ] && iconutil -c icns "$iconset" -o "$gen/icon.icns" 2>/dev/null || ok=0
+      rm -rf "$(dirname "$iconset")"
+    fi
     [ "$ok" = 1 ] || rm -rf "$gen"
   fi
-  [ -e "$gen/32x32.png" ] && icons="icons-dev/$slug"
+  [ -e "$gen/icon.icns" ] && icons="icons-dev/$slug"
 fi
 
 # --- per-run overlay -------------------------------------------------------
@@ -84,7 +98,7 @@ cat > "$overlay" <<EOF
   "identifier": "com.tildone.dev.$slug",
   "build": { "devUrl": "http://localhost:$port" },
   "bundle": {
-    "icon": ["$icons/32x32.png", "$icons/128x128.png", "$icons/128x128@2x.png"]
+    "icon": ["$icons/icon.icns", "$icons/32x32.png", "$icons/128x128.png", "$icons/128x128@2x.png"]
   }
 }
 EOF
