@@ -2523,7 +2523,13 @@ impl TildoneAgent {
     }
 }
 
-#[tool_handler]
+// Serve the *instance* router (self.tool_router), NOT the macro default
+// Self::tool_router(): new() slims the instance router's schemas once at build
+// (see slim_tool_schema), and only what list_tools serves reaches the wire. The
+// static Self::tool_router() is un-slimmed, so the default would ship the very
+// wire-noise we strip. call_tool/get_tool ride the same field — identical routes,
+// the slim touches only the advertised schema, never dispatch.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for TildoneAgent {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(
@@ -5814,6 +5820,23 @@ mod tests {
             "list_tags",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
+        }
+
+        // Wire-noise guard on exactly what list_tools serves (TIL-85). The schema
+        // slim in new() only reaches the client if #[tool_handler] serves the
+        // slimmed field router; the macro DEFAULT serves the static un-slimmed
+        // Self::tool_router(). This asserts on the real wire bytes, so it fails
+        // if that wiring regresses — the field-level unit test cannot catch that.
+        let served = serde_json::to_string(&tools_body["result"]["tools"]).unwrap();
+        assert!(
+            !served.contains("$schema"),
+            "served tool schemas must not ship the $schema dialect URL"
+        );
+        for fmt in INT_FORMATS {
+            assert!(
+                !served.contains(&format!("\"format\":\"{fmt}\"")),
+                "served tool schemas must not ship integer format {fmt}"
+            );
         }
 
         let call = post(
