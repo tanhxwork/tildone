@@ -1650,6 +1650,23 @@ textarea:focus-visible,
   border-top: 1px solid var(--border);
 }
 
+/* Dev-build identity pill (Sidebar renders it only in dev): names the
+   worktree this instance belongs to, in the dev accent. */
+.dev-badge {
+  margin: 6px 8px 2px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ai-dot {
   width: 7px;
   height: 7px;
