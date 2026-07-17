@@ -1,12 +1,51 @@
+import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
+import type { ActivityEntry, Comment, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
+
+/**
+ * Startup breadcrumb into startup-trace.log next to the database (see
+ * `debug_trace` in lib.rs). Fire-and-forget: tracing must never be able to
+ * break or slow the thing it observes.
+ */
+export function trace(msg: string): void {
+  void invoke("debug_trace", { msg }).catch(() => {});
+}
 
 let db: Database | null = null;
 
+/**
+ * Warm the connection as its own init step, so the loading screen can say
+ * "Opening the database…" while it happens — that is the step that wedged in
+ * the stuck-loading incident, and the one place a first load can take seconds.
+ */
+export async function openDb(): Promise<void> {
+  await getDb();
+}
+
 async function getDb(): Promise<Database> {
   if (!db) {
-    db = await Database.load("sqlite:tildone.db");
+    // Seen live: `Database.load` can wedge forever (first load parked the app on
+    // the loading screen with no error). The race converts that hang into a
+    // rejection so init's retry/error path can act on it; on a timeout `db`
+    // stays null, so the next attempt issues a fresh `load` (idempotent on the
+    // plugin side — it re-registers the same connection).
+    trace("getDb: Database.load starting");
+    try {
+      db = await Promise.race([
+        Database.load("sqlite:tildone.db"),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Database.load timed out after 15s")),
+            15_000,
+          ),
+        ),
+      ]);
+    } catch (err) {
+      trace(`getDb: Database.load FAILED: ${String(err)}`);
+      throw err;
+    }
+    trace("getDb: Database.load ok");
   }
   return db;
 }
@@ -20,6 +59,7 @@ export async function fetchAll(): Promise<{
   subtasks: Subtask[];
   presence: Record<number, { name: string | null; at: string }>;
   links: Record<number, TaskLink[]>;
+  commentCounts: Record<number, number>;
 }> {
   const d = await getDb();
   const subtaskRows = await d.select<(Omit<Subtask, "done"> & { done: number })[]>(
@@ -56,7 +96,43 @@ export async function fetchAll(): Promise<{
   for (const row of linkRows) {
     (linksByTask[row.task_id] ??= []).push(row);
   }
-  return { projects, tasks, tags, subtasks, presence, links: linksByTask };
+  // Card badge needs a count, not the bodies — the thread loads only when a task
+  // opens (fetchComments). A comment insert/delete fires the change feed, so this
+  // count refreshes on the same reload every agent write already triggers.
+  const countRows = await d.select<{ task_id: number; n: number }[]>(
+    "SELECT task_id, COUNT(*) AS n FROM comments GROUP BY task_id",
+  );
+  const commentCounts: Record<number, number> = {};
+  for (const row of countRows) commentCounts[row.task_id] = row.n;
+  return { projects, tasks, tags, subtasks, presence, links: linksByTask, commentCounts };
+}
+
+// Mirror image of agent.rs add_comment: a comment written through the app is always
+// the user's, so actor_kind is hard-coded 'user' and actor_name stays NULL. Neither
+// writer can mislabel the other's rows.
+export async function insertComment(taskId: number, body: string): Promise<Comment> {
+  const d = await getDb();
+  const created_at = new Date().toISOString();
+  const result = await d.execute(
+    "INSERT INTO comments (task_id, body, actor_kind, actor_name, created_at) VALUES ($1, $2, 'user', NULL, $3)",
+    [taskId, body, created_at],
+  );
+  return {
+    id: result.lastInsertId ?? 0,
+    task_id: taskId,
+    body,
+    actor_kind: "user",
+    actor_name: null,
+    created_at,
+  };
+}
+
+export async function fetchComments(taskId: number): Promise<Comment[]> {
+  const d = await getDb();
+  return d.select<Comment[]>(
+    "SELECT id, task_id, body, actor_kind, actor_name, created_at FROM comments WHERE task_id = $1 ORDER BY id",
+    [taskId],
+  );
 }
 
 export async function addLink(

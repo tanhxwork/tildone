@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import * as db from "./db";
 import type {
   ActivityEntry,
+  Comment,
   LinkKind,
   Project,
   ProjectIcon,
@@ -34,6 +35,21 @@ export interface ImportedTask {
 
 interface Store {
   loaded: boolean;
+  /**
+   * Set when the first load exhausts its retries. A swallowed init failure used
+   * to leave the app on the loading spinner forever with no way to see why (the
+   * `void init()` call discarded the error); surfacing it turns a silent hang
+   * into a legible message.
+   */
+  initError: string | null;
+  /**
+   * What init is doing right now, narrated on the loading screen. A first load
+   * can legitimately take seconds (opening the database races the agent
+   * server's own connection, and a wedged load only errors after 15s) — a bare
+   * spinner over that window is indistinguishable from a hang, which is
+   * exactly how the stuck-loading incident stayed invisible.
+   */
+  initStatus: string;
   projects: Project[];
   /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
   projectIcons: Record<number, ProjectIcon>;
@@ -44,6 +60,11 @@ interface Store {
   links: Record<number, TaskLink[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
+  /** Comment thread for the task currently open in the details view. */
+  comments: Comment[];
+  /** Comment count per task_id, for the card badge. Bodies load only on open
+   * (loadComments); this is refreshed by the same reload every agent write triggers. */
+  commentCounts: Record<number, number>;
   /**
    * Newest agent activity per task_id — this is presence. Derived from
    * task_activity on every load, never stored: a dead session stops writing and
@@ -120,6 +141,8 @@ interface Store {
   addLink: (taskId: number, url: string, label?: string, kind?: LinkKind) => Promise<void>;
   removeLink: (taskId: number, linkId: number) => Promise<void>;
   loadActivity: (taskId: number) => Promise<void>;
+  addComment: (taskId: number, body: string) => Promise<void>;
+  loadComments: (taskId: number) => Promise<void>;
 
   addTag: (name: string) => Promise<number>;
   removeTag: (id: number) => Promise<void>;
@@ -216,6 +239,8 @@ export function groupSlot(
 
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
+  initError: null,
+  initStatus: "Loading…",
   projects: [],
   projectIcons: {},
   tasks: [],
@@ -223,6 +248,8 @@ export const useStore = create<Store>()((set, get) => ({
   subtasks: [],
   links: {},
   activity: [],
+  comments: [],
+  commentCounts: {},
   presence: {},
 
   ...loadNav(),
@@ -238,33 +265,83 @@ export const useStore = create<Store>()((set, get) => ({
     const cutoff = new Date(
       Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
-    await db.purgeTrashedBefore(cutoff);
-    // Give pre-migration-010 projects/tasks their code/number/ref before the first
-    // read, so nothing ever renders the raw #id fallback. Idempotent.
-    await db.backfillRefs();
-    const data = await db.fetchAll();
-    set({ ...data, loaded: true });
-    // A restored project selection may point at a project deleted in another
-    // session; fall back to Today so we never land on a dead view.
-    const { selection } = get();
-    if (
-      selection.type === "project" &&
-      !data.projects.some((p) => p.id === selection.projectId)
-    ) {
-      set({ selection: { type: "today" } });
+    // The first DB touch races the agent server opening its own connection to the
+    // same file, so a cold start can hit SQLITE_BUSY. Retry with backoff — every
+    // step here is idempotent (a DELETE of already-gone rows, an idempotent
+    // backfill, a read), so a repeat is harmless. Without this a single transient
+    // lock left the app on the spinner forever, because `void init()` swallowed
+    // the rejection.
+    const backoffMs = [200, 400, 800, 1600, 3000];
+    let lastErr: unknown;
+    // Narrate every step on the loading screen AND into startup-trace.log. The
+    // screen is for the user (a visible step distinguishes "slow" from "hung");
+    // the file is for diagnosis after the window is gone.
+    const step = (label: string, traceMsg: string) => {
+      set({ initStatus: label });
+      db.trace(traceMsg);
+    };
+    for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+      const nth = attempt > 0 ? ` (attempt ${attempt + 1})` : "";
+      try {
+        step(`Opening the database…${nth}`, `init: attempt ${attempt} openDb`);
+        await db.openDb();
+        step(`Cleaning up old trash…${nth}`, `init: attempt ${attempt} purge`);
+        await db.purgeTrashedBefore(cutoff);
+        // Give pre-migration-010 projects/tasks their code/number/ref before the
+        // first read, so nothing ever renders the raw #id fallback. Idempotent.
+        step(`Checking task references…${nth}`, `init: attempt ${attempt} backfillRefs`);
+        await db.backfillRefs();
+        step(`Loading your board…${nth}`, `init: attempt ${attempt} fetchAll`);
+        const data = await db.fetchAll();
+        db.trace(`init: attempt ${attempt} loaded ok`);
+        set({ ...data, loaded: true, initError: null });
+        // A restored project selection may point at a project deleted in another
+        // session; fall back to Today so we never land on a dead view.
+        const { selection } = get();
+        if (
+          selection.type === "project" &&
+          !data.projects.some((p) => p.id === selection.projectId)
+        ) {
+          set({ selection: { type: "today" } });
+        }
+        // Icons resolve async off the main load — the dot shows until they land.
+        void get().loadProjectIcons();
+        return;
+      } catch (err) {
+        lastErr = err;
+        db.trace(`init: attempt ${attempt} FAILED: ${String(err)}`);
+        if (attempt < backoffMs.length) {
+          // Say what went wrong while we retry, not just that we're busy — the
+          // user watching this screen is the diagnostic of last resort.
+          set({
+            initStatus: `Hit a snag — retrying… (${String(err)})`,
+          });
+          await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+        }
+      }
     }
-    // Icons resolve async off the main load — the dot shows until they land.
-    void get().loadProjectIcons();
+    // Out of retries: surface the reason instead of spinning silently forever.
+    const message =
+      lastErr instanceof Error
+        ? (lastErr.stack ?? lastErr.message)
+        : String(lastErr);
+    console.error("tildone: init failed after retries:", lastErr);
+    set({ initError: message });
   },
 
   reload: async () => {
     const data = await db.fetchAll();
     set({ ...data });
     void get().loadProjectIcons();
-    // fetchAll has no activity in it, so an open task's log would sit frozen while
-    // an agent writes to it — the one place the user is actually watching.
+    // fetchAll has no activity or comment bodies in it, so an open task's log and
+    // thread would sit frozen while an agent writes to them — the one place the user
+    // is actually watching, and the whole point of comments (the agent's answer must
+    // appear live).
     const { editingTaskId } = get();
-    if (editingTaskId !== null) await get().loadActivity(editingTaskId);
+    if (editingTaskId !== null) {
+      await get().loadActivity(editingTaskId);
+      await get().loadComments(editingTaskId);
+    }
   },
 
   select: (selection) => set({ selection, editingTaskId: null }),
@@ -279,8 +356,11 @@ export const useStore = create<Store>()((set, get) => ({
   setPriorityFilter: (priorityFilter) => set({ priorityFilter }),
   toggleShowCompleted: () => set((s) => ({ showCompleted: !s.showCompleted })),
   openEditor: (editingTaskId) => {
-    set({ editingTaskId, activity: [] });
-    if (editingTaskId !== null) void get().loadActivity(editingTaskId);
+    set({ editingTaskId, activity: [], comments: [] });
+    if (editingTaskId !== null) {
+      void get().loadActivity(editingTaskId);
+      void get().loadComments(editingTaskId);
+    }
   },
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
@@ -627,6 +707,25 @@ export const useStore = create<Store>()((set, get) => ({
     const activity = await db.fetchActivity(taskId);
     // The user may have switched tasks while we were fetching.
     if (get().editingTaskId === taskId) set({ activity });
+  },
+
+  addComment: async (taskId, body) => {
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    const comment = await db.insertComment(taskId, trimmed);
+    set((s) => ({
+      comments: s.editingTaskId === taskId ? [...s.comments, comment] : s.comments,
+      commentCounts: {
+        ...s.commentCounts,
+        [taskId]: (s.commentCounts[taskId] ?? 0) + 1,
+      },
+    }));
+  },
+
+  loadComments: async (taskId) => {
+    const comments = await db.fetchComments(taskId);
+    // The user may have switched tasks while we were fetching.
+    if (get().editingTaskId === taskId) set({ comments });
   },
 
   addTag: async (name) => {

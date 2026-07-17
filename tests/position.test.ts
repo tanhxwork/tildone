@@ -24,8 +24,17 @@ const updateTask = mock(async (_id: number, _patch: Record<string, unknown>) => 
 const insertActivity = mock(async () => {});
 const fetchAll = mock(async () => EMPTY_BOARD);
 const fetchActivity = mock(async () => []);
+const fetchComments = mock(async () => []);
+const insertComment = mock(async () => ({}));
 
-mock.module("../src/db", () => ({ fetchAll, fetchActivity, updateTask, insertActivity }));
+mock.module("../src/db", () => ({
+  fetchAll,
+  fetchActivity,
+  fetchComments,
+  insertComment,
+  updateTask,
+  insertActivity,
+}));
 
 const { useStore, groupSlot } = await import("../src/store");
 

@@ -55,6 +55,7 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 | **Subtask** | A task's checklist item: `title`, `done`, kept in insertion order. Returned by `get_task`. The board card renders them as a live progress bar — **put your plan checklist here, not in `notes`**, and tick items as you go so the user can watch progress. Every subtask write returns `progress: {done, total}`. |
 | **Activity** | A task's timestamped log, shown as the **Activity** feed in the app. Tildone writes an entry for every field change on its own; `log_progress` adds your narrative ones. **Put your running log here, not in `notes`.** Every entry you write is attributed to you: the app labels it with your MCP client name (from the `initialize` handshake) and, on the board card, shows which agent last touched a task and how long ago — so `log_progress` doubles as a presence signal. Nothing to opt into. |
 | **Repo links** | A task's branch / PR / commit / worktree URLs, shown as clickable chips on the card. Add with `add_link`, remove with `delete_link`; returned by `get_task` as `links`. **You** supply the `url` and `label` — only the caller standing in the checkout knows the remote and the repo. Only `http(s)` URLs are accepted. |
+| **Comments** | A task's message thread — a channel back to *you*. Add with `add_comment`; returned by `get_task` as `comments` (oldest first). When you're **blocked**, comment the question, then park a `list_changes` call on that task: the user answers with their own comment and the change (`kind: "comment"`) wakes you. Your comments are attributed to you; the user's to them. |
 | **Project** | Named container with a color. Deleting a project permanently deletes its tasks. |
 | **Inbox** | Where tasks without a project live. Pass `"inbox"` (or omit `project`) to target it. |
 | **Tags** | Case-insensitive names. Unknown tag names are **created automatically** when used on a task. |
@@ -104,7 +105,7 @@ Conventions:
 | `list_projects` | — | `[{id, name, color, open_tasks, done_tasks}]` |
 | `list_tags` | — | `[{id, name, color, task_count}]` |
 | `list_tasks` | all optional: `project` (name/id/`"inbox"`), `status`, `due_before` (`YYYY-MM-DD`), `tag`, `search` (substring in title/notes), `include_done` (bool) | `{count, tasks: [{id, title, status, priority, due_date, completed_at, project, tags, rank}]}` |
-| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `links`, `created_at`, `rank` |
+| `get_task` | `id` | full task incl. `notes`, `tags`, `subtasks`, `links`, `comments`, `created_at`, `rank` |
 | `list_changes` | all optional: `since` (cursor), `wait_ms` (block up to N ms, max 60000) | `{cursor, changes: [{id, entity, entity_id, kind, created_at}], truncated?}` |
 
 By default `list_tasks` excludes completed tasks; pass `include_done: true`
@@ -127,10 +128,14 @@ cursor. Loop on it.
 //                                "kind": "status", "created_at": "..."}]}
 ```
 
-- `kind` is one of `created`, `status`, `moved`, `trashed`, `restored`, `edited`.
-  `entity` is always `"task"` today.
+- `kind` is one of `created`, `status`, `moved`, `trashed`, `restored`, `edited`,
+  `link` (a repo link attached), or `comment` (someone commented — likely the
+  user answering a question you asked). `entity` is always `"task"` today.
 - A change says **that** a task changed, not what it now is — it carries no task
   fields. Follow up with `get_task` / `list_tasks`.
+- The **ask → answer → wake** loop: comment your blocking question with
+  `add_comment`, then park `list_changes` on that task; the user's reply arrives as
+  a `comment` change and you resume. `get_task` to read the thread.
 - **Every writer is caught**, because the feed is written by database triggers
   rather than by the app: a card dragged across the board and a task updated by
   another agent both show up, with no cooperation required from either.
@@ -162,6 +167,7 @@ cursor. Loop on it.
 | `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
 | `add_link` | `task_id`, `url` (http/https); optional `label`, `kind` (`pr`/`branch`/`commit`/`worktree`/`other`) | Attaches a repo link, clickable on the card. `label` defaults to the URL's last path segment; `kind` to `other`. Non-http schemes are refused. |
 | `delete_link` | `id` (the **link** id, from `get_task`) | **Hard** delete — links have no trash. |
+| `add_comment` | `task_id`, `body` | Posts a comment to the card. Use it to **ask the user a question when blocked**, then park `list_changes` on the task — their reply wakes you (`kind: "comment"`). Attributed to you. Empty bodies are refused. |
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |
@@ -170,6 +176,15 @@ Writes return a **receipt, not the row**: `{id, title, status}` (plus
 `completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back
 — that doubled the cost of every update. Call `get_task` when you genuinely need
 the full task after a write. Subtask writes also return `progress: {done, total}`.
+
+**Three of your writes reach the user directly**, as a native notification (if they
+have them on): completing a task, tagging one `blocked`, and tagging one
+`needs-review` — the moments you need a human and they may not be watching the board.
+Only the *transition* fires, so re-tagging an already-blocked task is silent, and
+only *your* writes do — the user's own drag to Done never pings them. A `blocked` /
+`needs-review` notification carries the task's **newest comment** in its body, so the
+natural flow — `add_comment` your question, then tag the task `blocked` — puts that
+question straight on the user's banner. No comment yet? The body is just the title.
 
 ### Examples
 

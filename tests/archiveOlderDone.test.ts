@@ -9,9 +9,18 @@ import type { Task } from "../src/types";
 const updateTask = mock(async (_id: number, _patch: Partial<Task>) => {});
 const insertActivity = mock(async () => {});
 const fetchActivity = mock(async () => []);
+const fetchComments = mock(async () => []);
+const insertComment = mock(async () => ({}));
 const fetchAll = mock(async () => ({ projects: [], tasks: [], tags: [], subtasks: [] }));
 
-mock.module("../src/db", () => ({ updateTask, insertActivity, fetchActivity, fetchAll }));
+mock.module("../src/db", () => ({
+  updateTask,
+  insertActivity,
+  fetchActivity,
+  fetchComments,
+  insertComment,
+  fetchAll,
+}));
 
 const { useStore } = await import("../src/store");
 

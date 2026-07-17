@@ -150,6 +150,52 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
+/* Live init narration ("Opening the database…", "Loading your board…"). Same
+ * quiet voice as the old static label; the width cap keeps a retry line that
+ * carries an error string wrapping instead of stretching across the window. */
+.app-loading-status {
+  max-width: 420px;
+  margin: 0 24px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Shown only when the first load exhausts its retries — a legible failure in
+ * place of an endless spinner. Kept quiet and centred like the rest of this
+ * state; the <pre> carries the raw reason for a bug report. */
+.app-loading-error {
+  max-width: 460px;
+  margin: 0 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.app-loading-error strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.app-loading-error p {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.app-loading-error pre {
+  text-align: left;
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .main {
   flex: 1;
   min-width: 0;
@@ -1088,6 +1134,22 @@ textarea:focus-visible,
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
+}
+
+/* Comment count: an agent's question is invisible until the card is opened, so it
+   earns a mark of its own beside the subtask progress. Same quiet weight as the
+   progress count — a signal the thread exists, not a call to action. */
+.card-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.card-comments svg {
+  flex-shrink: 0;
 }
 
 /* Presence: which agent last touched the card, and how long ago. A quiet line,
@@ -3469,6 +3531,90 @@ textarea:focus-visible,
 
 .detail-activity-label {
   color: var(--text-muted);
+}
+
+/* ---------- Comments: the channel back to an agent ---------- */
+
+.detail-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.detail-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* The author byline. Same rule as card presence: the agent's brand colour tints
+   only the mark, the name stays in a neutral weight so a thread of mixed authors
+   reads as one conversation. --agent-color is set inline per agent (agents.tsx). */
+.detail-comment-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detail-comment-author.agent svg {
+  color: var(--agent-color, var(--text-muted));
+  flex-shrink: 0;
+}
+
+.detail-comment-time {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A faint rail on the left marks the body as one person's turn, and indents the
+   thread so authors scan down the left edge. Markdown inside inherits the app's
+   body styles (same as notes and activity). */
+.detail-comment-body {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.detail-comment-body > :first-child {
+  margin-top: 0;
+}
+.detail-comment-body > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-comment-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.detail-comment-add svg {
+  flex: none;
+}
+.detail-comment-add input {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  flex: 1;
+  min-width: 180px;
+}
+.detail-comment-add input::placeholder {
+  color: var(--text-faint);
 }
 
 .detail-footer {

@@ -56,6 +56,8 @@ async function startAgentServerWithRetry(): Promise<void> {
 function App() {
   const {
     loaded,
+    initError,
+    initStatus,
     init,
     selection,
     viewMode,
@@ -93,7 +95,12 @@ function App() {
     if (useSettings.getState().agentServer) {
       // Retry with backoff so a transient bind race on a fast restart self-heals;
       // the final failure is still surfaced loudly (see startAgentServerWithRetry).
-      void startAgentServerWithRetry();
+      // Once up, push the persisted notify preference so a muted setting survives a
+      // restart — the flag lives in the Rust process (default on), and the call is a
+      // harmless no-op if the bind ultimately failed.
+      void startAgentServerWithRetry().then(() =>
+        invoke("agent_set_notify", { enabled: useSettings.getState().agentNotify }),
+      );
     }
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();
@@ -138,7 +145,18 @@ function App() {
     return (
       <div className="app-loading">
         <TildoneMark width={44} className="app-loading-mark" />
-        <span>Loading…</span>
+        {initError ? (
+          <div className="app-loading-error">
+            <strong>Couldn’t open your board.</strong>
+            <p>
+              The database didn’t load after several tries. Quitting and
+              reopening Tildone usually clears it.
+            </p>
+            <pre>{initError}</pre>
+          </div>
+        ) : (
+          <span className="app-loading-status">{initStatus}</span>
+        )}
       </div>
     );
   }
