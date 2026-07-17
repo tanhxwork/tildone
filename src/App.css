@@ -976,6 +976,78 @@ textarea:focus-visible,
   transition: border-color 150ms;
 }
 
+/* The unseen mark: the Tildone mark held one beat before its end, while an
+   agent's change waits to be looked at.
+
+   --tilde-unsettled is where the wave ends and the rise into the check begins,
+   measured against MARK_PATH with getTotalLength(): the rise starts 0.636 along,
+   so the check is the last 0.364. Held there, the mark is exactly a tilde that
+   has not settled into a check — which is what an unacknowledged card is. Keep
+   in step with the note on UnseenMark in Brand.tsx; re-measure if MARK_PATH
+   changes.
+
+   Accent, not a state colour: purple reads "new" while orange reads "in review",
+   and they are different facts. That only works because the needs-review tint
+   above is gone — on a tinted card this would be a third colour arguing. */
+.tilde {
+  --tilde-unsettled: 0.364;
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  width: 22px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* The kicker and title must yield the corner, or the mark lands on the text. */
+.board-card.unseen .card-title {
+  padding-right: 28px;
+}
+
+.tilde-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 11;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: var(--tilde-unsettled);
+}
+
+/* Coming back from the card finishes the mark: the check lands on the same
+   slow-then-snap curve as the completion flourish — it is the same gesture,
+   earned by looking rather than by finishing. */
+.tilde.settling .tilde-path {
+  animation:
+    tilde-settle 0.5s cubic-bezier(0.9, 0, 0.95, 0.2) forwards,
+    tilde-fade 0.3s ease-in 0.5s forwards;
+}
+
+@keyframes tilde-settle {
+  from {
+    stroke-dashoffset: var(--tilde-unsettled);
+    stroke: var(--accent);
+  }
+  to {
+    stroke-dashoffset: 0;
+    stroke: var(--success);
+  }
+}
+
+@keyframes tilde-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+/* The mark still has to leave, or it sits there forever — so the fade stays and
+   only the draw goes. Same bargain as the flourish below. */
+@media (prefers-reduced-motion: reduce) {
+  .tilde.settling .tilde-path {
+    animation: tilde-fade 0.3s ease-in forwards;
+  }
+}
+
 /* Wave-to-check flourish overlaid on a card when it lands in Done. The mark
    draws itself in the success colour, then fades out and unmounts. */
 .completion-flourish {
@@ -1063,14 +1135,12 @@ textarea:focus-visible,
   border-color: color-mix(in srgb, var(--blocked) 55%, var(--border));
 }
 
-.board-card.state-needs-review {
-  background: color-mix(in srgb, var(--review) 7%, var(--bg-card));
-  border-color: color-mix(in srgb, var(--review) 35%, var(--border));
-}
-
-.board-card.state-needs-review:hover {
-  border-color: color-mix(in srgb, var(--review) 55%, var(--border));
-}
+/* No .board-card.state-needs-review tint, deliberately. The board groups these
+   under a "Needs review" divider, and a heading that names the state plus a
+   tinted card plus a pill inside it is the same fact three times — the loudest
+   card on a board whose whole idea is hairlines over fills. The section carries
+   it now; the card is just a card. `blocked` keeps its tint above: it is an
+   alarm that can surface in any column, with no heading to explain it. */
 
 .card-title {
   font-weight: 500;
@@ -1341,6 +1411,22 @@ textarea:focus-visible,
   flex: 1;
   height: 1px;
   background: var(--border);
+}
+
+/* The review queue's heading is the only thing that carries the state now, so it
+   is the one place the colour is spent — the cards below it stay plain.
+
+   Named `review-queue`, not `review`: a bare `.review` already exists (the weekly
+   Review view, further down this file) and sets `flex-direction: column`. A
+   divider marked `.col-divider.review` matched both, silently turned into a
+   column, and stacked its own rule under centred text. `.needs-review` is taken
+   too. Modifiers on a shared block need a name nobody else could want. */
+.col-divider.review-queue {
+  color: var(--review);
+}
+
+.col-divider.review-queue::after {
+  background: color-mix(in srgb, var(--review) 30%, var(--border));
 }
 
 .backfill-tag {

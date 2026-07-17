@@ -976,6 +976,30 @@ impl TildoneAgent {
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
+        // Mark the card unseen: an agent changed something the user needs to know
+        // and has not looked at yet. The board renders it as the tilde held before
+        // its check settles, and opening the card clears it.
+        //
+        // Agent-only for free, by the same construction the notifications below
+        // rely on: this function is reachable only through the MCP server, so a
+        // user's own drag (which writes SQLite directly) can never land here and
+        // can never mark its own card. That is the whole point — if you moved it,
+        // you saw it, and a mark you caused yourself is noise.
+        //
+        // Only a status change or a newly-added needs-review earns it. Not notes,
+        // not log_progress, not subtask ticks: those are progress, not a question,
+        // and the card already carries a progress bar for them.
+        //
+        // Safe for the changes feed by column, not by luck: no trigger in
+        // 005_changes.sql watches `unseen_at`, and this SET touches nothing else,
+        // so an agent parked in list_changes(wait_ms) is not woken by a mark.
+        if dest_status.is_some() || newly_needs_review {
+            conn.execute(
+                "UPDATE tasks SET unseen_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_iso(), id],
+            )
+            .map_err(db_err)?;
+        }
         // The claim rides this write. Keyed on `status`, not `dest_status`: the latter
         // is only set when the status *changes*, but an agent re-asserting the task it
         // is already on must still refresh its claim — that re-claim is how a card
@@ -2937,6 +2961,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/011_task_ref.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/012_comments.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/013_agent_claims.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/014_unseen_at.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -3837,6 +3862,106 @@ mod tests {
             fired.lock().unwrap().is_empty(),
             "a write that bypasses the MCP server must not notify the user",
         );
+    }
+
+    /// `unseen_at` for a task, straight from the row.
+    fn unseen_at(agent: &TildoneAgent, id: i64) -> Option<String> {
+        agent
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT unseen_at FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn an_agent_status_change_marks_the_card_unseen() {
+        let (agent, _) = test_agent_with_notifications();
+        let id = a_task(&agent, "Moved while you were out");
+        assert!(unseen_at(&agent, id).is_none(), "a fresh task is not unseen");
+        update(&agent, id, None, Some("doing"));
+        assert!(
+            unseen_at(&agent, id).is_some(),
+            "an agent moving a task must leave a mark on the card",
+        );
+    }
+
+    #[test]
+    fn an_agent_flagging_needs_review_marks_the_card_unseen() {
+        let (agent, _) = test_agent_with_notifications();
+        let id = a_task(&agent, "Review me");
+        update(&agent, id, Some(vec!["needs-review"]), None);
+        assert!(
+            unseen_at(&agent, id).is_some(),
+            "being asked for review is the whole reason the mark exists",
+        );
+    }
+
+    /// The mark's reason for existing, as a test: the SAME state change marks the
+    /// card when an agent makes it and leaves it clean when the user does. If you
+    /// dragged it, you saw it — a mark you caused yourself is noise, and noise is
+    /// what makes people stop reading marks.
+    ///
+    /// Agent-only by construction, not by an actor check: the user's drag writes
+    /// SQLite directly (store.ts applyDrag) and never reaches apply_task_update.
+    /// Same construction `a_users_own_drag_to_done_notifies_nothing` relies on.
+    #[test]
+    fn a_users_own_drag_never_marks_its_own_card() {
+        let (agent, _) = test_agent_with_notifications();
+        let id = a_task(&agent, "I dragged this myself");
+        agent
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status = 'done', completed_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_iso(), id],
+            )
+            .unwrap();
+        assert!(
+            unseen_at(&agent, id).is_none(),
+            "a write that bypasses the MCP server must not mark the card",
+        );
+    }
+
+    #[test]
+    fn progress_is_not_a_call_to_action_and_does_not_mark() {
+        let (agent, _) = test_agent_with_notifications();
+        let id = a_task(&agent, "Just editing");
+        // A tag that is not reserved, and a note. Real changes; neither asks
+        // anything of the user, and the card already shows its own progress.
+        update(&agent, id, Some(vec!["someday"]), None);
+        assert!(
+            unseen_at(&agent, id).is_none(),
+            "only a status change or a needs-review flag earns a mark",
+        );
+    }
+
+    /// Opening a card must not look like board activity. The UI clears unseen_at
+    /// and nothing else; if any trigger ever watched that column, reading your own
+    /// board would wake every agent parked in list_changes(wait_ms).
+    #[test]
+    fn writing_the_unseen_mark_is_invisible_to_the_changes_feed() {
+        let (agent, _) = test_agent_with_notifications();
+        let id = a_task(&agent, "Flag me");
+        update(&agent, id, Some(vec!["needs-review"]), None);
+        agent.db.lock().unwrap().execute("DELETE FROM changes", []).unwrap();
+
+        // Byte-for-byte what store.ts markSeen emits when you leave the card.
+        agent
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE tasks SET unseen_at = NULL WHERE id = ?1", [id])
+            .unwrap();
+
+        let rows: i64 = agent
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "clearing the mark must append nothing to the feed");
     }
 
     #[test]
