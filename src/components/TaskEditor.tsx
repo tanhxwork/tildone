@@ -17,7 +17,9 @@ import { isHttpUrl } from "../utils/links";
 import {
   IconCheck,
   IconLink,
+  IconMaximize,
   IconMessage,
+  IconMinimize,
   IconPlus,
   IconSparkles,
   IconTrash,
@@ -28,6 +30,25 @@ import { agentIdentity } from "../agents";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
 import { ProjectGlyph } from "./ProjectGlyph";
+
+// Expanded-card preference survives relaunch, like the nav selection does.
+const EXPANDED_STORAGE_KEY = "tildone.detail-expanded";
+
+function loadExpanded(): boolean {
+  try {
+    return localStorage.getItem(EXPANDED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistExpanded(expanded: boolean) {
+  try {
+    localStorage.setItem(EXPANDED_STORAGE_KEY, expanded ? "1" : "0");
+  } catch {
+    // ignore quota/serialization errors — persistence is best-effort
+  }
+}
 
 export function TaskEditor() {
   const {
@@ -66,6 +87,7 @@ export function TaskEditor() {
   const [linkInput, setLinkInput] = useState("");
   const [commentInput, setCommentInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [expanded, setExpanded] = useState(loadExpanded);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
 
@@ -175,10 +197,17 @@ export function TaskEditor() {
 
   const createdLabel = format(parseISO(task.created_at), "MMMM d, yyyy");
 
+  function toggleExpanded() {
+    setExpanded((prev) => {
+      persistExpanded(!prev);
+      return !prev;
+    });
+  }
+
   return (
     <div className="modal-overlay detail-overlay" onClick={() => openEditor(null)}>
       <div
-        className="detail-card"
+        className={`detail-card ${expanded ? "expanded" : ""}`}
         role="dialog"
         aria-label="Task details"
         onClick={(e) => e.stopPropagation()}
@@ -196,9 +225,19 @@ export function TaskEditor() {
             <span className="detail-breadcrumb-sep">/</span>
             <span className="detail-breadcrumb-task">{task.title}</span>
           </span>
-          <button className="icon-btn" aria-label="Close details" onClick={() => openEditor(null)}>
-            <IconX size={14} />
-          </button>
+          <span className="detail-topbar-actions">
+            <button
+              className="icon-btn"
+              aria-label={expanded ? "Collapse details" : "Expand details"}
+              title={expanded ? "Collapse" : "Expand"}
+              onClick={toggleExpanded}
+            >
+              {expanded ? <IconMinimize size={14} /> : <IconMaximize size={14} />}
+            </button>
+            <button className="icon-btn" aria-label="Close details" onClick={() => openEditor(null)}>
+              <IconX size={14} />
+            </button>
+          </span>
         </div>
 
         <div className="detail-body">
