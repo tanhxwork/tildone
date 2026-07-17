@@ -148,8 +148,14 @@ export function AgentPresence({ taskId }: { taskId: number }) {
   // The guarantee survives, and is now cheaper to hold: this can only ever
   // UNDER-claim liveness. "working" requires a live session to have said so and its
   // process to still exist; anything unknown reads as quiet.
-  const text =
-    entry.state === "working" ? "working" : entry.state === "blocked" ? "blocked" : `quiet ${when}`;
+  //
+  // The state renders as a tiny activity meter, not a word — four equalizer bars
+  // beside the mark. Working flickers them in the board's in-progress orange;
+  // blocked freezes them mid-stride in red (the stop is the message; it needs no
+  // extra glyph); quiet drops the meter entirely — absence of the meter is absence
+  // of activity — leaving the dimmed mark and the age, which is the information
+  // "quiet 25m" carried without the noise of the word. Full wording survives on
+  // hover (title) and for assistive tech (aria-label).
   const title =
     entry.state === "quiet"
       ? `${label} · last active ${when}${entry.live ? "" : " · no live connection"}`
@@ -162,11 +168,16 @@ export function AgentPresence({ taskId }: { taskId: number }) {
       title={title}
       aria-label={`${label}, ${entry.state === "quiet" ? `quiet, last active ${when}` : entry.state}`}
     >
-      <Mark
-        className={`card-presence-mark${entry.state === "working" ? " working" : ""}`}
-        size={14}
-      />
-      <span className="card-presence-time">{text}</span>
+      <Mark className="card-presence-mark" size={14} />
+      {entry.state !== "quiet" && (
+        <span className="card-presence-bars" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+          <i />
+        </span>
+      )}
+      {entry.state === "quiet" && <span className="card-presence-time">{when}</span>}
     </span>
   );
 }
