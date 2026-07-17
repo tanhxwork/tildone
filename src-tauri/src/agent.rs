@@ -353,8 +353,32 @@ fn err(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(msg.into())])
 }
 
+/// Drop object members whose value is null, recursively. Absent and null mean
+/// the same thing to an MCP caller, and the nulls were pure token cost on
+/// every response an agent reads.
+fn strip_nulls(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, v| !v.is_null());
+            for v in map.values_mut() {
+                strip_nulls(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                strip_nulls(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Serialized compact and null-stripped: pretty-printing plus null members
+/// cost agents ~40% extra tokens on every read, measured on a live board.
 fn ok_json(value: &Value) -> Result<CallToolResult, ErrorData> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| {
+    let mut value = value.clone();
+    strip_nulls(&mut value);
+    let text = serde_json::to_string(&value).map_err(|e| {
         ErrorData::internal_error(format!("failed to serialize result: {e}"), None)
     })?;
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
@@ -1101,8 +1125,12 @@ const INBOX_CODE: &str = "INBOX";
 /// A task identifier from an MCP client: the numeric DB id (back-compat) or the
 /// frozen "CODE-N" reference string. Untagged so a JSON number deserialises to
 /// `Id` and a JSON string to `Ref`; the derived JsonSchema advertises both.
+/// The schemars description overrides this doc comment on the wire — the doc
+/// is for Rust readers, and shipping it in every tool's $defs cost each
+/// connected session ~2KB of schema.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
+#[schemars(description = "Task id (number) or ref string like \"TIL-3\"")]
 enum TaskRef {
     Id(i64),
     Ref(String),
@@ -1275,13 +1303,11 @@ struct IdParams {
 /// A task identifier for a task-scoped tool: the numeric id or a "CODE-N" ref.
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct TaskIdParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
     id: TaskRef,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AppendNoteParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
     id: TaskRef,
     #[schemars(description = "Text to append. A newline is inserted first when the notes are not already empty or newline-terminated.")]
     text: String,
@@ -1289,7 +1315,6 @@ struct AppendNoteParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddSubtaskParams {
-    #[schemars(description = "Parent task id (number) or reference like \"TIL-3\"")]
     task_id: TaskRef,
     title: String,
 }
@@ -1308,7 +1333,6 @@ struct ListChangesParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct LogProgressParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
     task_id: TaskRef,
     #[schemars(
         description = "One short, factual line in the present tense — e.g. \"tests written (RED, 5 failing)\""
@@ -1358,22 +1382,17 @@ struct CreateTaskParams {
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
     #[schemars(
-        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+        description = "Your CLAUDE_CODE_SESSION_ID env var; send with status \"doing\" to claim the task. Omit if not a live session."
     )]
     session_id: Option<String>,
-    #[schemars(
-        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
-    )]
+    #[schemars(description = "Checkout/worktree path, shown as a chip; only with session_id")]
     cwd: Option<String>,
-    #[schemars(
-        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
-    )]
+    #[schemars(description = "Git branch, shown as a chip; only with session_id")]
     branch: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct UpdateTaskParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\"")]
     id: TaskRef,
     title: Option<String>,
     notes: Option<String>,
@@ -1388,16 +1407,12 @@ struct UpdateTaskParams {
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
     #[schemars(
-        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+        description = "Your CLAUDE_CODE_SESSION_ID env var; send with status \"doing\" to claim the task. Omit if not a live session."
     )]
     session_id: Option<String>,
-    #[schemars(
-        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
-    )]
+    #[schemars(description = "Checkout/worktree path, shown as a chip; only with session_id")]
     cwd: Option<String>,
-    #[schemars(
-        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
-    )]
+    #[schemars(description = "Git branch, shown as a chip; only with session_id")]
     branch: Option<String>,
 }
 
@@ -1425,7 +1440,7 @@ impl ClaimInfo {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddLinkParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\" to attach the link to")]
+    #[schemars(description = "Task to attach the link to")]
     task_id: TaskRef,
     #[schemars(description = "The URL to open. Must be http(s) — other schemes are refused.")]
     url: String,
@@ -1439,7 +1454,7 @@ struct AddLinkParams {
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddCommentParams {
-    #[schemars(description = "Task id (number) or reference like \"TIL-3\" to comment on")]
+    #[schemars(description = "Task to comment on")]
     task_id: TaskRef,
     #[schemars(description = "The comment text. Ask a question here when blocked; the user answers with another comment and you wake via list_changes.")]
     body: String,
@@ -2064,7 +2079,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Log one line of narrative progress on a task — what you just did, found or decided. It lands in the task's Activity feed in the app, timestamped, so the user can watch the work happen. Prefer this over keeping a `## Log` section inside `notes`: it costs the same however long the history gets, it cannot clobber anything, and it leaves notes as prose. Use subtasks for the plan checklist and this for the running commentary."
+        description = "Log one line of narrative progress — what you just did, found or decided. Lands timestamped in the task's Activity feed; prefer this over a `## Log` section in notes."
     )]
     fn log_progress(
         &self,
@@ -2184,7 +2199,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Attach a repo link to a task — a branch, PR, commit or worktree URL — rendered as a clickable chip on the card. You supply the url and label: the app never guesses one, since only you (standing in the checkout) know the remote, the host convention and the repo. Only http(s) URLs are accepted."
+        description = "Attach a repo link to a task — a branch, PR, commit or worktree URL — rendered as a clickable chip on the card. Only http(s) URLs are accepted."
     )]
     fn add_link(
         &self,
@@ -2294,7 +2309,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Add a comment to a task — a message on the card the user can read and reply to. Use it to ask a question when you are blocked: park a list_changes call on this task afterwards and you wake the moment the user answers with their own comment. Comments are authored by whoever writes them; yours are attributed to you."
+        description = "Add a comment to a task — a message on the card the user can read and reply to. Ask here when blocked, then park list_changes on the task; the user's reply wakes you."
     )]
     fn add_comment(
         &self,
@@ -2353,7 +2368,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link/comment/tag. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. kind is created/status/moved/trashed/restored/edited/link/comment/tag. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
         &self,
@@ -2417,12 +2432,25 @@ impl ServerHandler for TildoneAgent {
         );
         info.server_info.name = "tildone".into();
         info.server_info.version = env!("CARGO_PKG_VERSION").into();
+        // The shared conventions live HERE, once, instead of being repeated in
+        // per-tool schema descriptions — the tool list is fixed context every
+        // connected session pays for, this string is paid for once.
         info.with_instructions(
-            "Tildone is the user's personal task manager. Tasks have a status (todo/doing/done), \
-             an optional project (otherwise they sit in the Inbox), optional tags, a priority \
-             (0 none – 3 high) and an optional due date (YYYY-MM-DD). Refer to projects and tags \
-             by name. Start with list_projects/list_tasks to see what exists; deleting a project \
-             is irreversible, deleted tasks go to a restorable trash.",
+            "Tildone is the user's personal task manager — a kanban board they watch live. \
+             Tasks: status todo/doing/done, optional project (otherwise the Inbox), tags \
+             (unknown names auto-created), priority 0 none – 3 high, due date YYYY-MM-DD. \
+             Refer to projects and tags by name; task ids are numbers or refs like \"TIL-3\". \
+             On update, \"\" clears the due date, 0 clears priority, \"inbox\" clears the \
+             project; provided fields replace wholesale (notes and tags included — prefer \
+             append_note over rewriting notes). A task has three surfaces: subtasks are the \
+             plan (a live progress bar on the card), log_progress is the running log (the \
+             Activity feed), notes is prose that rarely changes. When you start work, claim \
+             the task: send session_id (+ cwd, branch) with status \"doing\". Writes return \
+             a receipt {id, ref, status}, not the row — get_task when you need full state. \
+             Null fields are omitted from all responses. When blocked: add_comment your \
+             question, tag the task blocked, park list_changes — the user's reply wakes you. \
+             Start with list_projects/list_tasks to see what exists; deleting a project is \
+             irreversible, deleted tasks go to a restorable trash.",
         )
     }
 
@@ -6190,4 +6218,27 @@ mod tests {
         // the next Zeno task is ZL-2 (not skipped, not colliding with the moved-in task).
         assert_eq!(ref_task(&agent, Some("Zeno Logistics"), "z2")["ref"], "ZL-2");
     }
+
+    // ---- wire format: compact, null-stripped responses ----
+
+    /// Absent and null are the same answer to an MCP caller, and pretty-print
+    /// indentation plus null members cost agents ~40% extra tokens on every
+    /// read — so responses serialize compact with null members dropped.
+    #[test]
+    fn responses_are_compact_and_null_free() {
+        let agent = test_agent();
+        a_task(&agent, "Bare task");
+        let result = agent.list_tasks(Parameters(ListTasksParams::default())).unwrap();
+        let text = match &result.content[0] {
+            ContentBlock::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert!(!text.contains('\n'), "expected compact JSON, got: {text}");
+        assert!(!text.contains("null"), "expected null members dropped, got: {text}");
+        let row = serde_json::from_str::<Value>(&text).unwrap()["tasks"][0].clone();
+        assert_eq!(row["title"], "Bare task");
+        assert!(row.get("due_date").is_none(), "unset due_date must be omitted, not null");
+        assert_eq!(row["status"], "todo");
+    }
 }
+
