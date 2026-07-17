@@ -105,6 +105,24 @@ function App() {
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();
     });
+    // The landing action shared by tildone://task/<REF> deep links and a click on
+    // an agent notification (Rust emits both): open that task's editor. The editor
+    // renders independent of the current selection, so no view switching is needed.
+    // A miss gets one reload-and-retry — the ref may be seconds old, arriving ahead
+    // of the store — and a ref that still resolves to nothing is silently ignored:
+    // a deep link must never error at the user.
+    const unlistenOpenTask = listen<string>("open-task-ref", async (event) => {
+      const wanted = event.payload.trim().toUpperCase();
+      if (!wanted) return;
+      const byRef = () =>
+        useStore.getState().tasks.find((t) => t.ref?.toUpperCase() === wanted);
+      let task = byRef();
+      if (!task) {
+        await useStore.getState().reload();
+        task = byRef();
+      }
+      if (task) useStore.getState().openEditor(task.id);
+    });
     // Presence is POLLED, not pushed, and that is the whole reason it is affordable.
     // A heartbeat fires on every tool call of every agent; routing those through
     // `agent-db-changed` would drag the board through a full fetchAll() of the entire
@@ -119,6 +137,7 @@ function App() {
     }, 10_000);
     return () => {
       void unlisten.then((fn) => fn());
+      void unlistenOpenTask.then((fn) => fn());
       clearInterval(presenceTimer);
     };
   }, []);

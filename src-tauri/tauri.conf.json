@@ -9,6 +9,13 @@
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["tildone"]
+      }
+    }
+  },
   "app": {
     "windows": [
       {

@@ -144,6 +144,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:tildone.db", migrations)
@@ -171,6 +172,22 @@ pub fn run() {
                     }
                 }
             }
+            // tildone://task/<REF> — the external door to a task card. The scheme is
+            // registered by the bundle's Info.plist (macOS reads it only from an
+            // installed app, so `tauri dev` never receives these). A deep link must
+            // never error at the user: any recognisable ref opens that card, anything
+            // else still shows the window.
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                agent::show_main_window(&handle);
+                for url in event.urls() {
+                    if let Some(task_ref) = agent::deep_link_task_ref(url.as_str()) {
+                        use tauri::Emitter;
+                        let _ = handle.emit("open-task-ref", task_ref);
+                    }
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
