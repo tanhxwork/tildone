@@ -3408,6 +3408,16 @@ textarea:focus-visible,
   cursor: text;
 }
 
+/* Rendered notes never scroll sideways: an unbreakable run (a long URL, a
+   TIL-29-style ASCII rule) wraps rather than pushing the pane — and the sticky
+   section bar — off the edge. `pre` is exempt by nature (white-space: pre
+   ignores wrap opportunities) and keeps its own overflow-x scrollbox below;
+   tables get the same treatment so a wide table scrolls in place instead of
+   widening the column. */
+.detail-notes-rendered {
+  overflow-wrap: anywhere;
+}
+
 .detail-notes-rendered:focus,
 .detail-notes-empty:focus {
   outline: none;
@@ -3527,6 +3537,10 @@ textarea:focus-visible,
   border-collapse: collapse;
   margin: 8px 0;
   font-size: 12.5px;
+  /* A wide table scrolls in its own box (like `pre`), never the whole pane. */
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .detail-notes-rendered th,
