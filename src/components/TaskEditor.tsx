@@ -28,6 +28,7 @@ import {
 } from "./Icons";
 import { agentIdentity } from "../agents";
 import { Markdown } from "./Markdown";
+import { NotesView } from "./NotesView";
 import { ProjectGlyph } from "./ProjectGlyph";
 
 // Expanded-card preference survives relaunch, like the nav selection does.
@@ -395,20 +396,11 @@ export function TaskEditor() {
               }}
             />
           ) : notes.trim() ? (
-            <div
-              className="detail-notes detail-notes-rendered"
-              tabIndex={0}
-              aria-label="Task notes, click to edit"
-              onClick={() => setEditingNotes(true)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  setEditingNotes(true);
-                }
-              }}
-            >
-              <Markdown>{notes}</Markdown>
-            </div>
+            <NotesView
+              taskId={task.id}
+              source={notes}
+              onStartEdit={() => setEditingNotes(true)}
+            />
           ) : (
             <div
               className="detail-notes detail-notes-empty"
