@@ -734,6 +734,21 @@ impl TildoneAgent {
             newly_blocked = has("blocked") && !old_lower.contains("blocked");
             newly_needs_review = has("needs-review") && !old_lower.contains("needs-review");
         }
+        // When this write blocks or flags the task, surface the freshest comment in the
+        // notification body — an agent's flow is *comment the question, then tag blocked*,
+        // so the newest comment is the ask itself. Read it while the connection is still
+        // held (it is dropped just below). No comment → None, and the body falls back to
+        // the bare task title. `.ok()` maps QueryReturnedNoRows to None.
+        let latest_comment: Option<String> = if newly_blocked || newly_needs_review {
+            conn.query_row(
+                "SELECT body FROM comments WHERE task_id = ?1 ORDER BY id DESC LIMIT 1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        } else {
+            None
+        };
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
@@ -749,18 +764,34 @@ impl TildoneAgent {
         // only through the MCP server (the UI writes SQLite directly), so a write
         // here always came from an agent — the user's own drag to Done never lands
         // here and never notifies. Only transitions, computed above.
-        let mut notifications: Vec<(&str, &str)> = Vec::new();
+        // Blocked / needs-review carry the newest comment ("{task} — {question}") so the
+        // banner holds the ask itself; without one they fall back to the bare task title.
+        // Done stays a plain title — completing raises no question to read.
+        let flagged_body = || match latest_comment.as_deref().map(str::trim) {
+            Some(c) if !c.is_empty() => {
+                // Cap the comment so a long reply can't turn the banner into a wall of
+                // text; the OS truncates too, but a clean ellipsis reads better.
+                let snippet = if c.chars().count() > 140 {
+                    format!("{}…", c.chars().take(139).collect::<String>().trim_end())
+                } else {
+                    c.to_string()
+                };
+                format!("{notify_title} — {snippet}")
+            }
+            _ => notify_title.clone(),
+        };
+        let mut notifications: Vec<(&str, String)> = Vec::new();
         if dest_status.as_deref() == Some("done") {
-            notifications.push(("Task done", &notify_title));
+            notifications.push(("Task done", notify_title.clone()));
         }
         if newly_blocked {
-            notifications.push(("Blocked", &notify_title));
+            notifications.push(("Blocked", flagged_body()));
         }
         if newly_needs_review {
-            notifications.push(("Needs review", &notify_title));
+            notifications.push(("Needs review", flagged_body()));
         }
         for (title, body) in notifications {
-            (self.notify_user)(title, body);
+            (self.notify_user)(title, &body);
         }
         ok_json(&ack)
     }
@@ -2879,6 +2910,39 @@ mod tests {
         assert!(
             fired.lock().unwrap().is_empty(),
             "only done / blocked / needs-review notify; other edits stay quiet",
+        );
+    }
+
+    /// The capstone where items 5 and 8 meet: an agent's real flow is to comment its
+    /// question and then tag the task blocked, so the block notification carries that
+    /// comment — the user reads the actual ask on the banner, not a bare title.
+    #[test]
+    fn a_flagged_task_notifies_with_its_newest_comment() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Ship the API");
+        comment(&agent, id, "Which port should the dev build use?", Some("claude-code"));
+        update(&agent, id, Some(vec!["blocked"]), None);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![(
+                "Blocked".to_string(),
+                "Ship the API — Which port should the dev build use?".to_string(),
+            )],
+            "a blocked task with a comment surfaces that comment in the notification body",
+        );
+    }
+
+    /// A flagged task with no comment falls back to the bare title — the newest-comment
+    /// enrichment must never turn an empty thread into a dangling separator.
+    #[test]
+    fn a_flagged_task_with_no_comment_falls_back_to_the_title() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Review me");
+        update(&agent, id, Some(vec!["needs-review"]), None);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![("Needs review".to_string(), "Review me".to_string())],
+            "no comment → the body is exactly the task title, no trailing separator",
         );
     }
 

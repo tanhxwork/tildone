@@ -181,7 +181,10 @@ the full task after a write. Subtask writes also return `progress: {done, total}
 have them on): completing a task, tagging one `blocked`, and tagging one
 `needs-review` — the moments you need a human and they may not be watching the board.
 Only the *transition* fires, so re-tagging an already-blocked task is silent, and
-only *your* writes do — the user's own drag to Done never pings them.
+only *your* writes do — the user's own drag to Done never pings them. A `blocked` /
+`needs-review` notification carries the task's **newest comment** in its body, so the
+natural flow — `add_comment` your question, then tag the task `blocked` — puts that
+question straight on the user's banner. No comment yet? The body is just the title.
 
 ### Examples
 
