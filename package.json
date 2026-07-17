@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "test": "bun test",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "./scripts/tauri.sh",
+    "dev:clean": "./scripts/dev-clean.sh"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
