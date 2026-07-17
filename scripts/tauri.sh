@@ -31,6 +31,23 @@ slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')
 slug=${slug#-}; slug=${slug%-}
 [ -n "$slug" ] || slug=main
 
+# --- refuse a second instance of the same worktree ------------------------
+# Two identical windows sharing one dev DB (and two identical tray icons)
+# is exactly the confusion this wrapper exists to prevent. Different
+# worktrees coexist; the same one does not.
+if [ "${TILDONE_DEV_FORCE:-}" != "1" ]; then
+  for pid in $(pgrep -f 'target/debug/tildone' 2>/dev/null); do
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    case "$cwd" in
+      "$root" | "$root"/*)
+        echo "tildone dev [$slug]: already running (pid $pid) — reuse that window," >&2
+        echo "run 'bun run dev:clean' first, or set TILDONE_DEV_FORCE=1 to run both." >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
+
 # --- port: first free one from 1420 up ------------------------------------
 port=1420
 while nc -z 127.0.0.1 "$port" >/dev/null 2>&1; do port=$((port + 1)); done
