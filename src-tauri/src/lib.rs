@@ -17,17 +17,18 @@ fn debug_trace(app: tauri::AppHandle, msg: String) {
     let Ok(dir) = app.path().app_config_dir() else {
         return;
     };
-    // One launch per file: the first write of a session truncates, so the log
-    // always reads as "what happened on the last start" and never grows across
-    // launches.
+    // One launch per file, but keep the previous launch: rotating instead of
+    // truncating means a hang's trace survives the force-quit-and-relaunch that
+    // otherwise overwrites it before anyone can read it.
     static FRESH: AtomicBool = AtomicBool::new(true);
-    let truncate = FRESH.swap(false, Ordering::Relaxed);
+    let path = dir.join("startup-trace.log");
+    if FRESH.swap(false, Ordering::Relaxed) {
+        let _ = std::fs::rename(&path, dir.join("startup-trace.prev.log"));
+    }
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
-        .append(!truncate)
-        .write(truncate)
-        .truncate(truncate)
-        .open(dir.join("startup-trace.log"))
+        .append(true)
+        .open(path)
     else {
         return;
     };
