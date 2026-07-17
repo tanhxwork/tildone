@@ -2,7 +2,10 @@
 
 Tildone embeds an [MCP](https://modelcontextprotocol.io) server so AI agents
 can create and manage the user's tasks. This document is the full tool
-reference; it is safe to paste into an agent's context.
+reference; it is safe to paste into an agent's context. For a compact
+operating guide an agent can load on demand instead, install
+[`skills/tildone/SKILL.md`](skills/tildone/SKILL.md) (e.g. copy the
+`skills/tildone/` directory into `~/.claude/skills/`).
 
 ## Connecting
 
@@ -63,6 +66,9 @@ claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
 
 Conventions:
 
+- **Responses are compact JSON with null fields omitted.** An absent key means
+  the field is unset (no due date, no project, …) — absent and `null` are the
+  same answer, and the nulls were pure token cost.
 - Refer to **projects and tags by name** (project id also works). Project
   matching is case-insensitive. Unknown project names are **not** created
   silently — you get an error listing the existing projects; call
@@ -74,7 +80,7 @@ Conventions:
   them, so `list_tasks(project: "X", status: "todo")` starts at the top card of
   that column — *"work the top task first"* means **rank 0**. `rank` is a dense
   0-based ordinal within a **(project, status)** group. It is **not** comparable
-  across projects, and it is `null` for a trashed task.
+  across projects, and it is omitted for a trashed task.
 - **Rank is read-only** — only the user reorders, by dragging. No tool takes a
   rank or position, by design: the board is theirs.
 - **A task has three surfaces — use the right one.** They each have their own
