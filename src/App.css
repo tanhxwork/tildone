@@ -1242,18 +1242,26 @@ textarea:focus-visible,
 }
 
 .card-presence-mark.working {
-  animation: presence-pulse 1.4s ease-in-out infinite;
+  animation: presence-pulse 1.5s ease-in-out infinite;
   transform-origin: center;
 }
 
+/* The breathe has to be seen from across the room, because it is the ONLY thing
+   separating a live agent from a departed one — everything else on the strip looks
+   the same either way.
+   Amplitude chosen against the alternatives, in a browser: scale 1→1.22 with opacity
+   .85→1 (the first version) moves ~3px on a 14px mark and is imperceptible unless you
+   already know to look. The eye reads change, not size, so both axes swing widely.
+   Symmetric ease-in-out, not an ease-out curve: this is a loop, not an entrance —
+   a decelerating curve in a cycle reads as a stutter. */
 @keyframes presence-pulse {
   0%,
   100% {
-    transform: scale(1);
-    opacity: 0.85;
+    transform: scale(0.9);
+    opacity: 0.4;
   }
   50% {
-    transform: scale(1.22);
+    transform: scale(1.3);
     opacity: 1;
   }
 }
