@@ -37,6 +37,52 @@ export function TildoneMark({ width = 20, ...rest }: MarkProps) {
   );
 }
 
+/** The unseen mark: the Tildone mark held one beat before its end.
+ *
+ *  The path is a wave that rises into a check, and those two halves are
+ *  measurable — against MARK_PATH, `getTotalLength()` puts the start of the rise
+ *  at 0.636 of the way along, so the check is the last 0.364. Freeze the draw
+ *  there (`stroke-dashoffset: 0.364` on a `pathLength={1}` stroke) and the mark
+ *  is, exactly, a tilde that has not settled into a check yet — which is what an
+ *  unacknowledged card is. The product is named for that shape; this is the same
+ *  shape, unfinished.
+ *
+ *  `settling` finishes the draw, turns the stroke to the success colour, then
+ *  fades — fired when you leave a card you had not seen, so the check lands as
+ *  you return to the board. `onDone` fires at the end of the fade so the caller
+ *  can unmount it, the same contract as CompletionFlourish.
+ *
+ *  Geometry lives in `.tilde` / `--tilde-unsettled` in App.css; re-measure and
+ *  update both if MARK_PATH ever changes.
+ */
+export function UnseenMark({
+  settling = false,
+  onDone,
+}: {
+  settling?: boolean;
+  onDone?: () => void;
+}) {
+  return (
+    <span className={`tilde${settling ? " settling" : ""}`} aria-hidden="true">
+      <svg
+        viewBox={MARK_VIEWBOX}
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path
+          className="tilde-path"
+          d={MARK_PATH}
+          pathLength={1}
+          onAnimationEnd={(e) => {
+            if (e.animationName.startsWith("tilde-fade")) onDone?.();
+          }}
+        />
+      </svg>
+    </span>
+  );
+}
+
 /** A one-shot wave-to-check flourish, overlaid on a card as it lands in Done.
  *  The mark self-draws in the success colour, then fades. Purely decorative, so
  *  it's aria-hidden and drops to a plain fade under prefers-reduced-motion

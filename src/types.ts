@@ -60,6 +60,11 @@ export interface Task {
   /** Frozen "CODE-N" reference shown on the card and accepted by the MCP tools,
    * e.g. "TIL-3". Immutable after creation. NULL only pre-backfill. */
   ref: string | null;
+  /** When an agent changed this task without you having looked since. NULL means
+   * seen. Set only by the agent server — a change you made yourself is one you
+   * saw, so the drag and the editor never stamp it. Rendered as the Tildone mark
+   * held before its check settles; opening the card completes it and clears this. */
+  unseen_at: string | null;
   tag_ids: number[];
 }
 

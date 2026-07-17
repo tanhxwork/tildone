@@ -1,0 +1,28 @@
+-- "An agent changed this and you have not looked yet."
+--
+-- NULL means seen (or never touched by an agent); a timestamp is the moment the
+-- change landed. The board renders it as the Tildone mark held one beat before
+-- the end — a tilde that has not settled into a check — and opening the card
+-- completes the check and clears this column.
+--
+-- Set ONLY by the agent server (src-tauri/src/agent.rs), never by a trigger and
+-- never by a user write. Two reasons, and they are the whole design:
+--
+--   1. A trigger cannot know who wrote. docs/specs/2026-07-16-agent-change-feed.md
+--      established this and dropped `actor` from the changes feed because of it.
+--      We do not need the trigger to know: agent.rs *is* the agent path, and it
+--      already computes newly_needs_review to fire its notification.
+--   2. If you moved the card yourself, you saw it. A drag that marked its own
+--      card would make the mark noise, which is the failure mode this exists to
+--      avoid. So applyDrag and patchTask must never stamp this.
+--
+-- Deliberately NOT watched by any trigger in 005_changes.sql, and no future
+-- migration may add one: clearing the mark by opening a card would then append a
+-- `changes` row and wake every agent parked in list_changes(wait_ms) — a user
+-- reading their own board must not look like board activity.
+--
+-- ALTER TABLE ... ADD COLUMN: additive, no table rebuild, so none of the
+-- ON DELETE CASCADE hazard that docs/decisions/2026-07-16-sqlite-migration-safety.md
+-- forbids. Existing rows get NULL, which reads correctly as "nothing unseen".
+
+ALTER TABLE tasks ADD COLUMN unseen_at TEXT;

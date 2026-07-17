@@ -23,7 +23,7 @@ import { format } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
-import type { Project, Status, Task, TaskLink } from "../types";
+import type { Project, Status, Tag, Task, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -35,7 +35,7 @@ import { todayStr } from "../utils/dates";
 import { cardPresence } from "../utils/presence";
 import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
-import { CompletionFlourish } from "./Brand";
+import { CompletionFlourish, UnseenMark } from "./Brand";
 import { IconCheck, IconMessage, LinkKindIcon } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
@@ -45,6 +45,9 @@ type Columns = Record<Status, number[]>;
 
 interface BoardModel {
   columns: Columns;
+  /** Where the "Working" divider falls inside In Progress: the number of
+   * needs-review cards grouped above it. 0 means no review section. */
+  doingReviewCount: number;
   /** Where the "Earlier" divider falls inside the Done column. */
   doneTodayCount: number;
   /** Done tasks not on the board — the count behind the "in Completed" link. */
@@ -53,20 +56,39 @@ interface BoardModel {
 
 const byPosition = (a: Task, b: Task) => a.position - b.position || a.id - b.id;
 
-function computeColumns(tasks: Task[], today: string): BoardModel {
+function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
   const columns: Columns = { todo: [], doing: [], done: [] };
   columns.todo = tasks.filter((t) => t.status === "todo").sort(byPosition).map((t) => t.id);
-  columns.doing = tasks.filter((t) => t.status === "doing").sort(byPosition).map((t) => t.id);
+  // In Progress groups the review queue above the rest, so "what is waiting on
+  // you" is a place on the board rather than a pill to hunt for. This is a
+  // *display* order with a split index — exactly what the Done column already
+  // does with Today/Earlier below. Nothing here writes `position`: the two
+  // halves stay sorted by position within themselves, and the section is a tag
+  // being read, never a slot being assigned.
+  //
+  // Precedence follows reservedState: blocked outranks needs-review, so a task
+  // carrying both stays under Working and keeps its alarm rather than being
+  // filed into a queue.
+  const doing = tasks.filter((t) => t.status === "doing").sort(byPosition);
+  const review = doing.filter((t) => reservedState(t, tags) === "needs-review");
+  const working = doing.filter((t) => reservedState(t, tags) !== "needs-review");
+  columns.doing = [...review, ...working].map((t) => t.id);
   // Done is not the whole pile: it is the recent window (today + backfill to the
   // limit), newest first. The rest lives in Completed.
   const w = doneBoardWindow(tasks.filter((t) => t.status === "done"), today);
   columns.done = [...w.today, ...w.earlier].map((t) => t.id);
-  return { columns, doneTodayCount: w.today.length, doneHidden: w.hiddenCount };
+  return {
+    columns,
+    doingReviewCount: review.length,
+    doneTodayCount: w.today.length,
+    doneHidden: w.hiddenCount,
+  };
 }
 
 export function Kanban() {
   const {
     tasks,
+    tags,
     selection,
     search,
     activeTagIds,
@@ -91,6 +113,7 @@ export function Kanban() {
   const taskById = useMemo(() => new Map(visible.map((t) => [t.id, t])), [visible]);
 
   const [columns, setColumns] = useState<Columns>({ todo: [], doing: [], done: [] });
+  const [reviewCount, setReviewCount] = useState(0);
   const [doneMeta, setDoneMeta] = useState<{ today: number; hidden: number }>({
     today: 0,
     hidden: 0,
@@ -101,14 +124,36 @@ export function Kanban() {
   const [celebrate, setCelebrate] = useState<{ id: number; key: number } | null>(null);
   const dragFromStatus = useRef<Status | null>(null);
   const flourishSeq = useRef(0);
+  // A card whose unseen mark is settling into its check, because you just came
+  // back from reading it. Same shape as `celebrate`: the store clears the fact
+  // immediately, so this keeps the mark mounted long enough to finish drawing.
+  const [settle, setSettle] = useState<{ id: number; key: number } | null>(null);
+  const settleSeq = useRef(0);
 
   useEffect(() => {
     if (activeId === null) {
-      const model = computeColumns(visible, todayStr());
+      const model = computeColumns(visible, tags, todayStr());
       setColumns(model.columns);
+      setReviewCount(model.doingReviewCount);
       setDoneMeta({ today: model.doneTodayCount, hidden: model.doneHidden });
     }
-  }, [visible, activeId]);
+  }, [visible, tags, activeId]);
+
+  // Acknowledge on the way out, not on the way in: the editor covers the card,
+  // so a mark cleared on open would settle where you cannot see it. Any move off
+  // a task counts — closing the editor, or jumping straight to another card.
+  const editingTaskId = useStore((s) => s.editingTaskId);
+  const markSeen = useStore((s) => s.markSeen);
+  const wasEditing = useRef<number | null>(null);
+  useEffect(() => {
+    const left = wasEditing.current;
+    wasEditing.current = editingTaskId;
+    if (left === null || left === editingTaskId) return;
+    if (tasks.find((t) => t.id === left)?.unseen_at == null) return;
+    settleSeq.current += 1;
+    setSettle({ id: left, key: settleSeq.current });
+    void markSeen(left);
+  }, [editingTaskId, tasks, markSeen]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -204,6 +249,9 @@ export function Kanban() {
             onOpen={openEditor}
             celebrate={celebrate}
             onFlourishDone={() => setCelebrate(null)}
+            settle={settle}
+            onSettleDone={() => setSettle(null)}
+            reviewCount={reviewCount}
             doneTodayCount={doneMeta.today}
             doneHidden={doneMeta.hidden}
             onSeeAll={() => select({ type: "completed" })}
@@ -224,6 +272,9 @@ function Column({
   onOpen,
   celebrate,
   onFlourishDone,
+  settle,
+  onSettleDone,
+  reviewCount,
   doneTodayCount,
   doneHidden,
   onSeeAll,
@@ -234,25 +285,32 @@ function Column({
   onOpen: (id: number) => void;
   celebrate: { id: number; key: number } | null;
   onFlourishDone: () => void;
+  settle: { id: number; key: number } | null;
+  onSettleDone: () => void;
+  reviewCount: number;
   doneTodayCount: number;
   doneHidden: number;
   onSeeAll: () => void;
 }) {
   const { setNodeRef } = useDroppable({ id: status });
   const isDone = status === "done";
+  const isDoing = status === "doing";
 
   // `full` keeps a done card in its full form instead of collapsing to one line —
   // used for today's completions, which are still fresh enough to want the detail.
-  const card = (id: number, full = false) => {
+  const card = (id: number, full = false, inSection = false) => {
     const task = taskById.get(id);
     return task ? (
       <Card
         key={id}
         task={task}
         full={full}
+        inSection={inSection}
         onOpen={onOpen}
         flourishKey={celebrate?.id === id ? celebrate.key : null}
         onFlourishDone={onFlourishDone}
+        settleKey={settle?.id === id ? settle.key : null}
+        onSettleDone={onSettleDone}
       />
     ) : null;
   };
@@ -261,6 +319,14 @@ function Column({
   // the backfilled older cards begin. Other columns render a flat list.
   const todayCount = Math.min(doneTodayCount, ids.length);
   const hasEarlier = isDone && ids.length > todayCount;
+
+  // In Progress groups the review queue above the rest, on the same split-index
+  // shape. The dividers only appear when there is something on both sides: a
+  // column that is all review needs no "Working" heading over nothing, and a
+  // column with none needs no section at all.
+  const reviewSplit = Math.min(reviewCount, ids.length);
+  const hasReview = isDoing && reviewSplit > 0;
+  const hasWorking = isDoing && ids.length > reviewSplit;
 
   return (
     <div className="board-column">
@@ -282,6 +348,15 @@ function Column({
                 </div>
               )}
               {ids.slice(todayCount).map((id) => card(id))}
+            </>
+          ) : hasReview ? (
+            <>
+              <div className="col-divider review-queue">Needs review · {reviewSplit}</div>
+              {/* The heading says the state, so the cards under it stop repeating
+                  it — that is the whole reason this is a section. */}
+              {ids.slice(0, reviewSplit).map((id) => card(id, false, true))}
+              {hasWorking && <div className="col-divider">Working</div>}
+              {ids.slice(reviewSplit).map((id) => card(id))}
             </>
           ) : (
             ids.map((id) => card(id))
@@ -305,15 +380,23 @@ function Column({
 function Card({
   task,
   full,
+  inSection,
   onOpen,
   flourishKey,
   onFlourishDone,
+  settleKey,
+  onSettleDone,
 }: {
   task: Task;
   full?: boolean;
+  /** Rendered under a divider that already names its state, so the card drops
+   *  the redundant pill. */
+  inSection?: boolean;
   onOpen: (id: number) => void;
   flourishKey: number | null;
   onFlourishDone: () => void;
+  settleKey: number | null;
+  onSettleDone: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: task.id });
@@ -330,7 +413,15 @@ function Card({
       {...listeners}
       onClick={() => onOpen(task.id)}
     >
-      <CardContent task={task} full={full} flourishKey={flourishKey} onFlourishDone={onFlourishDone} />
+      <CardContent
+        task={task}
+        full={full}
+        inSection={inSection}
+        flourishKey={flourishKey}
+        onFlourishDone={onFlourishDone}
+        settleKey={settleKey}
+        onSettleDone={onSettleDone}
+      />
     </div>
   );
 }
@@ -354,14 +445,20 @@ function CardContent({
   task,
   overlay,
   full,
+  inSection,
   flourishKey = null,
   onFlourishDone,
+  settleKey = null,
+  onSettleDone,
 }: {
   task: Task;
   overlay?: boolean;
   full?: boolean;
+  inSection?: boolean;
   flourishKey?: number | null;
   onFlourishDone?: () => void;
+  settleKey?: number | null;
+  onSettleDone?: () => void;
 }) {
   const subtasks = useStore((s) => s.subtasks);
   const tags = useStore((s) => s.tags);
@@ -373,6 +470,12 @@ function CardContent({
   const cardLinks = links[task.id] ?? [];
   const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
+  // The mark outlives the fact by exactly one animation: `settling` is set as you
+  // leave the card, markSeen clears unseen_at immediately, and the check needs to
+  // still be on screen to land. Never on the drag overlay — a card in your hand
+  // is one you have plainly seen.
+  const settling = settleKey !== null;
+  const showMark = !overlay && (task.unseen_at !== null || settling);
   // Inside a single-project board (or the Inbox), every card carries the same
   // project — the chip is noise. Match the list view's rule (TaskList.tsx).
   const showProject = selection.type !== "project" && selection.type !== "inbox";
@@ -417,10 +520,18 @@ function CardContent({
         task.status === "done" ? "done" : "",
         overlay ? "overlay" : "",
         state ? `state-${state}` : "",
+        // Yields the top-right corner to the mark, so it never lands on the title.
+        showMark ? "unseen" : "",
       ]
         .filter(Boolean)
         .join(" ")}
     >
+      {/* An agent changed this and you have not looked yet. `settling` outlives
+          the fact by one animation: markSeen has already cleared unseen_at, and
+          this is the check landing as you come back to the board. */}
+      {showMark && (
+        <UnseenMark key={settleKey ?? "unseen"} settling={settling} onDone={onSettleDone} />
+      )}
       <span className="card-title">
         <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
       </span>
@@ -450,7 +561,7 @@ function CardContent({
           {commentCount}
         </span>
       )}
-      <TaskMeta task={task} hideStatus />
+      <TaskMeta task={task} hideStatus hideState={inSection} />
       <CardProvenance task={task} project={showProject ? project : undefined} links={cardLinks} />
       {flourishKey !== null && (
         <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />

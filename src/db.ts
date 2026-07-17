@@ -73,7 +73,7 @@ export async function fetchAll(): Promise<{
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref FROM tasks",
+    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref, unseen_at FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -415,6 +415,9 @@ const TASK_COLUMNS = new Set([
   "completed_at",
   "deleted_at",
   "archived_at",
+  // Writable from here so the UI can CLEAR the mark (open a card, archive it).
+  // Setting it is the agent server's job alone — see 014_unseen_at.sql.
+  "unseen_at",
 ]);
 
 export async function updateTask(

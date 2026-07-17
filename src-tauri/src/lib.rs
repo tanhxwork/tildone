@@ -121,6 +121,12 @@ pub fn run() {
             sql: include_str!("../migrations/013_agent_claims.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 14,
+            description: "add_unseen_at",
+            sql: include_str!("../migrations/014_unseen_at.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

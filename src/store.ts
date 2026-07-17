@@ -114,6 +114,9 @@ interface Store {
   setPriorityFilter: (priority: number) => void;
   toggleShowCompleted: () => void;
   openEditor: (taskId: number | null) => void;
+  /** Acknowledge an agent's change: clear the unseen mark. Called when the editor
+   * leaves a task, not when it opens one. A no-op unless the task is marked. */
+  markSeen: (id: number) => Promise<void>;
   setPaletteOpen: (open: boolean) => void;
   setTagManagerOpen: (open: boolean) => void;
 
@@ -400,6 +403,26 @@ export const useStore = create<Store>()((set, get) => ({
       void get().loadComments(editingTaskId);
     }
   },
+
+  /** Acknowledge an agent's change to a task you have finished looking at.
+   *
+   * Called when the editor LEAVES a task, not when it opens one. Opening covers
+   * the card with the editor, so clearing there would settle the mark into its
+   * check behind a modal — the one moment of the whole feature, played where
+   * nobody can see it. Leaving puts you back on the board with the card in
+   * front of you, which is where the check belongs.
+   *
+   * Guarded on the task actually being marked: without that, closing any editor
+   * writes a row for nothing. Optimistic, and deliberately silent to the changes
+   * feed (no trigger watches unseen_at; see 014_unseen_at.sql). */
+  markSeen: async (id) => {
+    const task = get().tasks.find((t) => t.id === id);
+    if (!task || task.unseen_at === null) return;
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === id ? { ...t, unseen_at: null } : t)),
+    }));
+    await db.updateTask(id, { unseen_at: null });
+  },
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
 
@@ -517,6 +540,8 @@ export const useStore = create<Store>()((set, get) => ({
       archived_at: null,
       number,
       ref,
+      // You just typed this task in. There is nothing here you have not seen.
+      unseen_at: null,
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -641,9 +666,15 @@ export const useStore = create<Store>()((set, get) => ({
     );
     if (targets.length === 0) return;
     const ids = new Set(targets.map((t) => t.id));
-    for (const t of targets) await db.updateTask(t.id, { archived_at: now });
+    // Clearing unseen_at here is how a Done mark expires: an overnight completion
+    // is worth seeing on the board, but once the card ages off the window it must
+    // not be left waiting to be opened one by one.
+    for (const t of targets)
+      await db.updateTask(t.id, { archived_at: now, unseen_at: null });
     set((s) => ({
-      tasks: s.tasks.map((t) => (ids.has(t.id) ? { ...t, archived_at: now } : t)),
+      tasks: s.tasks.map((t) =>
+        ids.has(t.id) ? { ...t, archived_at: now, unseen_at: null } : t,
+      ),
     }));
   },
 

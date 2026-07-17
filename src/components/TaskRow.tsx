@@ -29,17 +29,24 @@ export function TaskMeta({
   task,
   showProject,
   hideStatus,
+  hideState,
 }: {
   task: Task;
   showProject?: boolean;
   hideStatus?: boolean;
+  /** Drop the reserved-state pill because something else already says it — the
+   *  board's "Needs review" divider heads a whole section of them, and a pill
+   *  under that heading is the same fact twice. Everywhere without a section
+   *  (To Do, Done, the list views) leaves this off: there the pill is the only
+   *  thing carrying the state. */
+  hideState?: boolean;
 }) {
   const { projects, tags } = useStore();
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
   // Reserved tags leave the chip list — they read as a state pill instead.
-  const state = reservedState(task, tags);
+  const state = hideState ? null : reservedState(task, tags);
   const taskTags = tags.filter(
     (t) => task.tag_ids.includes(t.id) && !isReserved(t.name),
   );
