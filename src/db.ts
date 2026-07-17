@@ -1,12 +1,42 @@
+import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import type { ActivityEntry, Comment, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
+
+/**
+ * Startup breadcrumb into startup-trace.log next to the database (see
+ * `debug_trace` in lib.rs). Fire-and-forget: tracing must never be able to
+ * break or slow the thing it observes.
+ */
+export function trace(msg: string): void {
+  void invoke("debug_trace", { msg }).catch(() => {});
+}
 
 let db: Database | null = null;
 
 async function getDb(): Promise<Database> {
   if (!db) {
-    db = await Database.load("sqlite:tildone.db");
+    // Seen live: `Database.load` can wedge forever (first load parked the app on
+    // the loading screen with no error). The race converts that hang into a
+    // rejection so init's retry/error path can act on it; on a timeout `db`
+    // stays null, so the next attempt issues a fresh `load` (idempotent on the
+    // plugin side — it re-registers the same connection).
+    trace("getDb: Database.load starting");
+    try {
+      db = await Promise.race([
+        Database.load("sqlite:tildone.db"),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Database.load timed out after 15s")),
+            15_000,
+          ),
+        ),
+      ]);
+    } catch (err) {
+      trace(`getDb: Database.load FAILED: ${String(err)}`);
+      throw err;
+    }
+    trace("getDb: Database.load ok");
   }
   return db;
 }

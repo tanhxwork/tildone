@@ -35,6 +35,13 @@ export interface ImportedTask {
 
 interface Store {
   loaded: boolean;
+  /**
+   * Set when the first load exhausts its retries. A swallowed init failure used
+   * to leave the app on the loading spinner forever with no way to see why (the
+   * `void init()` call discarded the error); surfacing it turns a silent hang
+   * into a legible message.
+   */
+  initError: string | null;
   projects: Project[];
   /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
   projectIcons: Record<number, ProjectIcon>;
@@ -224,6 +231,7 @@ export function groupSlot(
 
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
+  initError: null,
   projects: [],
   projectIcons: {},
   tasks: [],
@@ -248,23 +256,53 @@ export const useStore = create<Store>()((set, get) => ({
     const cutoff = new Date(
       Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
-    await db.purgeTrashedBefore(cutoff);
-    // Give pre-migration-010 projects/tasks their code/number/ref before the first
-    // read, so nothing ever renders the raw #id fallback. Idempotent.
-    await db.backfillRefs();
-    const data = await db.fetchAll();
-    set({ ...data, loaded: true });
-    // A restored project selection may point at a project deleted in another
-    // session; fall back to Today so we never land on a dead view.
-    const { selection } = get();
-    if (
-      selection.type === "project" &&
-      !data.projects.some((p) => p.id === selection.projectId)
-    ) {
-      set({ selection: { type: "today" } });
+    // The first DB touch races the agent server opening its own connection to the
+    // same file, so a cold start can hit SQLITE_BUSY. Retry with backoff — every
+    // step here is idempotent (a DELETE of already-gone rows, an idempotent
+    // backfill, a read), so a repeat is harmless. Without this a single transient
+    // lock left the app on the spinner forever, because `void init()` swallowed
+    // the rejection.
+    const backoffMs = [200, 400, 800, 1600, 3000];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+      try {
+        db.trace(`init: attempt ${attempt} purge`);
+        await db.purgeTrashedBefore(cutoff);
+        // Give pre-migration-010 projects/tasks their code/number/ref before the
+        // first read, so nothing ever renders the raw #id fallback. Idempotent.
+        db.trace(`init: attempt ${attempt} backfillRefs`);
+        await db.backfillRefs();
+        db.trace(`init: attempt ${attempt} fetchAll`);
+        const data = await db.fetchAll();
+        db.trace(`init: attempt ${attempt} loaded ok`);
+        set({ ...data, loaded: true, initError: null });
+        // A restored project selection may point at a project deleted in another
+        // session; fall back to Today so we never land on a dead view.
+        const { selection } = get();
+        if (
+          selection.type === "project" &&
+          !data.projects.some((p) => p.id === selection.projectId)
+        ) {
+          set({ selection: { type: "today" } });
+        }
+        // Icons resolve async off the main load — the dot shows until they land.
+        void get().loadProjectIcons();
+        return;
+      } catch (err) {
+        lastErr = err;
+        db.trace(`init: attempt ${attempt} FAILED: ${String(err)}`);
+        if (attempt < backoffMs.length) {
+          await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+        }
+      }
     }
-    // Icons resolve async off the main load — the dot shows until they land.
-    void get().loadProjectIcons();
+    // Out of retries: surface the reason instead of spinning silently forever.
+    const message =
+      lastErr instanceof Error
+        ? (lastErr.stack ?? lastErr.message)
+        : String(lastErr);
+    console.error("tildone: init failed after retries:", lastErr);
+    set({ initError: message });
   },
 
   reload: async () => {

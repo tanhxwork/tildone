@@ -5,6 +5,39 @@ mod icons;
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
+/// Startup-diagnosis breadcrumb: appends one line per init step to
+/// `startup-trace.log` next to the database. The webview's console is unreadable
+/// in a release build, so when first load wedges (seen live: the app parked on
+/// "Loading…" forever) this file is the only way to see how far init got and
+/// what, if anything, it threw.
+#[tauri::command]
+fn debug_trace(app: tauri::AppHandle, msg: String) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Ok(dir) = app.path().app_config_dir() else {
+        return;
+    };
+    // One launch per file: the first write of a session truncates, so the log
+    // always reads as "what happened on the last start" and never grows across
+    // launches.
+    static FRESH: AtomicBool = AtomicBool::new(true);
+    let truncate = FRESH.swap(false, Ordering::Relaxed);
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(!truncate)
+        .write(truncate)
+        .truncate(truncate)
+        .open(dir.join("startup-trace.log"))
+    else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let _ = writeln!(f, "{now} {msg}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = vec![
@@ -125,6 +158,7 @@ pub fn run() {
             agent::agent_server_endpoint,
             agent::agent_set_notify,
             icons::discover_project_icon,
+            debug_trace,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

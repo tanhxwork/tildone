@@ -56,6 +56,7 @@ async function startAgentServerWithRetry(): Promise<void> {
 function App() {
   const {
     loaded,
+    initError,
     init,
     selection,
     viewMode,
@@ -143,7 +144,18 @@ function App() {
     return (
       <div className="app-loading">
         <TildoneMark width={44} className="app-loading-mark" />
-        <span>Loading…</span>
+        {initError ? (
+          <div className="app-loading-error">
+            <strong>Couldn’t open your board.</strong>
+            <p>
+              The database didn’t load after several tries. Quitting and
+              reopening Tildone usually clears it.
+            </p>
+            <pre>{initError}</pre>
+          </div>
+        ) : (
+          <span>Loading…</span>
+        )}
       </div>
     );
   }
