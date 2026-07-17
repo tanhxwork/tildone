@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { remarkTaskRefs, taskUrlTransform } from "../src/utils/markdownTaskRefs";
 import {
   parseNoteSections,
+  remarkAsciiRules,
   remarkSections,
   shouldAutoCollapse,
 } from "../src/utils/markdownSections";
@@ -18,7 +19,7 @@ function render(md: string): string {
     h(
       ReactMarkdown as unknown as (props: Record<string, unknown>) => unknown,
       {
-        remarkPlugins: [remarkGfm, remarkTaskRefs, remarkSections],
+        remarkPlugins: [remarkGfm, remarkTaskRefs, remarkAsciiRules, remarkSections],
         urlTransform: taskUrlTransform,
       },
       md,
@@ -106,6 +107,47 @@ describe("remarkSections", () => {
   it("counts a nested subsection's lines toward its parent section", () => {
     // Only top-level headings open sections, so ### and its body belong to Alpha.
     expect(linesOf("## Alpha\n\nintro\n\n### Sub\n\nnested")).toEqual([5]);
+  });
+
+  it("wraps the lede — everything above the first heading — in one container", () => {
+    const out = render("Goal: ship it\n\nmore context\n\n## Alpha\n\nbody");
+    expect(count(out, 'class="md-note-lede"')).toBe(1);
+    // both preamble paragraphs are inside it, and it closes before the section
+    expect(out.indexOf("Goal: ship it")).toBeLessThan(out.indexOf("</div>"));
+    expect(out.indexOf("more context")).toBeLessThan(out.indexOf("</div>"));
+    expect(out.indexOf("</div>")).toBeLessThan(out.indexOf("<section"));
+  });
+
+  it("emits no lede when the note opens straight into a heading", () => {
+    expect(render("## Alpha\n\nbody\n\n## Beta\n\nb")).not.toContain("md-note-lede");
+  });
+});
+
+describe("remarkAsciiRules", () => {
+  it("renders a run of = as the rule the author drew", () => {
+    const out = render("above\n\n=====\n\nbelow\n\n## Alpha\n\nbody");
+    expect(out).toContain("<hr");
+    expect(out).not.toContain("=====");
+  });
+
+  it("leaves a = run inside a code fence alone", () => {
+    // The whole point of working on the tree: a fence is a code node, not a rule.
+    const out = render("## Alpha\n\n```\n=====\n```");
+    expect(out).toContain("=====");
+    expect(out).not.toContain("<hr");
+  });
+
+  it("does not touch a setext heading's underline", () => {
+    // "Title\n=====" is an h1, not a paragraph — it must stay a heading.
+    const out = render("Title\n=====\n\nbody\n\n## Alpha\n\nx");
+    expect(out).toContain("<h1");
+    expect(out).not.toContain("<hr");
+  });
+
+  it("leaves prose that merely contains = alone", () => {
+    const out = render("## Alpha\n\na === b is not a rule");
+    expect(out).not.toContain("<hr");
+    expect(out).toContain("a === b is not a rule");
   });
 });
 

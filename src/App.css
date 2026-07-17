@@ -3534,6 +3534,40 @@ textarea:focus-visible,
   transform: rotate(90deg);
 }
 
+/* The lede — everything above the first section. It's the note's answer before
+   the outline, so it reads a step above body copy rather than identical to it. */
+.md-note-lede {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+/* The lede always closes with a rule, so the outline starts against an edge
+   rather than fading out of prose. If the author drew their own (a "=====" run
+   is one, once remarkAsciiRules reads it), that one closes it and we add none —
+   two hairlines stacked is the tell of a rule nobody thought about. */
+.md-note-lede:not(:has(> hr:last-child)) {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.md-note-lede > :first-child {
+  margin-top: 0;
+}
+
+.md-note-lede > :last-child {
+  margin-bottom: 0;
+}
+
+/* An expanded body indents to sit under its heading's text, past the chevron
+   gutter, so the section reads as one unit instead of prose that happens to
+   follow a heading. This is the whole difference between an open section and
+   loose markdown. */
+.md-section-body {
+  padding-left: 19px;
+}
+
 /* Collapsed: a closed drawer, not a bare heading. */
 .md-section.collapsed .md-section-header {
   background: var(--bg-inset);

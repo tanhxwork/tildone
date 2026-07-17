@@ -19,6 +19,25 @@ export interface NoteSection {
 export const AUTO_COLLAPSE_MIN_SECTIONS = 2;
 export const AUTO_COLLAPSE_MAX_LINES = 100;
 
+// A line of "=====" is a separator everywhere except in markdown, which reserves
+// `=` for setext underlines and so renders a bare run as literal text — a black
+// bar heavier than the headings around it. `---`, `***` and `___` are already
+// thematicBreaks, so `=` is the only rule an author can draw that doesn't land.
+// Read it the way it was written. Root level only, and on the tree rather than
+// the source, so a run inside a code fence stays code.
+const ASCII_RULE = /^={3,}$/;
+
+export function remarkAsciiRules() {
+  return (tree: Root) => {
+    for (const [i, child] of tree.children.entries()) {
+      if (child.type !== "paragraph" || child.children.length !== 1) continue;
+      const only = child.children[0];
+      if (only.type !== "text" || !ASCII_RULE.test(only.value.trim())) continue;
+      tree.children[i] = { type: "thematicBreak", position: child.position };
+    }
+  };
+}
+
 interface HeadingInfo {
   node: Heading;
   key: string;
@@ -75,6 +94,20 @@ export function remarkSections() {
     }
 
     const next: RootContent[] = [];
+    // Everything before the first heading is the note's lede — its answer to
+    // "what is this" ahead of the outline. Wrapping it here rather than styling
+    // root-level `> p` keeps the treatment off notes that never got sectioned,
+    // where every paragraph is root-level and none of them is a lede.
+    const lede: RootContent[] = [];
+    const flushLede = () => {
+      if (lede.length === 0) return;
+      next.push({
+        type: "notesLede",
+        data: { hName: "div", hProperties: { class: "md-note-lede" } },
+        children: lede.splice(0),
+      } as unknown as RootContent);
+    };
+
     let bucket: { info: HeadingInfo; children: RootContent[] } | null = null;
     const flush = () => {
       if (!bucket) return;
@@ -96,14 +129,16 @@ export function remarkSections() {
     for (const child of tree.children) {
       const info = child.type === "heading" ? byNode.get(child) : undefined;
       if (info && info.node.depth === minDepth) {
+        flushLede();
         flush();
         bucket = { info, children: [child] };
       } else if (bucket) {
         bucket.children.push(child);
       } else {
-        next.push(child);
+        lede.push(child);
       }
     }
+    flushLede();
     flush();
     tree.children = next;
   };

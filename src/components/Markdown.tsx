@@ -7,7 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isHttpUrl } from "../utils/links";
 import { remarkTaskRefs, taskUrlTransform, TASK_SCHEME } from "../utils/markdownTaskRefs";
-import { remarkSections } from "../utils/markdownSections";
+import { remarkAsciiRules, remarkSections } from "../utils/markdownSections";
 import { IconChevronRight } from "./Icons";
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
@@ -125,8 +125,8 @@ const INLINE_COMPONENTS: Components = {
   p: ({ children }) => <>{children}</>,
 };
 
-const PLUGINS = [remarkGfm, remarkTaskRefs];
-const SECTIONED_PLUGINS = [remarkGfm, remarkTaskRefs, remarkSections];
+const PLUGINS = [remarkGfm, remarkTaskRefs, remarkAsciiRules];
+const SECTIONED_PLUGINS = [remarkGfm, remarkTaskRefs, remarkAsciiRules, remarkSections];
 
 export function Markdown({
   children,
