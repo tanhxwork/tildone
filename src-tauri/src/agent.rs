@@ -3,6 +3,7 @@
 // Opens its own SQLite connection to the same tildone.db the frontend uses;
 // after every write it emits `agent-db-changed` so the UI reloads.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
@@ -24,6 +25,13 @@ use tokio_util::sync::CancellationToken;
 pub const AGENT_PORT: u16 = 11502;
 
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
+
+/// Whether an agent's complete / blocked / needs-review write raises a native
+/// notification. Written by `agent_set_notify` (the Settings toggle, which the
+/// frontend also replays on startup), read by the notify_user closure per send.
+/// Defaults on. Agent access being off means no server and no closure at all, so
+/// this only gates the case where the server IS up but the user muted alerts.
+static NOTIFY_USER_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Dense 0-based ordinal within (project, status), ordered exactly as the Kanban
 /// column sorts: `position`, then `id`. Expressed as "count the tasks that sort
@@ -65,12 +73,22 @@ type Db = Arc<Mutex<Connection>>;
 /// Called after every successful write so the app UI can refresh.
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
+/// Raise a native OS notification (title, body). A sibling of `Notify`, built the
+/// same way in `agent_server_start`, but this one reaches the *user*, not the UI.
+/// It lives on agent.rs and nowhere else on purpose: this write path is the one
+/// place that knows — by construction, not inspection — that a change came from an
+/// agent, so it is the only place that can alert without pinging the user for their
+/// own edits.
+type NotifyUser = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 #[derive(Clone)]
 struct TildoneAgent {
     #[allow(dead_code)] // read by the tool_handler macro
     tool_router: ToolRouter<Self>,
     db: Db,
     on_change: Notify,
+    /// Raise a native notification to the user. See `NotifyUser`.
+    notify_user: NotifyUser,
     /// Cancelled when the server stops. A parked `list_changes` selects on this,
     /// so stopping the server (or quitting the app) never has to wait out a
     /// 60-second long-poll.
@@ -178,11 +196,17 @@ fn db_err(e: rusqlite::Error) -> ErrorData {
 }
 
 impl TildoneAgent {
-    fn new(db: Db, on_change: Notify, shutdown: CancellationToken) -> Self {
+    fn new(
+        db: Db,
+        on_change: Notify,
+        notify_user: NotifyUser,
+        shutdown: CancellationToken,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             db,
             on_change,
+            notify_user,
             shutdown,
         }
     }
@@ -549,11 +573,11 @@ impl TildoneAgent {
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
         };
-        let current: Option<(String, Option<i64>, Option<String>)> = conn
+        let current: Option<(String, Option<i64>, Option<String>, String)> = conn
             .query_row(
-                "SELECT status, project_id, deleted_at FROM tasks WHERE id = ?1",
+                "SELECT status, project_id, deleted_at, title FROM tasks WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -561,9 +585,12 @@ impl TildoneAgent {
                 other => Err(other),
             })
             .map_err(db_err)?;
-        let Some((old_status, old_project_id, deleted_at)) = current else {
+        let Some((old_status, old_project_id, deleted_at, db_title)) = current else {
             return Ok(err(format!("No task with id {id}.")));
         };
+        // The title a notification should name: the new one if this call changes it,
+        // otherwise what's on the row.
+        let mut notify_title = db_title;
         if deleted_at.is_some() {
             return Ok(err(format!(
                 "Task {id} is in the trash; it can only be restored from the app."
@@ -586,6 +613,7 @@ impl TildoneAgent {
             if title.is_empty() {
                 return Ok(err("title cannot be empty."));
             }
+            notify_title = title.clone();
             push(&mut sets, &mut params, "title", Box::new(title));
         }
         if let Some(notes) = notes {
@@ -685,6 +713,27 @@ impl TildoneAgent {
             conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
                 .map_err(db_err)?;
         }
+        // Reserved-tag transitions, for notifications. Capture the pre-write tag set
+        // so we alert only when blocked / needs-review is newly ADDED — never on a
+        // rewrite of a task that already carried it. Same WHEN-guard lesson as the
+        // change feed: a notification for a no-op is worse than a change row for one.
+        let mut newly_blocked = false;
+        let mut newly_needs_review = false;
+        if let Some(tags) = &tags {
+            let old_lower: std::collections::HashSet<String> = conn
+                .prepare(
+                    "SELECT LOWER(t.name) FROM tags t \
+                     JOIN task_tags tt ON tt.tag_id = t.id WHERE tt.task_id = ?1",
+                )
+                .and_then(|mut s| {
+                    s.query_map([id], |r| r.get::<_, String>(0))?
+                        .collect::<Result<_, _>>()
+                })
+                .unwrap_or_default();
+            let has = |name: &str| tags.iter().any(|t| t.trim().eq_ignore_ascii_case(name));
+            newly_blocked = has("blocked") && !old_lower.contains("blocked");
+            newly_needs_review = has("needs-review") && !old_lower.contains("needs-review");
+        }
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
@@ -694,6 +743,25 @@ impl TildoneAgent {
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
         self.notify();
+
+        // Notify the user of the three moments an agent needs them and they don't
+        // know it yet. Agent-only by construction: apply_task_update is reachable
+        // only through the MCP server (the UI writes SQLite directly), so a write
+        // here always came from an agent — the user's own drag to Done never lands
+        // here and never notifies. Only transitions, computed above.
+        let mut notifications: Vec<(&str, &str)> = Vec::new();
+        if dest_status.as_deref() == Some("done") {
+            notifications.push(("Task done", &notify_title));
+        }
+        if newly_blocked {
+            notifications.push(("Blocked", &notify_title));
+        }
+        if newly_needs_review {
+            notifications.push(("Needs review", &notify_title));
+        }
+        for (title, body) in notifications {
+            (self.notify_user)(title, body);
+        }
         ok_json(&ack)
     }
 }
@@ -2119,12 +2187,34 @@ pub async fn agent_server_start(
     let on_change: Notify = Arc::new(move || {
         let _ = emitter.emit("agent-db-changed", ());
     });
+    // Native notifications for agent complete / blocked / needs-review writes. Built
+    // here for the same reason as on_change — it captures the AppHandle — but it
+    // reaches the user, not the UI. Gated by NOTIFY_USER_ENABLED so the Settings
+    // toggle can mute it without restarting the server.
+    let notifier = app.clone();
+    let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str| {
+        if !NOTIFY_USER_ENABLED.load(Ordering::Relaxed) {
+            return;
+        }
+        use tauri_plugin_notification::NotificationExt;
+        // A denied OS permission (or any show() failure) is a silent no-op, never an
+        // error surfaced into an agent's tool result — the notification is a courtesy,
+        // not part of the write's contract.
+        let _ = notifier.notification().builder().title(title).body(body).show();
+    });
     // The same token the server shuts down on, so a parked list_changes is
     // released by agent_server_stop / app exit instead of holding them up.
     let agent_ct = ct.clone();
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(TildoneAgent::new(db.clone(), on_change.clone(), agent_ct.clone())),
+            move || {
+                Ok(TildoneAgent::new(
+                    db.clone(),
+                    on_change.clone(),
+                    notify_user.clone(),
+                    agent_ct.clone(),
+                ))
+            },
             Default::default(),
             config,
         );
@@ -2160,6 +2250,15 @@ pub fn agent_server_stop(app: AppHandle, state: State<'_, AgentServer>) {
     // with no window and no tray.
     remove_tray(&app);
     show_main_window(&app);
+}
+
+/// Mute or unmute native notifications for agent complete / blocked / needs-review
+/// writes. The frontend calls this on startup with the persisted setting and again
+/// whenever the Settings toggle changes; the running server's closure reads the flag
+/// per send, so it takes effect without restarting the server.
+#[tauri::command]
+pub fn agent_set_notify(enabled: bool) {
+    NOTIFY_USER_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -2339,10 +2438,16 @@ mod tests {
         conn
     }
 
+    /// A no-op notify_user for tests that don't assert on notifications.
+    fn no_notify() -> NotifyUser {
+        Arc::new(|_: &str, _: &str| {})
+    }
+
     fn test_agent() -> TildoneAgent {
         TildoneAgent::new(
             Arc::new(Mutex::new(migrated_conn())),
             Arc::new(|| {}),
+            no_notify(),
             CancellationToken::new(),
         )
     }
@@ -2350,9 +2455,28 @@ mod tests {
     fn test_agent_with_db() -> (TildoneAgent, Db) {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         (
-            TildoneAgent::new(db.clone(), Arc::new(|| {}), CancellationToken::new()),
+            TildoneAgent::new(db.clone(), Arc::new(|| {}), no_notify(), CancellationToken::new()),
             db,
         )
+    }
+
+    type NotifySink = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// An agent whose notify_user records every (title, body) it fires, so a test can
+    /// assert exactly which notifications a write raised — and which it didn't.
+    fn test_agent_with_notifications() -> (TildoneAgent, NotifySink) {
+        let sink: NotifySink = Arc::new(Mutex::new(Vec::new()));
+        let recorder = sink.clone();
+        let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str| {
+            recorder.lock().unwrap().push((title.to_string(), body.to_string()));
+        });
+        let agent = TildoneAgent::new(
+            Arc::new(Mutex::new(migrated_conn())),
+            Arc::new(|| {}),
+            notify_user,
+            CancellationToken::new(),
+        );
+        (agent, sink)
     }
 
     // ---- item 7: task <-> repo links ----
@@ -2655,6 +2779,106 @@ mod tests {
             row,
             ("task".to_string(), id, "comment".to_string()),
             "a comment must emit a change on the TASK with kind=comment"
+        );
+    }
+
+    // ---- item 8: native notifications on complete / blocked / needs-review ----
+
+    fn update(agent: &TildoneAgent, id: i64, tags: Option<Vec<&str>>, status: Option<&str>) {
+        let (is_err, v) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: status.map(Into::into),
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: tags.map(|t| t.into_iter().map(Into::into).collect()),
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "update_task errored: {v}");
+    }
+
+    #[test]
+    fn completing_a_task_notifies_the_user() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Ship item 8");
+        extract(&agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap());
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![("Task done".to_string(), "Ship item 8".to_string())],
+        );
+    }
+
+    #[test]
+    fn adding_the_blocked_tag_notifies_once_not_on_re_add() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Needs a decision");
+        update(&agent, id, Some(vec!["blocked"]), None);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![("Blocked".to_string(), "Needs a decision".to_string())],
+        );
+        // Re-applying a tag set that still contains blocked is not a transition — the
+        // task was already blocked. No second ping (the WHEN-guard lesson).
+        update(&agent, id, Some(vec!["blocked"]), None);
+        assert_eq!(
+            fired.lock().unwrap().len(),
+            1,
+            "re-adding an already-present blocked tag must not notify again",
+        );
+    }
+
+    #[test]
+    fn adding_needs_review_notifies() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Review me");
+        update(&agent, id, Some(vec!["needs-review"]), None);
+        assert_eq!(
+            *fired.lock().unwrap(),
+            vec![("Needs review".to_string(), "Review me".to_string())],
+        );
+    }
+
+    /// The design in one test: the SAME state change (a task reaching Done) notifies
+    /// when an agent makes it, and is silent when the user does. The user's drag writes
+    /// SQLite directly (store.ts applyPositions), never through apply_task_update — so
+    /// it cannot reach the notify path, by construction.
+    #[test]
+    fn a_users_own_drag_to_done_notifies_nothing() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "I dragged this myself");
+        agent
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status = 'done', completed_at = ?1 WHERE id = ?2",
+                rusqlite::params![now_iso(), id],
+            )
+            .unwrap();
+        assert!(
+            fired.lock().unwrap().is_empty(),
+            "a write that bypasses the MCP server must not notify the user",
+        );
+    }
+
+    #[test]
+    fn an_ordinary_edit_does_not_notify() {
+        let (agent, fired) = test_agent_with_notifications();
+        let id = a_task(&agent, "Just editing");
+        // Move to In Progress and set a priority — real changes, none notify-worthy.
+        update(&agent, id, None, Some("doing"));
+        update(&agent, id, Some(vec!["someday"]), None);
+        assert!(
+            fired.lock().unwrap().is_empty(),
+            "only done / blocked / needs-review notify; other edits stay quiet",
         );
     }
 
@@ -4217,7 +4441,7 @@ mod tests {
     async fn shutdown_releases_a_parked_call() {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         let token = CancellationToken::new();
-        let agent = TildoneAgent::new(db, Arc::new(|| {}), token.clone());
+        let agent = TildoneAgent::new(db, Arc::new(|| {}), no_notify(), token.clone());
 
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;

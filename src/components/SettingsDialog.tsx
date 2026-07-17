@@ -18,10 +18,12 @@ export function SettingsDialog() {
     weekStart,
     defaultProjectId,
     agentServer,
+    agentNotify,
     setTheme,
     setWeekStart,
     setDefaultProjectId,
     setAgentServer,
+    setAgentNotify,
     closeSettings,
   } = useSettings();
   const { projects, tasks, tags, importData } = useStore();
@@ -45,6 +47,8 @@ export function SettingsDialog() {
     try {
       if (enabled) {
         setEndpoint(await invoke<string>("agent_server_start"));
+        // Sync the notify preference into the freshly-started server.
+        await invoke("agent_set_notify", { enabled: agentNotify });
       } else {
         await invoke("agent_server_stop");
         setEndpoint(null);
@@ -54,6 +58,13 @@ export function SettingsDialog() {
       setEndpoint(null);
       setAgentMessage(String(err));
     }
+  }
+
+  function toggleAgentNotify(enabled: boolean) {
+    setAgentNotify(enabled);
+    // Fire-and-forget: the flag lives in the Rust process. If the server isn't
+    // running the call is a harmless no-op that the next start re-syncs.
+    void invoke("agent_set_notify", { enabled }).catch(() => {});
   }
 
   async function doExport(format: ExportFormat) {
@@ -228,6 +239,29 @@ export function SettingsDialog() {
               ))}
             </div>
           </div>
+
+          {agentServer && (
+            <div className="settings-row">
+              <div className="settings-label">
+                Notify me when an agent finishes or gets stuck
+                <span className="settings-sub">
+                  A native notification when an agent completes a task, or marks one
+                  blocked or needs-review — never for your own changes.
+                </span>
+              </div>
+              <div className="segmented" role="group" aria-label="Agent notifications">
+                {([false, true] as const).map((on) => (
+                  <button
+                    key={String(on)}
+                    className={agentNotify === on ? "active" : ""}
+                    onClick={() => toggleAgentNotify(on)}
+                  >
+                    {on ? "On" : "Off"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {endpoint && (
             <p className="settings-sub">
