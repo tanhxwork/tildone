@@ -149,6 +149,30 @@ pub fn run() {
                 .add_migrations("sqlite:tildone.db", migrations)
                 .build(),
         )
+        .setup(|app| {
+            // The default window size (tauri.conf.json) is chosen so the board's
+            // three columns render at their full 340px width. On a display whose
+            // work area is smaller than that default, shrink to fit instead of
+            // opening partially off-screen.
+            if let Some(window) = app.get_webview_window("main") {
+                if let (Ok(Some(monitor)), Ok(size)) =
+                    (window.current_monitor(), window.outer_size())
+                {
+                    let scale = monitor.scale_factor();
+                    let work: tauri::LogicalSize<f64> =
+                        monitor.work_area().size.to_logical(scale);
+                    let cur: tauri::LogicalSize<f64> = size.to_logical(scale);
+                    if cur.width > work.width || cur.height > work.height {
+                        let _ = window.set_size(tauri::LogicalSize::new(
+                            cur.width.min(work.width),
+                            cur.height.min(work.height),
+                        ));
+                        let _ = window.center();
+                    }
+                }
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             // Background mode: while the agent server is running, closing the
             // window hides it to the tray instead of quitting, so a parked
