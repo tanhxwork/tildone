@@ -14,9 +14,9 @@ export interface ModelTier {
 }
 
 export const MODEL_TIERS: ModelTier[] = [
-  { id: "small", label: "Small", detail: "Qwen 2.5 0.5B — fastest", sizeGB: 0.4, minRamGB: 0 },
-  { id: "default", label: "Default", detail: "Qwen 2.5 1.5B — balanced", sizeGB: 1.1, minRamGB: 8 },
-  { id: "better", label: "Better", detail: "Qwen 2.5 3B — best quality", sizeGB: 2.1, minRamGB: 16 },
+  { id: "small", label: "Small", detail: "Qwen3.5 0.8B — fastest", sizeGB: 0.5, minRamGB: 0 },
+  { id: "default", label: "Default", detail: "Qwen3.5 2B — balanced", sizeGB: 1.3, minRamGB: 8 },
+  { id: "better", label: "Better", detail: "Qwen3.5 4B — best quality", sizeGB: 2.7, minRamGB: 16 },
 ];
 
 /** Highest tier whose RAM floor this machine clears. */
@@ -57,6 +57,20 @@ export interface EngineProgress {
   total: number;
 }
 
+/** One model `.gguf` on disk, as reported by the `engine_models` command. */
+export interface DiskModel {
+  file: string;
+  size_bytes: number;
+  /** Tier this file backs, or null for a stray (e.g. an older version's model). */
+  tier: EngineModelId | null;
+  running: boolean;
+}
+
+export interface DiskUsage {
+  models_bytes: number;
+  free_bytes: number;
+}
+
 const CONFIG_KEY = "tildone-ai-config";
 
 const CONFIG_DEFAULTS: AIConfig = {
@@ -92,6 +106,8 @@ interface AIStore {
   starting: boolean;
   progress: EngineProgress | null;
   settingsOpen: boolean;
+  diskModels: DiskModel[];
+  disk: DiskUsage | null;
 
   openSettings: () => void;
   closeSettings: () => void;
@@ -103,6 +119,9 @@ interface AIStore {
   installEngine: () => Promise<void>;
   startEngine: () => Promise<void>;
   stopEngine: () => Promise<void>;
+  refreshModels: () => Promise<void>;
+  deleteModel: (file: string) => Promise<void>;
+  useModel: (id: EngineModelId) => Promise<void>;
   chat: (system: string, prompt: string) => Promise<string>;
 }
 
@@ -116,6 +135,8 @@ export const useAI = create<AIStore>()((set, get) => ({
   starting: false,
   progress: null,
   settingsOpen: false,
+  diskModels: [],
+  disk: null,
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
@@ -197,6 +218,31 @@ export const useAI = create<AIStore>()((set, get) => ({
   stopEngine: async () => {
     await invoke("engine_stop");
     await get().refreshEngine();
+    await get().refreshModels();
+  },
+
+  refreshModels: async () => {
+    try {
+      const [models, disk] = await Promise.all([
+        invoke<DiskModel[]>("engine_models"),
+        invoke<DiskUsage>("engine_disk"),
+      ]);
+      set({ diskModels: models, disk });
+    } catch {
+      // the manager is a convenience; leave last-known state on failure
+    }
+  },
+
+  deleteModel: async (file) => {
+    await invoke("engine_delete", { file });
+    await get().refreshModels();
+    await get().refreshEngine();
+  },
+
+  useModel: async (id) => {
+    get().setConfig({ engineModel: id });
+    await get().startEngine();
+    await get().refreshModels();
   },
 
   chat: async (system, prompt) => {
@@ -209,6 +255,9 @@ export const useAI = create<AIStore>()((set, get) => ({
         model: "local",
         system,
         prompt,
+        // Built-in Qwen3.5 defaults to thinking mode, which leaves the reply
+        // empty; turn it off so answers land in `content`.
+        disableThinking: true,
       });
     }
     if (config.mode === "external" && config.baseUrl && config.model) {
@@ -217,6 +266,8 @@ export const useAI = create<AIStore>()((set, get) => ({
         model: config.model,
         system,
         prompt,
+        // Leave the user's own server on its default behavior.
+        disableThinking: false,
       });
     }
     throw new Error("AI is not set up — open AI Assistant in the sidebar");

@@ -13,6 +13,10 @@ function formatMB(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
+function formatGB(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
 export function AISettings() {
   const {
     config,
@@ -29,8 +33,12 @@ export function AISettings() {
     starting,
     progress,
     installEngine,
-    startEngine,
     stopEngine,
+    refreshModels,
+    deleteModel,
+    useModel,
+    diskModels,
+    disk,
     closeSettings,
     chat,
   } = useAI();
@@ -38,6 +46,7 @@ export function AISettings() {
   useEffect(() => {
     void probe();
     void refreshEngine();
+    void refreshModels();
     void fetchRam();
     // Scan once when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,31 +102,36 @@ export function AISettings() {
     }
   }
 
-  async function install() {
-    setError("");
-    try {
-      await installEngine();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  async function start() {
-    setError("");
-    try {
-      await startEngine();
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  function pickTier(id: EngineModelId) {
+  async function downloadTier(id: EngineModelId) {
     setError("");
     setConfig({ engineModel: id });
+    try {
+      await installEngine();
+      await refreshModels();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function useTier(id: EngineModelId) {
+    setError("");
+    try {
+      await useModel(id);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function removeModel(file: string) {
+    setError("");
+    try {
+      await deleteModel(file);
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   const selected = detected.find((d) => d.base_url === config.baseUrl);
-  const selectedTier = MODEL_TIERS.find((t) => t.id === config.engineModel);
   const pct =
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
@@ -273,92 +287,115 @@ export function AISettings() {
 
         {config.mode === "builtin" && (
           <div className="ai-panel">
-            <div className="ai-tiers">
+            <div className="ai-models">
               {MODEL_TIERS.map((tier) => {
+                const onDisk = diskModels.find((m) => m.tier === tier.id);
                 const rec = ramBytes !== null && recommendedTier(ramBytes) === tier.id;
+                const lowRam = ramBytes !== null && tier.minRamGB > ramBytes / 1024 ** 3;
+                const downloadingThis = installing && config.engineModel === tier.id;
+                const state = onDisk?.running ? "active" : onDisk ? "ready" : "missing";
                 return (
-                  <label
-                    key={tier.id}
-                    className={`ai-tier ${config.engineModel === tier.id ? "selected" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="ai-tier"
-                      checked={config.engineModel === tier.id}
-                      disabled={installing}
-                      onChange={() => pickTier(tier.id)}
-                    />
-                    <span className="ai-tier-label">{tier.label}</span>
-                    <span className="ai-tier-detail">{tier.detail}</span>
-                    <span className="ai-tier-size">
-                      {tier.sizeGB} GB
-                      {tier.minRamGB > 0 ? ` · needs ≥ ${tier.minRamGB} GB RAM` : " · any machine"}
+                  <div key={tier.id} className={`ai-model ${state}`}>
+                    <div className="ai-model-main">
+                      <span className="ai-model-label">
+                        {tier.label}
+                        {rec && <span className="ai-tier-badge">Recommended</span>}
+                      </span>
+                      <span className="ai-model-detail">{tier.detail}</span>
+                      {lowRam && (
+                        <span className="ai-model-warn">
+                          Needs ≥ {tier.minRamGB} GB RAM — may run slowly here
+                        </span>
+                      )}
+                    </div>
+                    <span className="ai-model-size">
+                      {onDisk ? formatGB(onDisk.size_bytes) : `~${tier.sizeGB} GB`}
                     </span>
-                    {rec && <span className="ai-tier-badge">Recommended</span>}
-                  </label>
+                    <span className={`ai-model-state ${state}`}>
+                      {state === "active"
+                        ? "Active"
+                        : state === "ready"
+                          ? "Ready"
+                          : "Not downloaded"}
+                    </span>
+                    <div className="ai-model-actions">
+                      {downloadingThis ? (
+                        <div className="ai-progress-block">
+                          <span className="ai-hint">
+                            {progress?.phase === "model"
+                              ? `Model… ${formatMB(progress.downloaded)}${progress.total ? ` / ${formatMB(progress.total)}` : ""}`
+                              : progress
+                                ? `Engine… ${formatMB(progress.downloaded)}${progress.total ? ` / ${formatMB(progress.total)}` : ""}`
+                                : "Preparing…"}
+                          </span>
+                          <div className="ai-progress">
+                            <div
+                              className="ai-progress-fill"
+                              style={{ transform: `scaleX(${pct !== null ? pct / 100 : 0.08})` }}
+                            />
+                          </div>
+                        </div>
+                      ) : state === "active" ? (
+                        <button className="btn small" onClick={() => void stopEngine()}>
+                          Stop
+                        </button>
+                      ) : state === "ready" ? (
+                        <>
+                          <button
+                            className="btn small primary"
+                            disabled={starting}
+                            onClick={() => void useTier(tier.id)}
+                          >
+                            {starting ? "Starting…" : "Use"}
+                          </button>
+                          <button
+                            className="btn small"
+                            onClick={() => void removeModel(onDisk!.file)}
+                          >
+                            Delete
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="btn small primary"
+                          disabled={installing}
+                          onClick={() => void downloadTier(tier.id)}
+                        >
+                          Download
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 );
               })}
+
+              {diskModels
+                .filter((m) => m.tier === null)
+                .map((m) => (
+                  <div key={m.file} className="ai-model orphan">
+                    <div className="ai-model-main">
+                      <span className="ai-model-label">Other model</span>
+                      <span className="ai-model-detail">{m.file}</span>
+                    </div>
+                    <span className="ai-model-size">{formatGB(m.size_bytes)}</span>
+                    <span className="ai-model-state">Unused</span>
+                    <div className="ai-model-actions">
+                      <button className="btn small" onClick={() => void removeModel(m.file)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
             </div>
 
-            {ramBytes !== null &&
-              (selectedTier?.minRamGB ?? 0) > ramBytes / 1024 ** 3 && (
-                <p className="ai-warn">
-                  This machine has {Math.round(ramBytes / 1024 ** 3)} GB RAM — the{" "}
-                  {selectedTier?.label} model may run slowly or fail to load.
-                </p>
-              )}
+            {disk && (
+              <p className="ai-disk">
+                {formatGB(disk.models_bytes)} in models · {formatGB(disk.free_bytes)} free
+              </p>
+            )}
 
-            {engine === null ? (
-              <p className="ai-hint">Checking engine status…</p>
-            ) : !engine.installed ? (
-              installing ? (
-                <div className="ai-progress-block">
-                  <span className="ai-hint">
-                    {progress?.phase === "model"
-                      ? `Downloading model… ${formatMB(progress.downloaded)}${progress.total ? ` of ${formatMB(progress.total)}` : ""}`
-                      : progress
-                        ? `Downloading engine… ${formatMB(progress.downloaded)}${progress.total ? ` of ${formatMB(progress.total)}` : ""}`
-                        : "Preparing download…"}
-                  </span>
-                  <div className="ai-progress">
-                    <div
-                      className="ai-progress-fill"
-                      style={{ transform: `scaleX(${pct !== null ? pct / 100 : 0.08})` }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p className="ai-hint">
-                    One-time download of about {selectedTier?.sizeGB ?? 1.1} GB. After
-                    that it works fully offline.
-                  </p>
-                  <button className="btn primary" onClick={() => void install()}>
-                    Download &amp; set up
-                  </button>
-                </>
-              )
-            ) : (
-              <div className="ai-engine-status">
-                <span className={`ai-dot ${engine.running ? "on" : ""}`} />
-                <span className="ai-hint">
-                  {engine.running
-                    ? `Running on port ${engine.port}`
-                    : starting
-                      ? "Starting…"
-                      : "Installed — starts automatically when you use an AI feature"}
-                </span>
-                <div className="spacer" />
-                {engine.running ? (
-                  <button className="btn small" onClick={() => void stopEngine()}>
-                    Stop
-                  </button>
-                ) : (
-                  <button className="btn small" disabled={starting} onClick={() => void start()}>
-                    Start now
-                  </button>
-                )}
-              </div>
+            {engine?.running && (
+              <p className="ai-hint">Engine running on port {engine.port}.</p>
             )}
 
             <label className="ai-autostart">

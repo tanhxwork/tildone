@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -22,23 +22,27 @@ pub struct ModelSpec {
     pub url: &'static str,
 }
 
-/// Model tiers offered by the built-in engine (Qwen 2.5 Instruct, q4_k_m).
+/// Model tiers offered by the built-in engine (Qwen3.5 Small, q4_k_m).
 /// The UI maps these ids to sizes and RAM recommendations.
+///
+/// Official Qwen/* GGUF repos do not exist for the 3.5 Small line, so these
+/// pin the unsloth Q4_K_M quants (the same ones LM Studio ships). The pinned
+/// llama.cpp runtime (LLAMA_TAG) already supports Qwen3.5 — no runtime bump.
 const MODELS: [ModelSpec; 3] = [
     ModelSpec {
         id: "small",
-        file: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        file: "Qwen3.5-0.8B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
     },
     ModelSpec {
         id: "default",
-        file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        file: "Qwen3.5-2B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
     },
     ModelSpec {
         id: "better",
-        file: "qwen2.5-3b-instruct-q4_k_m.gguf",
-        url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+        file: "Qwen3.5-4B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
     },
 ];
 
@@ -174,12 +178,13 @@ pub async fn ai_chat(
     model: String,
     system: String,
     prompt: String,
+    disable_thinking: bool,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| e.to_string())?;
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -187,6 +192,16 @@ pub async fn ai_chat(
         ],
         "temperature": 0.4,
     });
+    // Qwen3.5 (the built-in engine) is a hybrid-thinking model that defaults
+    // to thinking ON: it streams chain-of-thought into a separate
+    // `reasoning_content` field and leaves `content` empty until it finishes,
+    // which on a small model can burn the whole token budget and return
+    // nothing. Turn thinking off via the chat-template kwarg so the answer
+    // lands directly in `content`. Scoped to the built-in engine — external
+    // servers (LM Studio, Ollama) keep their own behavior untouched.
+    if disable_thinking {
+        body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
     let resp = client
         .post(format!("{base_url}/v1/chat/completions"))
         .json(&body)
@@ -511,6 +526,151 @@ pub fn engine_stop(state: State<'_, EngineProcess>) {
         let _ = ec.child.kill();
         let _ = ec.child.wait();
     }
+}
+
+#[derive(Serialize)]
+pub struct DiskModel {
+    /// The `.gguf` filename on disk.
+    pub file: String,
+    pub size_bytes: u64,
+    /// The known tier id (`small`/`default`/`better`) this file backs, or
+    /// `None` for a stray file (e.g. a model left behind by an older version).
+    pub tier: Option<String>,
+    /// True when the managed engine child is currently serving this file.
+    pub running: bool,
+}
+
+#[derive(Serialize)]
+pub struct DiskUsage {
+    pub models_bytes: u64,
+    pub free_bytes: u64,
+}
+
+/// The `.gguf` file the managed child is serving, if one is alive.
+fn running_model_file(state: &State<'_, EngineProcess>) -> Option<String> {
+    let mut guard = state.0.lock().unwrap();
+    let ec = guard.as_mut()?;
+    let alive = ec.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+    if !alive {
+        return None;
+    }
+    model_spec(&ec.model).ok().map(|s| s.file.to_string())
+}
+
+/// Available bytes on the volume that holds `path` (longest matching mount).
+fn free_space_for(path: &Path) -> u64 {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, u64)> = None;
+    for disk in &disks {
+        let mount = disk.mount_point();
+        if path.starts_with(mount) {
+            let len = mount.as_os_str().len();
+            if best.map(|(l, _)| len > l).unwrap_or(true) {
+                best = Some((len, disk.available_space()));
+            }
+        }
+    }
+    best.map(|(_, avail)| avail).unwrap_or(0)
+}
+
+fn gguf_files(dir: &Path) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((name.to_string(), size));
+            }
+        }
+    }
+    out
+}
+
+/// Every model `.gguf` currently on disk, tagged with its tier (or `None` for
+/// strays) and whether it is the running one. Known tiers sort first.
+#[tauri::command]
+pub async fn engine_models(
+    app: AppHandle,
+    state: State<'_, EngineProcess>,
+) -> Result<Vec<DiskModel>, String> {
+    let running_file = running_model_file(&state);
+    let running_live = running_file.is_some() && health_ok().await;
+    let dir = engine_dir(&app)?.join("models");
+
+    let mut out: Vec<DiskModel> = gguf_files(&dir)
+        .into_iter()
+        .map(|(file, size_bytes)| {
+            let tier = MODELS.iter().find(|m| m.file == file).map(|m| m.id.to_string());
+            let running = running_live && running_file.as_deref() == Some(file.as_str());
+            DiskModel {
+                file,
+                size_bytes,
+                tier,
+                running,
+            }
+        })
+        .collect();
+
+    out.sort_by_key(|m| {
+        let rank = MODELS
+            .iter()
+            .position(|s| m.tier.as_deref() == Some(s.id))
+            .unwrap_or(usize::MAX);
+        (rank, m.file.clone())
+    });
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn engine_disk(app: AppHandle) -> Result<DiskUsage, String> {
+    let dir = engine_dir(&app)?.join("models");
+    let models_bytes = gguf_files(&dir).iter().map(|(_, s)| s).sum();
+    Ok(DiskUsage {
+        models_bytes,
+        free_bytes: free_space_for(&dir),
+    })
+}
+
+/// Delete a downloaded model file. If it is the one the engine is currently
+/// serving, the engine is stopped first. `file` must be a bare filename.
+#[tauri::command]
+pub async fn engine_delete(
+    app: AppHandle,
+    state: State<'_, EngineProcess>,
+    file: String,
+) -> Result<(), String> {
+    // Reject anything that isn't a plain filename (no traversal, no subdirs).
+    let name = Path::new(&file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid model file name")?;
+    if name != file {
+        return Err("Invalid model file name".into());
+    }
+
+    // Stop the engine first if it is serving this file.
+    {
+        let mut guard = state.0.lock().unwrap();
+        if let Some(ec) = guard.as_mut() {
+            let alive = ec.child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+            let serves = model_spec(&ec.model).ok().map(|s| s.file) == Some(name);
+            if alive && serves {
+                let _ = ec.child.kill();
+                let _ = ec.child.wait();
+                *guard = None;
+            }
+        }
+    }
+
+    let target = engine_dir(&app)?.join("models").join(name);
+    if target.exists() {
+        fs::remove_file(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn kill_engine(app: &AppHandle) {
