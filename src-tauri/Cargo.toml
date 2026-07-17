@@ -35,7 +35,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 sysinfo = "0.39.5"
 rmcp = { version = "2.1.0", features = ["server", "transport-streamable-http-server", "schemars"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+# "json" is for the heartbeat route's Json extractor — rmcp brings its own transport
+# for /mcp, so the default-off feature set had no need of it until now.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 tokio-util = "0.7.18"
 base64 = "0.22"
 

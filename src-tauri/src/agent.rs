@@ -3,6 +3,7 @@
 // Opens its own SQLite connection to the same tildone.db the frontend uses;
 // after every write it emits `agent-db-changed` so the UI reloads.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -68,7 +69,179 @@ pub struct AgentServer(Mutex<Option<(CancellationToken, String)>>);
 #[derive(Default)]
 pub struct TrayHandle(Mutex<Option<tauri::tray::TrayIcon>>);
 
+/// The live half of presence: who is beating right now, and a handle to read the
+/// claims that give those beats a task.
+///
+/// Separate managed state rather than fields on `AgentServer` because it outlives a
+/// stop/start cycle harmlessly — stale beats resolve to quiet on their own via the
+/// PID check, so there is nothing to tear down.
+#[derive(Default)]
+pub struct AgentLive {
+    beats: Beats,
+    /// Set when the server starts. `None` → the server never ran, so there is no
+    /// presence to report (not an error: the board simply shows none).
+    db: Mutex<Option<Db>>,
+}
+
 type Db = Arc<Mutex<Connection>>;
+
+/// Live heartbeat state, keyed by agent session id.
+///
+/// **Deliberately in memory, never SQLite.** A heartbeat fires on *every tool call
+/// of every agent*. Persisting them would write to disk several times a second, and
+/// — because the UI refreshes by answering `agent-db-changed` with a full
+/// `fetchAll()` re-read of the whole database (App.tsx) — it would drag the entire
+/// board through a reload just as often, getting worse with each agent added. The
+/// feature would make the board slower the more agents you ran, which is backwards.
+///
+/// Presence is ambient status, not a record. Losing it on restart costs one beat's
+/// latency; the `agent_claims` row that gives it meaning is the durable half.
+pub type Beats = Arc<Mutex<HashMap<String, Beat>>>;
+
+/// One session's last reported state.
+#[derive(Clone, Debug)]
+pub struct Beat {
+    /// "working" | "blocked" | "idle" — as *reported* by the agent's hook, never
+    /// inferred from silence. That inference is the bug: a five-minute build emits
+    /// no tool calls, and guessing from the gap made a busy agent look departed.
+    state: String,
+    /// Monotonic, for the TTL. Never for display: a wall clock that jumps (NTP,
+    /// sleep) must not be able to expire a live agent.
+    at: std::time::Instant,
+    /// Wall clock, for display only ("quiet 25m").
+    at_iso: String,
+    /// The session's OS process id (`$PPID` from the hook).
+    ///
+    /// Liveness has an exact answer when the agent runs on this machine, so we ask
+    /// the OS rather than time out. `None` → we fall back to `LIVE_TTL`, which is
+    /// the only reason that constant still exists.
+    pid: Option<u32>,
+}
+
+/// One row of `agent_claims`, joined with the agent's latest log line.
+#[derive(Clone, Debug)]
+pub struct ClaimRow {
+    session_id: String,
+    task_id: i64,
+    cwd: Option<String>,
+    branch: Option<String>,
+    agent_name: Option<String>,
+    claimed_at: String,
+    last_log: Option<String>,
+}
+
+/// What the card shows for one task.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct PresenceEntry {
+    task_id: i64,
+    agent_name: Option<String>,
+    /// Already resolved to what the UI renders: "working" | "blocked" | "quiet".
+    ///
+    /// Resolved here rather than in the UI because the deciding fact — does that
+    /// process still exist — is a question only the OS can answer. "idle" is a wire
+    /// value from the hook and never reaches the UI; it resolves to "quiet".
+    state: String,
+    /// ISO timestamp behind "quiet 25m": the last beat if there was one, else the
+    /// claim itself.
+    at: String,
+    branch: Option<String>,
+    cwd: Option<String>,
+    last_log: Option<String>,
+}
+
+/// Resolve claims + beats into one entry per task.
+///
+/// Pure, with process liveness injected, so the whole table below is testable
+/// without spawning or killing anything.
+///
+/// | condition                       | card    |
+/// |---------------------------------|---------|
+/// | no beat for the session         | quiet   |
+/// | beat has a pid, process is gone | quiet   | ← exact
+/// | beat older than LIVE_TTL        | quiet   | ← backstop only
+/// | beat says idle                  | quiet   |
+/// | otherwise                       | working / blocked, as reported |
+///
+/// Several sessions may claim one task (pairing is legitimate), so a task shows the
+/// liveliest state among them: working beats blocked beats quiet.
+pub fn resolve_presence(
+    claims: &[ClaimRow],
+    beats: &HashMap<String, Beat>,
+    now: std::time::Instant,
+    alive: &dyn Fn(u32) -> bool,
+) -> Vec<PresenceEntry> {
+    fn rank(state: &str) -> u8 {
+        match state {
+            "working" => 2,
+            "blocked" => 1,
+            _ => 0,
+        }
+    }
+
+    let mut by_task: HashMap<i64, PresenceEntry> = HashMap::new();
+    for claim in claims {
+        let beat = beats.get(&claim.session_id);
+        let state = match beat {
+            None => "quiet",
+            Some(b) => {
+                let dead = b.pid.map(|pid| !alive(pid)).unwrap_or(false);
+                let stale = now.saturating_duration_since(b.at) > LIVE_TTL;
+                if dead || stale || b.state == "idle" {
+                    "quiet"
+                } else {
+                    b.state.as_str()
+                }
+            }
+        };
+        let entry = PresenceEntry {
+            task_id: claim.task_id,
+            agent_name: claim.agent_name.clone(),
+            state: state.to_string(),
+            at: beat
+                .map(|b| b.at_iso.clone())
+                .unwrap_or_else(|| claim.claimed_at.clone()),
+            branch: claim.branch.clone(),
+            cwd: claim.cwd.clone(),
+            last_log: claim.last_log.clone(),
+        };
+        by_task
+            .entry(claim.task_id)
+            .and_modify(|existing| {
+                if rank(&entry.state) > rank(&existing.state) {
+                    *existing = entry.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+    let mut out: Vec<PresenceEntry> = by_task.into_values().collect();
+    // Stable order so the UI never sees a task hop about between polls.
+    out.sort_by_key(|e| e.task_id);
+    out
+}
+
+/// Does that process still exist?
+///
+/// The exact answer to the question a timeout was only ever approximating. A
+/// `kill -9`'d session has no process, so its card goes quiet at once rather than
+/// claiming "working" until an arbitrary timer runs out.
+fn pid_alive(pid: u32) -> bool {
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    sys.process(pid).is_some()
+}
+
+/// Backstop for what the PID check cannot cover: PID reuse, or a beat with no pid.
+///
+/// Deliberately long, and deliberately not load-bearing. An earlier design made a
+/// freshness timeout *the* liveness mechanism and had to be tuned against the user's
+/// build times — a guess masquerading as a measurement. State is reported and death
+/// is PID-checked; this is only a safety net.
+const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// Called after every successful write so the app UI can refresh.
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -2239,6 +2412,126 @@ fn server_config(port: u16) -> StreamableHttpServerConfig {
     ])
 }
 
+#[derive(serde::Deserialize)]
+pub struct HeartbeatBody {
+    /// The agent's session id — the same value it sent when it claimed a task.
+    session_id: String,
+    /// "working" | "blocked" | "idle".
+    state: String,
+    /// The session's OS process ($PPID from the hook). Optional: without it we fall
+    /// back to LIVE_TTL, which is the only reason that constant still exists.
+    pid: Option<u32>,
+    /// Set when the beat came from a subagent's tool call.
+    agent_id: Option<String>,
+}
+
+/// Liveness, reported by a local agent's hook.
+///
+/// Deliberately **not** an MCP tool: a shell hook fires this on every tool call, and
+/// an MCP handshake per beat would be absurd. That makes it a plain axum route — and
+/// therefore something the `/mcp` service's protections do NOT cover, see below.
+///
+/// Three properties this must keep:
+///
+/// 1. **Never calls `notify()`.** Emitting `agent-db-changed` here would send the UI
+///    through a full `fetchAll()` of the whole database on every beat of every agent.
+///    Presence is polled instead, precisely so this can stay cheap.
+/// 2. **Never blocks.** It only takes a lock and inserts. A hook that waits on this
+///    starves Claude's agentic loop.
+/// 3. **Never writes to disk.** Beats are volatile by design; the durable half is
+///    the claim.
+async fn heartbeat_handler(
+    axum::extract::State(beats): axum::extract::State<Beats>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<HeartbeatBody>>,
+) -> axum::http::StatusCode {
+    // rmcp applies server_config's origin rejection to the /mcp service only; a
+    // sibling axum route inherits none of it. Same rule, same reasoning as up there:
+    // a web page always sends Origin and can never legitimately talk to this server,
+    // while a shell hook sends none. Without this, any page you visited could POST
+    // fake "working" states into the one feature whose whole point is not lying.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return axum::http::StatusCode::FORBIDDEN;
+    }
+    let Some(axum::Json(body)) = body else {
+        return axum::http::StatusCode::BAD_REQUEST;
+    };
+    if !matches!(body.state.as_str(), "working" | "blocked" | "idle") {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    // A subagent finishing is not the parent finishing. Its `working` beats are the
+    // parent's too (the parent genuinely is working), but its `idle` must never
+    // settle the parent's card.
+    if body.agent_id.is_some() && body.state == "idle" {
+        return axum::http::StatusCode::OK;
+    }
+    let session = body.session_id.trim();
+    if session.is_empty() {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    beats.lock().unwrap().insert(
+        session.to_string(),
+        Beat {
+            state: body.state,
+            at: std::time::Instant::now(),
+            at_iso: now_iso(),
+            pid: body.pid,
+        },
+    );
+    // 200 even when this session claimed nothing: most sessions are not working a
+    // board task, and their beats must be free and harmless. That is the common
+    // case, not an error — resolve_presence simply never joins them to a card.
+    axum::http::StatusCode::OK
+}
+
+/// Every claimed task, with the liveliest state among the sessions claiming it.
+///
+/// Polled by the UI (see App.tsx) rather than pushed: a beat per tool call per agent
+/// is far too chatty to hang the board's reload on.
+#[tauri::command]
+pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
+    let db = { live.db.lock().unwrap().clone() };
+    let Some(db) = db else { return Vec::new() };
+    let claims = {
+        let conn = db.lock().unwrap();
+        match read_claims(&conn) {
+            Ok(claims) => claims,
+            Err(e) => {
+                eprintln!("tildone: presence query failed: {e}");
+                return Vec::new();
+            }
+        }
+    };
+    let beats = live.beats.lock().unwrap().clone();
+    resolve_presence(&claims, &beats, std::time::Instant::now(), &pid_alive)
+}
+
+/// Every claim, joined with the agent's latest word on that task.
+///
+/// The log line is joined here rather than fetched per card: the board renders many
+/// cards, and `fetchAll` deliberately carries no activity bodies.
+fn read_claims(conn: &Connection) -> rusqlite::Result<Vec<ClaimRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.session_id, c.task_id, c.cwd, c.branch, c.agent_name, c.claimed_at,
+                (SELECT a.label FROM task_activity a
+                  WHERE a.task_id = c.task_id AND a.actor_kind = 'agent'
+                  ORDER BY a.id DESC LIMIT 1)
+           FROM agent_claims c",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ClaimRow {
+            session_id: r.get(0)?,
+            task_id: r.get(1)?,
+            cwd: r.get(2)?,
+            branch: r.get(3)?,
+            agent_name: r.get(4)?,
+            claimed_at: r.get(5)?,
+            last_log: r.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// The port to *request* at bind time.
 ///
 /// `AGENT_PORT` is the contract: an agent's MCP config points at a fixed URL, so
@@ -2329,6 +2622,7 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
 pub async fn agent_server_start(
     app: AppHandle,
     state: State<'_, AgentServer>,
+    live: State<'_, AgentLive>,
 ) -> Result<String, String> {
     // React StrictMode (dev) fires the startup effect twice, so two of these
     // commands can run concurrently. Both used to pass the state check below
@@ -2361,6 +2655,10 @@ pub async fn agent_server_start(
     let endpoint = format!("http://127.0.0.1:{port}/mcp");
 
     let db: Db = Arc::new(Mutex::new(open_db(&app)?));
+    // Presence reads claims through this same connection. Cloned before `db` is moved
+    // into the MCP service closure below — the Arc is the point, so both share one
+    // connection and one mutex rather than opening a second handle to the file.
+    *live.db.lock().unwrap() = Some(db.clone());
     let ct = CancellationToken::new();
     let config = server_config(port).with_cancellation_token(ct.child_token());
     let emitter = app.clone();
@@ -2398,7 +2696,13 @@ pub async fn agent_server_start(
             Default::default(),
             config,
         );
-    let router = axum::Router::new().nest_service("/mcp", service);
+    // /heartbeat sits beside /mcp rather than inside it: a shell hook fires it on
+    // every tool call, where an MCP handshake per beat would be absurd. It carries
+    // its own origin guard, because rmcp's covers the nested service only.
+    let router = axum::Router::new().nest_service("/mcp", service).route(
+        "/heartbeat",
+        axum::routing::post(heartbeat_handler).with_state(live.beats.clone()),
+    );
 
     let serve_ct = ct.clone();
     tauri::async_runtime::spawn(async move {
@@ -2738,6 +3042,200 @@ mod tests {
             .unwrap()
             .query_row("SELECT COUNT(*) FROM agent_claims", [], |r| r.get(0))
             .unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Presence resolution. Pure, with liveness injected, so the whole table is
+    // testable without spawning or killing a process.
+
+    fn a_claim(session: &str, task_id: i64) -> ClaimRow {
+        ClaimRow {
+            session_id: session.into(),
+            task_id,
+            cwd: None,
+            branch: Some("wt-1".into()),
+            agent_name: Some("claude".into()),
+            claimed_at: "2026-07-17T10:00:00.000Z".into(),
+            last_log: None,
+        }
+    }
+
+    fn a_beat(state: &str, age: std::time::Duration, pid: Option<u32>) -> Beat {
+        Beat {
+            state: state.into(),
+            at: std::time::Instant::now() - age,
+            at_iso: "2026-07-17T10:05:00.000Z".into(),
+            pid,
+        }
+    }
+
+    const ALIVE: &dyn Fn(u32) -> bool = &|_| true;
+    const DEAD: &dyn Fn(u32) -> bool = &|_| false;
+
+    fn resolve_one(claims: &[ClaimRow], beats: &[(&str, Beat)], alive: &dyn Fn(u32) -> bool) -> Vec<PresenceEntry> {
+        let map: HashMap<String, Beat> =
+            beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
+        resolve_presence(claims, &map, std::time::Instant::now(), alive)
+    }
+
+    #[test]
+    fn a_working_beat_from_a_live_process_is_working() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, "working");
+        assert_eq!(out[0].task_id, 7);
+        assert_eq!(out[0].branch.as_deref(), Some("wt-1"));
+    }
+
+    #[test]
+    fn a_working_beat_from_a_dead_process_is_quiet_at_once() {
+        // The kill -9 case. This is why liveness is PID-checked rather than timed
+        // out: the card must not claim "working" until an arbitrary timer expires.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            DEAD,
+        );
+        assert_eq!(out[0].state, "quiet");
+    }
+
+    #[test]
+    fn a_long_silent_stretch_is_still_working_while_the_process_lives() {
+        // THE regression this design exists for. A five-minute `bun run build` inside
+        // one Bash call emits no tool calls, so no beat arrives — but nothing said
+        // idle and the process is alive, so the agent is obviously still working.
+        // The freshness-based draft would have flickered this card to quiet.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(5 * 60), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "working", "a long tool call must not read as quiet");
+    }
+
+    #[test]
+    fn a_beat_past_the_ttl_is_quiet_even_if_the_pid_looks_alive() {
+        // The backstop, for PID reuse: a recycled pid can look alive forever.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", LIVE_TTL + std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "quiet");
+    }
+
+    #[test]
+    fn a_beat_without_a_pid_falls_back_to_the_ttl() {
+        let fresh = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), None))],
+            DEAD, // never consulted: there is no pid to check
+        );
+        assert_eq!(fresh[0].state, "working");
+        let stale = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", LIVE_TTL + std::time::Duration::from_secs(1), None))],
+            ALIVE,
+        );
+        assert_eq!(stale[0].state, "quiet");
+    }
+
+    #[test]
+    fn an_idle_beat_renders_as_quiet_and_idle_never_reaches_the_ui() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "quiet", "idle is a wire value, not a card state");
+    }
+
+    #[test]
+    fn a_blocked_beat_is_blocked() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("blocked", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "blocked");
+    }
+
+    #[test]
+    fn a_claim_with_no_beat_at_all_is_quiet() {
+        let out = resolve_one(&[a_claim("s1", 7)], &[], ALIVE);
+        assert_eq!(out[0].state, "quiet");
+        assert_eq!(out[0].at, "2026-07-17T10:00:00.000Z", "falls back to the claim time");
+    }
+
+    #[test]
+    fn a_task_claimed_by_two_sessions_shows_the_liveliest() {
+        // Pairing is legitimate. One agent working and one quiet means the task is
+        // being worked on.
+        let out = resolve_one(
+            &[a_claim("s1", 7), a_claim("s2", 7)],
+            &[
+                ("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1, "one entry per task, not per session");
+        assert_eq!(out[0].state, "working");
+    }
+
+    #[test]
+    fn working_outranks_blocked_which_outranks_quiet() {
+        let out = resolve_one(
+            &[a_claim("s1", 7), a_claim("s2", 7)],
+            &[
+                ("s1", a_beat("blocked", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "working");
+    }
+
+    #[test]
+    fn an_unclaimed_sessions_beat_joins_no_card() {
+        // The shared-cwd bug, at the resolution layer: sess-2 beats hard but claimed
+        // nothing, so it lights up nothing. Keyed on cwd it would have lit up s1's.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[
+                ("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].task_id, 7);
+        assert_eq!(out[0].state, "quiet", "s2's beats must not touch s1's card");
+    }
+
+    #[test]
+    fn presence_is_ordered_by_task_so_the_board_never_hops() {
+        let out = resolve_one(&[a_claim("s1", 9), a_claim("s2", 3)], &[], ALIVE);
+        assert_eq!(out.iter().map(|e| e.task_id).collect::<Vec<_>>(), vec![3, 9]);
+    }
+
+    #[test]
+    fn the_latest_agent_log_line_rides_the_presence_read() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Rebase it");
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("wt-1"));
+        {
+            let conn = db.lock().unwrap();
+            TildoneAgent::record_activity(&conn, id, "rebasing onto main, 2 conflicts", Some("claude"));
+        }
+        let conn = db.lock().unwrap();
+        let claims = read_claims(&conn).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].last_log.as_deref(), Some("rebasing onto main, 2 conflicts"));
     }
 
     #[test]
@@ -4431,6 +4929,87 @@ mod tests {
         assert_eq!(group_order(&conn, None, "done"), vec![4, 2, 3, 1]);
         // Todo: prior order (position, id) preserved, now distinct.
         assert_eq!(group_order(&conn, None, "todo"), vec![5, 6]);
+    }
+
+    /// Drives the real /heartbeat route over HTTP, the way the hook does.
+    ///
+    /// This route is deliberately outside the MCP service, so it inherits none of
+    /// rmcp's protections — the origin guard below is the whole reason this test
+    /// exists rather than a unit test of the handler.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn heartbeat_over_http() {
+        let beats: Beats = Arc::new(Mutex::new(HashMap::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = axum::Router::new().route(
+            "/heartbeat",
+            axum::routing::post(heartbeat_handler).with_state(beats.clone()),
+        );
+        let url = format!("http://{addr}/heartbeat");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let client = reqwest::Client::new();
+        let beat = |body: &'static str, origin: Option<&'static str>| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let mut req = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body);
+                if let Some(o) = origin {
+                    req = req.header("Origin", o);
+                }
+                req.send().await.unwrap().status().as_u16()
+            }
+        };
+
+        // A shell hook sends no Origin and is accepted.
+        assert_eq!(
+            beat(r#"{"session_id":"s1","state":"working","pid":1}"#, None).await,
+            200
+        );
+        assert_eq!(beats.lock().unwrap().get("s1").unwrap().state, "working");
+
+        // A web page always sends Origin, and can never legitimately reach this
+        // server. Without this guard any page you visited could post fake "working"
+        // states into the one feature whose whole point is not lying.
+        assert_eq!(
+            beat(r#"{"session_id":"evil","state":"working"}"#, Some("https://evil.example")).await,
+            403
+        );
+        assert!(
+            !beats.lock().unwrap().contains_key("evil"),
+            "a browser-originated beat must not be recorded"
+        );
+
+        // Even a same-origin-looking page is a page.
+        assert_eq!(
+            beat(r#"{"session_id":"evil2","state":"working"}"#, Some("http://127.0.0.1:1420")).await,
+            403
+        );
+
+        // Garbage in.
+        assert_eq!(beat(r#"{"session_id":"s1","state":"dancing"}"#, None).await, 400);
+        assert_eq!(beat(r#"{"session_id":"  ","state":"working"}"#, None).await, 400);
+        assert_eq!(beat(r#"not json"#, None).await, 400);
+
+        // A subagent's idle must not settle the parent's card.
+        assert_eq!(
+            beat(r#"{"session_id":"s1","state":"idle","agent_id":"sub-1"}"#, None).await,
+            200
+        );
+        assert_eq!(
+            beats.lock().unwrap().get("s1").unwrap().state,
+            "working",
+            "a subagent finishing is not the parent finishing"
+        );
+
+        // The parent's own idle does settle it.
+        assert_eq!(beat(r#"{"session_id":"s1","state":"idle"}"#, None).await, 200);
+        assert_eq!(beats.lock().unwrap().get("s1").unwrap().state, "idle");
     }
 
     /// Drives the real streamable-HTTP endpoint the way an MCP client does:
