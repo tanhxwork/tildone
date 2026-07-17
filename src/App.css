@@ -51,6 +51,21 @@
   --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
 }
 
+/* Dev builds only (attribute set in main.tsx from import.meta.env.DEV):
+   the purple accent turns red so a dev window is unmistakable next to the
+   installed app. Reds mirror the purples' lightness in each theme. */
+:root[data-dev-build] {
+  --bg-active: rgba(212, 69, 63, 0.09);
+  --accent: #d4453f;
+  --accent-contrast: #ffffff;
+}
+
+:root[data-dev-build][data-theme="dark"] {
+  --bg-active: rgba(236, 134, 134, 0.16);
+  --accent: #ec8686;
+  --accent-contrast: #191919;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
