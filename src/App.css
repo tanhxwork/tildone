@@ -1293,17 +1293,29 @@ textarea:focus-visible,
   opacity: 0.45;
 }
 
-.card-presence.working .card-presence-time {
-  color: var(--agent-color, var(--text-muted));
-  font-weight: 600;
+/* The state is a dot, not a word. It speaks the board's own status vocabulary —
+   orange means in-progress, red means blocked — so an agent's state and a card's
+   state are one language. Quiet is a hollow ring: an empty seat, not a colour.
+   The words survive on hover (title) and in the aria-label. */
+.card-presence-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.card-presence.working .card-presence-dot {
+  background: var(--doing);
 }
 
 /* Blocked borrows the same token the blocked card tint uses, so a blocked agent and
    a blocked task read as one state rather than two vocabularies. */
-.card-presence.blocked .card-presence-mark,
-.card-presence.blocked .card-presence-time {
-  color: var(--blocked);
-  font-weight: 600;
+.card-presence.blocked .card-presence-dot {
+  background: var(--blocked);
+}
+
+.card-presence.quiet .card-presence-dot {
+  border: 1.5px solid var(--text-faint);
 }
 
 /* The agent's last word, on its own row: it cannot share the provenance strip
@@ -1322,9 +1334,9 @@ textarea:focus-visible,
   transform-origin: center;
 }
 
-/* The breathe has to be seen from across the room, because it is the ONLY thing
-   separating a live agent from a departed one — everything else on the strip looks
-   the same either way.
+/* The breathe has to be seen from across the room: it is what says LIVE, while the
+   dot's colour says which state. (The dot alone can't carry liveness — a static
+   orange speck and a departed agent's strip look the same at a glance.)
    Amplitude chosen against the alternatives, in a browser: scale 1→1.22 with opacity
    .85→1 (the first version) moves ~3px on a 14px mark and is imperceptible unless you
    already know to look. The eye reads change, not size, so both axes swing widely.

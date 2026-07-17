@@ -148,8 +148,11 @@ export function AgentPresence({ taskId }: { taskId: number }) {
   // The guarantee survives, and is now cheaper to hold: this can only ever
   // UNDER-claim liveness. "working" requires a live session to have said so and its
   // process to still exist; anything unknown reads as quiet.
-  const text =
-    entry.state === "working" ? "working" : entry.state === "blocked" ? "blocked" : `quiet ${when}`;
+  //
+  // The state itself renders as a dot, not a word — the board's own status colours
+  // (orange doing, red blocked, hollow quiet) say it faster than "working" ever did.
+  // Only quiet keeps text: the age is the information, "quiet" was the noise. The
+  // full wording survives on hover (title) and for assistive tech (aria-label).
   const title =
     entry.state === "quiet"
       ? `${label} · last active ${when}${entry.live ? "" : " · no live connection"}`
@@ -166,7 +169,8 @@ export function AgentPresence({ taskId }: { taskId: number }) {
         className={`card-presence-mark${entry.state === "working" ? " working" : ""}`}
         size={14}
       />
-      <span className="card-presence-time">{text}</span>
+      <span className="card-presence-dot" aria-hidden="true" />
+      {entry.state === "quiet" && <span className="card-presence-time">{when}</span>}
     </span>
   );
 }
