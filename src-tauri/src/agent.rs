@@ -671,6 +671,20 @@ impl TildoneAgent {
         )
     }
 
+    /// Subtasks titled "verify: …" (case-insensitive, whitespace after the colon)
+    /// are the task's review checklist: proposed by the agent that flags
+    /// needs-review, walked and ticked by the USER. The prefix IS the storage —
+    /// keep this rule in step with VERIFY_PREFIX in src/types.ts.
+    fn is_verify_title(title: &str) -> bool {
+        let t = title.trim_start();
+        match t.get(..7) {
+            Some(p) if p.eq_ignore_ascii_case("verify:") => {
+                t[7..].starts_with(char::is_whitespace)
+            }
+            _ => false,
+        }
+    }
+
     /// Resolve a subtask to `(parent task id, parent is trashed)`, or None when the
     /// subtask does not exist. Subtask writes refuse a trashed parent for the same
     /// reason `append_note` does: the task is not on the board to be worked.
@@ -1908,7 +1922,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes."
+        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes. Title one \"verify: <step>\" to make it a review step: when the task is tagged needs-review these render as the user's verify checklist instead of build progress, and only the user can tick them — add them whenever you flag a task for review."
     )]
     fn add_subtask(
         &self,
@@ -1966,7 +1980,9 @@ impl TildoneAgent {
         }))
     }
 
-    #[tool(description = "Tick, untick or rename a subtask. Only the provided fields change.")]
+    #[tool(
+        description = "Tick, untick or rename a subtask. Only the provided fields change. Ticking a \"verify: …\" step is refused — verify steps are the user's review checklist; you can add, rename, untick or delete them, never tick them."
+    )]
     fn set_subtask(
         &self,
         Parameters(p): Parameters<SetSubtaskParams>,
@@ -1991,6 +2007,28 @@ impl TildoneAgent {
             return Ok(err(format!(
                 "Subtask {id} belongs to a task in the trash; it can only be restored from the app."
             )));
+        }
+        // Verify steps are the user's checklist: an agent proposes them when it
+        // flags review, but a tick asserts "I checked this on my machine" — a
+        // claim only the person at the machine can make. Everything else stays
+        // open (add, rename, untick, delete). Checked against the FINAL title,
+        // before any write, so a refused call leaves nothing half-applied.
+        if done == Some(true) {
+            let final_title: String = match &title {
+                Some(t) => t.trim().to_string(),
+                None => conn
+                    .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                        r.get(0)
+                    })
+                    .map_err(db_err)?,
+            };
+            if Self::is_verify_title(&final_title) {
+                return Ok(err(format!(
+                    "Subtask {id} is a verify step — verify steps are checked by the user \
+                     in the app. An agent can add, rename, untick or delete them, but not \
+                     tick them."
+                )));
+            }
         }
         if let Some(title) = &title {
             let title = title.trim();
@@ -4764,6 +4802,133 @@ mod tests {
                 .unwrap(),
         );
         assert!(is_err, "a trashed parent must refuse subtask writes");
+    }
+
+    /// Verify steps ("verify: …" subtasks) are the review checklist the agent
+    /// proposes and the USER walks: an MCP tick is refused — a tick asserts
+    /// "I checked this on my machine" — while add, rename, untick and delete
+    /// stay open, and plain subtasks are untouched by the rule.
+    #[test]
+    fn verify_steps_refuse_agent_ticks_but_stay_editable() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "review me");
+
+        let add = |title: &str| -> i64 {
+            let (is_err, out) = extract(
+                &agent
+                    .add_subtask_as(
+                        AddSubtaskParams {
+                            task_id: id.into(),
+                            title: title.into(),
+                        },
+                        Some("claude"),
+                    )
+                    .unwrap(),
+            );
+            assert!(!is_err, "add_subtask failed: {out}");
+            out["id"].as_i64().unwrap()
+        };
+        let verify = add("verify: paste a long URL — pane must not widen");
+        let normal = add("build the thing");
+
+        // The tick is refused, and refused BEFORE any write.
+        let (is_err, out) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: verify,
+                        done: Some(true),
+                        title: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "an agent tick on a verify step must be refused: {out}");
+        let done: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT done FROM subtasks WHERE id = ?1", [verify], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(done, 0, "the refused tick must not have written");
+
+        // The guard reads the FINAL title, so rename-to-verify + tick in one
+        // call is refused whole — nothing half-applied.
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: normal,
+                        done: Some(true),
+                        title: Some("Verify: now it is a step".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "rename-to-verify + tick in one call must be refused");
+        let kept: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT title FROM subtasks WHERE id = ?1", [normal], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, "build the thing", "the refused rename must not have written");
+
+        // Rename and untick stay open.
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: verify,
+                        done: None,
+                        title: Some("verify: resize to 900px".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "renaming a verify step must stay allowed");
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: verify,
+                        done: Some(false),
+                        title: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "unticking a verify step must stay allowed");
+
+        // A plain subtask still ticks over MCP.
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: normal,
+                        done: Some(true),
+                        title: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "a plain subtask tick must still work");
+
+        // Delete stays open too — the checklist is the agent's to shape, only
+        // the ticks are the user's.
+        let (is_err, _) = extract(
+            &agent
+                .delete_subtask_as(IdParams { id: verify }, Some("claude"))
+                .unwrap(),
+        );
+        assert!(!is_err, "deleting a verify step must stay allowed");
     }
 
     /// The board is the queue: list_tasks must return what the user sees, so a

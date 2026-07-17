@@ -30,13 +30,16 @@ import {
   STATUSES,
   STATUS_LABELS,
   asLinkKind,
+  isVerifyStep,
+  verifyStepLabel,
 } from "../types";
 import { todayStr } from "../utils/dates";
 import { cardPresence } from "../utils/presence";
 import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
+import type { Subtask } from "../types";
 import { CompletionFlourish, UnseenMark } from "./Brand";
-import { IconCheck, IconMessage, LinkKindIcon } from "./Icons";
+import { IconAlert, IconCheck, IconChecklist, IconMessage, LinkKindIcon } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
 import { AgentPresence } from "../agents";
@@ -441,6 +444,86 @@ function cardLinkShort(link: TaskLink): string | null {
   return null;
 }
 
+/** The door chip's label: "PR #55" when a number is findable, else "PR". */
+function prDoorLabel(link: TaskLink): string {
+  const short = cardLinkShort(link);
+  return short ? `PR ${short}` : "PR";
+}
+
+/** The board's verify surface: the counter opens this anchored popover so the
+ *  steps can be read and ticked without opening the editor. A tick here is the
+ *  same store write the editor makes. Every pointer event stops at the popover —
+ *  it must neither drag the card under it nor open that card's editor. */
+function VerifyPopover({
+  steps,
+  prLink,
+  onClose,
+}: {
+  steps: Subtask[];
+  prLink: TaskLink | null;
+  onClose: () => void;
+}) {
+  const toggleSubtask = useStore((s) => s.toggleSubtask);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // The counter button stops its own pointerdown, so a click on it never
+    // reaches this listener — toggling stays a clean open/close.
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  const done = steps.filter((s) => s.done).length;
+  return (
+    <div
+      ref={ref}
+      className="verify-popover"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="verify-popover-head">
+        Verify
+        <span className="verify-popover-count">
+          {done} of {steps.length}
+        </span>
+      </div>
+      <ul className="verify-list">
+        {steps.map((s) => (
+          <li key={s.id}>
+            <button
+              type="button"
+              className={`verify-item ${s.done ? "done" : ""}`}
+              onClick={() => void toggleSubtask(s.id)}
+            >
+              <span className="verify-box">{s.done && <IconCheck size={10} />}</span>
+              <span className="verify-text">{verifyStepLabel(s)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {prLink && (
+        <button
+          type="button"
+          className="card-link review-door"
+          title={`${LINK_KIND_LABELS.pr} · ${prLink.label} · ${prLink.url}`}
+          onClick={() => void openUrl(prLink.url)}
+        >
+          <LinkKindIcon kind="pr" size={13} />
+          {prDoorLabel(prLink)}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CardContent({
   task,
   overlay,
@@ -468,8 +551,19 @@ function CardContent({
   const commentCount = useStore((s) => s.commentCounts[task.id] ?? 0);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const cardLinks = links[task.id] ?? [];
-  const done = mine.filter((s) => s.done).length;
   const state = reservedState(task, tags);
+  // Verify steps ("verify: …" subtasks) leave the build checklist only while the
+  // task is actually in review — the tag coming off mid-flight folds them back
+  // into plain subtasks rather than orphaning them out of every count.
+  const inReview = state === "needs-review";
+  const verifySteps = inReview ? mine.filter(isVerifyStep) : [];
+  const build = inReview ? mine.filter((s) => !isVerifyStep(s)) : mine;
+  const done = build.filter((s) => s.done).length;
+  const verifyDone = verifySteps.filter((s) => s.done).length;
+  const prLink =
+    latestLinkPerKind(cardLinks).find(({ link }) => asLinkKind(link.kind) === "pr")?.link ??
+    null;
+  const [verifyOpen, setVerifyOpen] = useState(false);
   // The mark outlives the fact by exactly one animation: `settling` is set as you
   // leave the card, markSeen clears unseen_at immediately, and the check needs to
   // still be on screen to land. Never on the drag overlay — a card in your hand
@@ -535,20 +629,61 @@ function CardContent({
       <span className="card-title">
         <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
       </span>
-      {mine.length > 0 && (
+      {(build.length > 0 || verifySteps.length > 0) && (
         <span
           className="card-progress"
-          title={`${done} of ${mine.length} subtasks done`}
+          title={build.length > 0 ? `${done} of ${build.length} subtasks done` : undefined}
         >
-          <span className="card-progress-bar">
-            <span
-              className="card-progress-fill"
-              style={{ transform: `scaleX(${done / mine.length})` }}
-            />
-          </span>
-          <span className="card-progress-count">
-            {done}/{mine.length}
-          </span>
+          {build.length > 0 && (
+            <>
+              <span className="card-progress-bar">
+                <span
+                  className="card-progress-fill"
+                  style={{ transform: `scaleX(${done / build.length})` }}
+                />
+              </span>
+              <span className="card-progress-count">
+                {done}/{build.length}
+              </span>
+            </>
+          )}
+          {verifySteps.length > 0 && (
+            // The card's whole verify surface: how much checking awaits, and the
+            // door to it. stopPropagation twins card-link's — the counter must
+            // neither start a drag nor open the editor.
+            <span className="card-verify-anchor">
+              <button
+                type="button"
+                className="card-verify-count"
+                title={`${verifyDone} of ${verifySteps.length} verify steps checked`}
+                aria-expanded={verifyOpen}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setVerifyOpen((v) => !v);
+                }}
+              >
+                <IconChecklist size={12} />
+                {verifyDone}/{verifySteps.length}
+              </button>
+              {verifyOpen && !overlay && (
+                <VerifyPopover
+                  steps={verifySteps}
+                  prLink={prLink}
+                  onClose={() => setVerifyOpen(false)}
+                />
+              )}
+            </span>
+          )}
+        </span>
+      )}
+      {inSection && !prLink && verifySteps.length === 0 && (
+        // The protocol violation, stated where it matters: this card asked for
+        // review and brought nothing to review. Words in the warn ink, not a
+        // tint — `blocked` keeps its monopoly on alarm fills.
+        <span className="card-review-missing">
+          <IconAlert size={12} />
+          In review with no PR and no verify steps
         </span>
       )}
       {commentCount > 0 && (
@@ -562,7 +697,12 @@ function CardContent({
         </span>
       )}
       <TaskMeta task={task} hideStatus hideState={inSection} />
-      <CardProvenance task={task} project={showProject ? project : undefined} links={cardLinks} />
+      <CardProvenance
+        task={task}
+        project={showProject ? project : undefined}
+        links={cardLinks}
+        door={inSection}
+      />
       {flourishKey !== null && (
         <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
       )}
@@ -581,10 +721,15 @@ function CardProvenance({
   task,
   project,
   links,
+  door,
 }: {
   task: Task;
   project: Project | undefined;
   links: TaskLink[];
+  /** Inside the review section the latest PR chip steps up to a bordered "door"
+   *  with its number spelled out — review starts at the diff, so the way in must
+   *  not need hunting for. Everywhere else the chip keeps its compact form. */
+  door?: boolean;
 }) {
   const live = useStore((s) => s.live);
   const fallback = useStore((s) => s.presence);
@@ -597,6 +742,20 @@ function CardProvenance({
     entry?.branch && !links.some((l) => asLinkKind(l.kind) === "worktree")
       ? entry.branch
       : null;
+  // Every name-bearing chip renders icon-only in the strip (a long branch name
+  // used to wrap it into three ragged rows); the names come back complete — never
+  // truncated, no ellipsis — in a quiet overlay row while the card is hovered or
+  // focused. Overlay, not growth: cards below must not shift as the pointer
+  // sweeps the column.
+  const revealNames: { kind: string; name: string }[] = [
+    ...(branch ? [{ kind: "worktree", name: branch }] : []),
+    ...links
+      .filter((l) => {
+        const kind = asLinkKind(l.kind);
+        return kind === "branch" || kind === "worktree";
+      })
+      .map((l) => ({ kind: asLinkKind(l.kind), name: l.label })),
+  ];
   return (
     <>
     <span className="card-provenance">
@@ -616,19 +775,19 @@ function CardProvenance({
           title={`${LINK_KIND_LABELS.worktree} · ${branch}`}
         >
           <LinkKindIcon kind="worktree" size={13} />
-          <span className="card-link-label">{branch}</span>
         </span>
       )}
       {links.length > 0 && (
         <span className="card-links">
           {latestLinkPerKind(links).map(({ link, total }) => {
             const kind = asLinkKind(link.kind);
-            const short = cardLinkShort(link);
+            const isDoor = door && kind === "pr";
+            const short = isDoor ? prDoorLabel(link) : cardLinkShort(link);
             const older = total > 1 ? ` · latest of ${total}` : "";
             return (
               <button
                 key={link.id}
-                className="card-link"
+                className={isDoor ? "card-link review-door" : "card-link"}
                 style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
                 title={`${LINK_KIND_LABELS[kind]} · ${link.label}${older} · ${link.url}`}
                 onPointerDown={(e) => e.stopPropagation()}
@@ -646,6 +805,16 @@ function CardProvenance({
       )}
       <AgentPresence taskId={task.id} />
     </span>
+    {revealNames.length > 0 && (
+      <span className="card-reveal" aria-hidden="true">
+        {revealNames.map((r, i) => (
+          <span key={i} className="card-reveal-name">
+            <LinkKindIcon kind={r.kind} size={11} />
+            <span>{r.name}</span>
+          </span>
+        ))}
+      </span>
+    )}
     {entry?.last_log && (
       // Its own row, below the strip. It cannot share it: inline, a log line consumes
       // the full width and evicts the worktree chip — the approved fixture compared

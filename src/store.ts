@@ -61,6 +61,9 @@ interface Store {
   links: Record<number, TaskLink[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
+  /** When the open task's tags last changed — the review band's "flagged" time.
+   * Loaded alongside activity; null when unknown (no tag write recorded). */
+  reviewFlaggedAt: string | null;
   /** Comment thread for the task currently open in the details view. */
   comments: Comment[];
   /** Comment count per task_id, for the card badge. Bodies load only on open
@@ -272,6 +275,7 @@ export const useStore = create<Store>()((set, get) => ({
   subtasks: [],
   links: {},
   activity: [],
+  reviewFlaggedAt: null,
   comments: [],
   commentCounts: {},
   presence: {},
@@ -397,7 +401,7 @@ export const useStore = create<Store>()((set, get) => ({
   setPriorityFilter: (priorityFilter) => set({ priorityFilter }),
   toggleShowCompleted: () => set((s) => ({ showCompleted: !s.showCompleted })),
   openEditor: (editingTaskId) => {
-    set({ editingTaskId, activity: [], comments: [] });
+    set({ editingTaskId, activity: [], comments: [], reviewFlaggedAt: null });
     if (editingTaskId !== null) {
       void get().loadActivity(editingTaskId);
       void get().loadComments(editingTaskId);
@@ -773,9 +777,12 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   loadActivity: async (taskId) => {
-    const activity = await db.fetchActivity(taskId);
+    const [activity, reviewFlaggedAt] = await Promise.all([
+      db.fetchActivity(taskId),
+      db.fetchLastTagChange(taskId),
+    ]);
     // The user may have switched tasks while we were fetching.
-    if (get().editingTaskId === taskId) set({ activity });
+    if (get().editingTaskId === taskId) set({ activity, reviewFlaggedAt });
   },
 
   addComment: async (taskId, body) => {

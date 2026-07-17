@@ -202,6 +202,19 @@ export async function fetchActivity(taskId: number): Promise<ActivityEntry[]> {
   );
 }
 
+/** When the task's tags last changed — the "flagged" timestamp the review band
+ * shows. The changes feed records THAT tags changed (kind='tag'), not which:
+ * while a needs-review band is up, the newest tag write is the flagging one in
+ * every ordinary flow, and a stale value here costs a caption, not correctness. */
+export async function fetchLastTagChange(taskId: number): Promise<string | null> {
+  const d = await getDb();
+  const rows = await d.select<{ created_at: string }[]>(
+    "SELECT created_at FROM changes WHERE entity = 'task' AND entity_id = $1 AND kind = 'tag' ORDER BY id DESC LIMIT 1",
+    [taskId],
+  );
+  return rows[0]?.created_at ?? null;
+}
+
 // Newest agent activity per task — the read that *is* presence. "An agent is on
 // this task" = this timestamp is recent; a dead session simply stops writing and
 // the value ages on its own, so nothing is ever stored or cleared. Returns a map

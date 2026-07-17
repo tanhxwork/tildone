@@ -11,10 +11,13 @@ import {
   STATUSES,
   STATUS_LABELS,
   asLinkKind,
+  isVerifyStep,
+  verifyStepLabel,
 } from "../types";
 import { relativeDueLabel, timeAgo } from "../utils/dates";
 import { isHttpUrl } from "../utils/links";
 import {
+  IconAlert,
   IconCheck,
   IconLink,
   IconMaximize,
@@ -30,6 +33,13 @@ import { agentIdentity } from "../agents";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { reservedState } from "./TaskRow";
+
+/** Labels the MCP server writes for structural edits (status, subtasks, links,
+ *  dates, moves). Anything else from an agent in the feed is its own
+ *  log_progress prose — the evidence the review band quotes. */
+const STRUCTURAL_ACTIVITY =
+  /^(Task created$|Status changed to |Priority set to |Priority cleared$|Due date set to |Due date cleared$|Moved to |Subtask (added|renamed|removed|completed|reopened): |Link (added|removed): )/;
 
 // Expanded-card preference survives relaunch, like the nav selection does.
 const EXPANDED_STORAGE_KEY = "tildone.detail-expanded";
@@ -57,6 +67,7 @@ export function TaskEditor() {
     tags,
     subtasks,
     activity,
+    reviewFlaggedAt,
     editingTaskId,
     openEditor,
     patchTask,
@@ -116,10 +127,28 @@ export function TaskEditor() {
 
   const project = projects.find((p) => p.id === task.project_id);
   const taskSubtasks = subtasks.filter((s) => s.task_id === task.id);
-  const doneCount = taskSubtasks.filter((s) => s.done).length;
+  // Verify steps split out of the build checklist only while the task is in
+  // review — same rule and reason as the board card (Kanban.tsx): the tag coming
+  // off must fold them back into plain subtasks, not orphan them.
+  const inReview = reservedState(task, tags) === "needs-review";
+  const verifySteps = inReview ? taskSubtasks.filter(isVerifyStep) : [];
+  const buildSubtasks = inReview
+    ? taskSubtasks.filter((s) => !isVerifyStep(s))
+    : taskSubtasks;
+  const doneCount = buildSubtasks.filter((s) => s.done).length;
   const taskTags = tags.filter((t) => task.tag_ids.includes(t.id));
   const availableTags = tags.filter((t) => !task.tag_ids.includes(t.id));
   const taskLinks = links[task.id] ?? [];
+  // The band quotes what the agent asserted: its most recent log_progress lines
+  // (structural rows and user rows filtered out), oldest first.
+  const evidence = inReview
+    ? activity
+        .filter((a) => a.actor_kind === "agent" && !STRUCTURAL_ACTIVITY.test(a.label))
+        .slice(0, 3)
+        .reverse()
+    : [];
+  const prLinks = taskLinks.filter((l) => asLinkKind(l.kind) === "pr");
+  const prLink = inReview && prLinks.length > 0 ? prLinks[prLinks.length - 1] : null;
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -381,6 +410,78 @@ export function TaskEditor() {
             <span className="detail-created">{createdLabel}</span>
           </div>
 
+          {inReview && (
+            // The review brief, leading the editor while the tag is on: what the
+            // agent asserts (evidence), what the user confirms (verify steps),
+            // and the doors (links). A lens over existing data, not a store —
+            // remove the tag and the editor below is exactly the plain editor.
+            <div className="review-band">
+              <div className="review-band-head">
+                Ready for review
+                {reviewFlaggedAt && (
+                  <span className="review-band-when">flagged {timeAgo(reviewFlaggedAt)}</span>
+                )}
+              </div>
+              {evidence.length > 0 && (
+                <ul className="review-band-evidence">
+                  {evidence.map((a) => (
+                    <li key={a.id}>{a.label}</li>
+                  ))}
+                </ul>
+              )}
+              {verifySteps.length > 0 && (
+                <>
+                  <p className="review-band-sub">
+                    Verify · {verifySteps.filter((s) => s.done).length} of {verifySteps.length}
+                  </p>
+                  <ul className="verify-list">
+                    {verifySteps.map((sub) => (
+                      <li key={sub.id}>
+                        <button
+                          type="button"
+                          className={`verify-item ${sub.done ? "done" : ""}`}
+                          onClick={() => void toggleSubtask(sub.id)}
+                        >
+                          <span className="verify-box">
+                            {sub.done && <IconCheck size={10} />}
+                          </span>
+                          <span className="verify-text">{verifyStepLabel(sub)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {!prLink && verifySteps.length === 0 && (
+                <span className="card-review-missing">
+                  <IconAlert size={12} />
+                  In review with no PR and no verify steps
+                </span>
+              )}
+              {taskLinks.length > 0 && (
+                <div className="review-band-links">
+                  {taskLinks.map((link) => {
+                    const kind = asLinkKind(link.kind);
+                    const isDoor = link === prLink;
+                    return (
+                      <button
+                        key={link.id}
+                        type="button"
+                        className={isDoor ? "card-link review-door" : "card-link"}
+                        style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
+                        title={`${LINK_KIND_LABELS[kind]} · ${link.label} · ${link.url}`}
+                        onClick={() => void openUrl(link.url)}
+                      >
+                        <LinkKindIcon kind={link.kind} size={13} />
+                        <span className="card-link-label">{link.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {editingNotes ? (
             <textarea
               ref={notesRef}
@@ -422,9 +523,9 @@ export function TaskEditor() {
           <section className="detail-section">
             <h3 className="detail-section-title">
               Subtasks
-              {taskSubtasks.length > 0 && (
+              {buildSubtasks.length > 0 && (
                 <span className="detail-section-count">
-                  {doneCount} of {taskSubtasks.length}
+                  {doneCount} of {buildSubtasks.length}
                 </span>
               )}
               {aiReady(aiConfig) && (
@@ -440,7 +541,7 @@ export function TaskEditor() {
             </h3>
             {aiError && <p className="ai-error">{aiError}</p>}
             <div className="detail-subtasks">
-              {taskSubtasks.map((sub) => (
+              {buildSubtasks.map((sub) => (
                 <div key={sub.id} className={`detail-subtask ${sub.done ? "done" : ""}`}>
                   <button
                     className={`detail-subcheck ${sub.done ? "checked" : ""}`}

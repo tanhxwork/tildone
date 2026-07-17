@@ -89,6 +89,20 @@ export const IconCheck = (p: IconProps) => (
   </Svg>
 );
 
+export const IconChecklist = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="4" />
+    <path d="M8 12.5l2.6 2.6L16 9.5" />
+  </Svg>
+);
+
+export const IconAlert = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v5.2M12 16.5h.01" />
+  </Svg>
+);
+
 export const IconBoard = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3" y="3" width="18" height="18" rx="2" />

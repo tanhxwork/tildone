@@ -1258,14 +1258,19 @@ textarea:focus-visible,
    so human labels and tooling facts never blur into one band. Everything here is one
    muted weight; the agent's brand mark is the row's only spot of colour. Presence is
    pushed to the far right — "who / when" reads as the strip's trailing signature. */
+/* One row, always. This strip used to wrap: a claimed branch name rendered at
+   full length and pushed everything onto ragged extra rows. Now every name-
+   bearing chip is icon-only at rest and the full names live in .card-reveal
+   below, so nothing here ever needs a second line. */
 .card-provenance {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px 8px;
   margin-top: 1px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
+  min-width: 0;
 }
 
 .card-provenance .card-presence {
@@ -1384,6 +1389,218 @@ textarea:focus-visible,
   .card-presence.working .card-presence-bars i {
     animation: none;
   }
+}
+
+/* ---------- Review payload (TIL-79) ---------- */
+
+/* The verify counter: how much checking awaits, in the review colour, beside
+   the build progress. A real button — it opens the popover — with the same
+   stopPropagation contract as .card-link: never a drag, never the editor. */
+.card-verify-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.card-verify-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--review);
+}
+
+.card-verify-count:hover {
+  background: var(--bg-hover);
+}
+
+.card-verify-count svg {
+  flex: none;
+}
+
+/* The board's whole verify surface: steps read and ticked in place, without
+   opening the editor. Anchored under the counter, right-aligned so it stays
+   inside the column. */
+.verify-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: -4px;
+  width: 240px;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: default;
+}
+
+.verify-popover-head {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--review);
+}
+
+.verify-popover-count {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+}
+
+/* The verify checklist, shared between the popover and the editor's review
+   band. Ticks land in --success: verify is the user's confirmation, a different
+   act (and colour) from the accent-checked build subtasks. */
+.verify-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.verify-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+}
+
+.verify-box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-main);
+  color: var(--accent-contrast);
+}
+
+.verify-item:hover .verify-box {
+  border-color: var(--success);
+}
+
+.verify-item.done .verify-box {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.verify-item.done .verify-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+/* A card that asked for review and brought nothing to review — the protocol
+   violation stated in words, in the warn ink. No tint: `blocked` keeps its
+   monopoly on alarm fills. */
+.card-review-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--warn);
+}
+
+.card-review-missing svg {
+  flex: none;
+}
+
+/* The door: inside the review section (and the editor's band) the PR chip steps
+   up to a hairline-bordered chip with its number spelled out — review starts at
+   the diff, so the way in must not need hunting for. */
+.card-link.review-door {
+  border: 1px solid var(--border);
+  padding: 3px 7px;
+  gap: 4px;
+  color: var(--text);
+}
+
+.card-link.review-door:hover {
+  border-color: var(--border-strong);
+  background: none;
+}
+
+.card-link.review-door svg {
+  color: var(--review);
+}
+
+/* N5: repo names come back complete while the card is hovered or focused — a
+   quiet overlay row on the card's own surface. An overlay, not growth, so the
+   column below never shifts as the pointer sweeps it; and the names render
+   whole, wrapped if they must — never truncated, no ellipsis. */
+.card-reveal {
+  position: absolute;
+  z-index: 3;
+  left: 8px;
+  right: 8px;
+  top: calc(100% + 2px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 9px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.board-card:hover .card-reveal,
+.board-card:focus-within .card-reveal {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-reveal {
+    transition: none;
+  }
+}
+
+.card-reveal-name {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.card-reveal-name svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.card-reveal-name span {
+  overflow-wrap: anywhere;
+}
+
+/* The reveal (and an open popover) paint past the card's bottom edge, over the
+   next card — which, being a later positioned sibling, would otherwise paint on
+   top. Lift the card while either is showing. */
+.board-card:hover,
+.board-card:focus-within,
+.board-card:has(.verify-popover) {
+  z-index: 4;
 }
 
 /* Compact Done cards. A finished card is history, not work in flight, so it
@@ -3887,6 +4104,85 @@ textarea:focus-visible,
   margin-bottom: 8px;
 }
 
+/* The review brief, leading an in-review task's editor: evidence (what the
+   agent asserts), verify steps (what the user confirms), and the doors. The
+   30%-review hairline is the section divider's vocabulary — no fill, the
+   editor stays flat. Unmounts with the tag. */
+.review-band {
+  border: 1px solid color-mix(in srgb, var(--review) 30%, var(--border));
+  border-radius: var(--radius);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.review-band-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--review);
+}
+
+.review-band-when {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.review-band-evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.review-band-evidence li {
+  display: flex;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.review-band-evidence li::before {
+  content: "·";
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.review-band-sub {
+  margin: 4px 0 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.review-band-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 2px;
+}
+
+/* Unlike the board strip, the band has room: labels render in full and wrap. */
+.review-band-links .card-link-label {
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
+}
+
 .detail-section-count {
   font-size: 11px;
   font-weight: 500;
@@ -4351,10 +4647,11 @@ textarea:focus-visible,
   min-width: 180px;
 }
 
-/* Card: compact icon (+ short label where short), opens in the browser on click. */
+/* Card: compact icon (+ short label where short), opens in the browser on click.
+   nowrap with its parent strip — see .card-provenance's one-row rule. */
 .card-links {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 1px;
 }
