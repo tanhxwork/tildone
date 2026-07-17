@@ -217,3 +217,25 @@ question straight on the user's banner. No comment yet? The body is just the tit
 4. Treat `delete_project` (and bulk deletions in general) as
    confirm-with-the-user operations. `delete_task` is safe — it goes to the
    trash.
+
+### Multi-agent sessions: only the top-level session drives the board
+
+Board guidance is usually inherited by every agent in a session tree —
+dispatched subagents included — so it must say who it applies to: the
+**top-level (orchestrating) session only**.
+
+- **If you are a dispatched subagent** (your prompt names an orchestrator or
+  an owning task ref, or you were spawned to execute one step of a larger
+  task): do **not** create or update tasks. Report progress and findings in
+  your return message; the orchestrator logs them on its card. A subagent
+  cannot adopt the orchestrator's card — it doesn't know the ref, and a title
+  search for its own step won't find it — so "look before you write" fails
+  and step 3 above manufactures a near-duplicate. Worse, the duplicate is
+  orphaned at `doing` the moment the subagent returns, because subagents end
+  at their return message and never come back to close what they opened.
+- **If you dispatch subagents**: state the owning task ref in every dispatch
+  prompt (e.g. "you are executing one subtask of TIL-12 — do not touch the
+  Tildone board"), log each subagent's result on your own card when it
+  returns, and then sweep `list_tasks` for stray cards the subagent may have
+  created anyway — fold anything useful into your card and `delete_task` the
+  stray.
