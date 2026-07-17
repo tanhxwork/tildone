@@ -2189,6 +2189,14 @@ pub async fn agent_server_start(
     app: AppHandle,
     state: State<'_, AgentServer>,
 ) -> Result<String, String> {
+    // React StrictMode (dev) fires the startup effect twice, so two of these
+    // commands can run concurrently. Both used to pass the state check below
+    // before either stored anything — each bound its own listener and each
+    // installed a tray icon (seen live: one app, two menu-bar tildes on
+    // consecutive ports). Serialize the whole start; the loser of the race
+    // then sees the winner's state and returns its endpoint.
+    static START_GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _start_gate = START_GATE.get_or_init(Default::default).lock().await;
     {
         let guard = state.0.lock().unwrap();
         if let Some((ct, endpoint)) = guard.as_ref() {
@@ -2377,11 +2385,25 @@ fn install_tray(app: &AppHandle, port: u16) -> Result<(), String> {
     let Some(tray_state) = app.try_state::<TrayHandle>() else {
         return Err("tray state missing".into());
     };
-    if tray_state.0.lock().unwrap().is_some() {
+    // Hold the lock from the emptiness check through the store: with two
+    // racing installers, check-then-store left both building and one tray
+    // orphaned in the menu bar.
+    let mut tray_guard = tray_state.0.lock().unwrap();
+    if tray_guard.is_some() {
         return Ok(());
     }
 
-    let show = MenuItemBuilder::with_id("show", "Show Tildone")
+    // Dev instances carry their worktree in the product name
+    // ("Tildone Dev — <slug>", set by scripts/tauri.sh) — surface it on the
+    // tray so the user can tell which menu-bar tilde belongs to which task.
+    let product = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "Tildone".into());
+    let dev_slug = product.strip_prefix("Tildone Dev — ").map(str::to_string);
+
+    let show = MenuItemBuilder::with_id("show", format!("Show {product}"))
         .build(app)
         .map_err(|e| e.to_string())?;
     // A disabled line that names the live endpoint — the port is only known after
@@ -2390,7 +2412,7 @@ fn install_tray(app: &AppHandle, port: u16) -> Result<(), String> {
         .enabled(false)
         .build(app)
         .map_err(|e| e.to_string())?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit Tildone")
+    let quit = MenuItemBuilder::with_id("quit", format!("Quit {product}"))
         .build(app)
         .map_err(|e| e.to_string())?;
     let menu = MenuBuilder::new(app)
@@ -2403,9 +2425,9 @@ fn install_tray(app: &AppHandle, port: u16) -> Result<(), String> {
         .cloned()
         .ok_or("no default window icon to use for the tray")?;
 
-    let tray = TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::new()
         .icon(icon)
-        .tooltip("Tildone")
+        .tooltip(&product)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -2422,11 +2444,15 @@ fn install_tray(app: &AppHandle, port: u16) -> Result<(), String> {
             {
                 show_main_window(tray.app_handle());
             }
-        })
-        .build(app)
-        .map_err(|e| e.to_string())?;
+        });
+    if let Some(slug) = &dev_slug {
+        // Text label next to the icon (macOS): the worktree name in the
+        // menu bar itself, so parallel dev instances are tellable apart.
+        builder = builder.title(slug);
+    }
+    let tray = builder.build(app).map_err(|e| e.to_string())?;
 
-    *tray_state.0.lock().unwrap() = Some(tray);
+    *tray_guard = Some(tray);
     Ok(())
 }
 

@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
@@ -52,6 +53,18 @@ export function Sidebar() {
   const setTagsCollapsed = useSettings((s) => s.setTagsCollapsed);
   const setTagManagerOpen = useStore((s) => s.setTagManagerOpen);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
+  // Dev builds run as "Tildone Dev — <worktree>" (scripts/tauri.sh); show
+  // that worktree in the sidebar so the window says which task it belongs to.
+  const [devSlug, setDevSlug] = useState<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    getName()
+      .then((name) => {
+        const match = name.match(/^Tildone Dev — (.+)$/);
+        if (match) setDevSlug(match[1]);
+      })
+      .catch(() => {});
+  }, []);
 
   const counts = useMemo(() => {
     const today = todayStr();
@@ -265,6 +278,11 @@ export function Sidebar() {
           </span>
           <span className="nav-label">Settings</span>
         </button>
+        {devSlug && (
+          <div className="dev-badge" title={`Dev build — worktree ${devSlug}`}>
+            DEV · {devSlug}
+          </div>
+        )}
       </div>
 
       {dialog !== null && (
