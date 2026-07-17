@@ -129,8 +129,9 @@ cursor. Loop on it.
 ```
 
 - `kind` is one of `created`, `status`, `moved`, `trashed`, `restored`, `edited`,
-  `link` (a repo link attached), or `comment` (someone commented — likely the
-  user answering a question you asked). `entity` is always `"task"` today.
+  `link` (a repo link attached), `comment` (someone commented — likely the
+  user answering a question you asked), or `tag` (the task's tag set changed —
+  e.g. `needs-review` arrived or cleared). `entity` is always `"task"` today.
 - A change says **that** a task changed, not what it now is — it carries no task
   fields. Follow up with `get_task` / `list_tasks`.
 - The **ask → answer → wake** loop: comment your blocking question with
