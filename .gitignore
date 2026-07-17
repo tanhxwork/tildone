@@ -30,3 +30,6 @@ CLAUDE.md
 docs/
 .gitprivate/
 .impeccable/
+
+# per-worktree generated dev icons (scripts/tauri.sh); the committed red set stays
+src-tauri/icons-dev/*/
