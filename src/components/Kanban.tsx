@@ -31,7 +31,8 @@ import {
   STATUS_LABELS,
   asLinkKind,
 } from "../types";
-import { isRecentPresence, todayStr } from "../utils/dates";
+import { todayStr } from "../utils/dates";
+import { cardPresence } from "../utils/presence";
 import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
 import { CompletionFlourish } from "./Brand";
@@ -474,15 +475,37 @@ function CardProvenance({
   project: Project | undefined;
   links: TaskLink[];
 }) {
-  const entry = useStore((s) => s.presence[task.id]);
-  const hasPresence = !!entry && isRecentPresence(entry.at);
-  if (!project && links.length === 0 && !hasPresence) return null;
+  const live = useStore((s) => s.live);
+  const fallback = useStore((s) => s.presence);
+  const entry = cardPresence(task.id, live, fallback);
+  if (!project && links.length === 0 && !entry) return null;
+  // The agent's worktree, from its claim. Suppressed when the task already carries a
+  // hand-attached worktree link, which is a real URL and therefore strictly more
+  // useful than a bare name.
+  const branch =
+    entry?.branch && !links.some((l) => asLinkKind(l.kind) === "worktree")
+      ? entry.branch
+      : null;
   return (
+    <>
     <span className="card-provenance">
       {project && (
         <span className="project-label" title={project.name}>
           <ProjectGlyph project={project} size={14} />
           {project.name}
+        </span>
+      )}
+      {branch && (
+        // Not a button: there is nothing to open. It borrows the chip's look so the
+        // strip reads as one row, but must not offer a hover or a focus stop that
+        // leads nowhere.
+        <span
+          className="card-link"
+          style={{ ["--link-color" as string]: LINK_KIND_COLORS.worktree }}
+          title={`${LINK_KIND_LABELS.worktree} · ${branch}`}
+        >
+          <LinkKindIcon kind="worktree" size={13} />
+          <span className="card-link-label">{branch}</span>
         </span>
       )}
       {links.length > 0 && (
@@ -512,5 +535,14 @@ function CardProvenance({
       )}
       <AgentPresence taskId={task.id} />
     </span>
+    {entry?.last_log && (
+      // Its own row, below the strip. It cannot share it: inline, a log line consumes
+      // the full width and evicts the worktree chip — the approved fixture compared
+      // both and this is the one that keeps all three signals.
+      <span className="card-log" title={entry.last_log}>
+        {entry.last_log}
+      </span>
+    )}
+    </>
   );
 }

@@ -27,6 +27,9 @@
   },
   "bundle": {
     "active": true,
+    "resources": [
+      "resources/tildone-heartbeat.sh"
+    ],
     "targets": "all",
     "icon": [
       "icons/32x32.png",

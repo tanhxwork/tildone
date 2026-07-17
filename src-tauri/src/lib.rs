@@ -1,5 +1,6 @@
 mod agent;
 mod ai;
+mod hookinstall;
 mod icons;
 
 use tauri::Manager;
@@ -114,11 +115,18 @@ pub fn run() {
             sql: include_str!("../migrations/012_comments.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "add_agent_claims",
+            sql: include_str!("../migrations/013_agent_claims.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
         .manage(ai::EngineProcess::default())
         .manage(agent::AgentServer::default())
+        .manage(agent::AgentLive::default())
         .manage(agent::TrayHandle::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -160,7 +168,11 @@ pub fn run() {
             agent::agent_server_stop,
             agent::agent_server_status,
             agent::agent_server_endpoint,
+            agent::agent_presence,
             agent::agent_set_notify,
+            hookinstall::hook_status,
+            hookinstall::hook_install,
+            hookinstall::hook_uninstall,
             icons::discover_project_icon,
             debug_trace,
         ])

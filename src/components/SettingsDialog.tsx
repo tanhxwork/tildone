@@ -10,6 +10,15 @@ import { IconX } from "./Icons";
 
 type ExportFormat = "json" | "csv" | "markdown";
 
+/** Mirrors `HookStatus` in src-tauri/src/hookinstall.rs. */
+interface HookStatus {
+  installed: boolean;
+  /** Where the hook script lives once installed. Shown so the user can go look. */
+  script: string;
+  /** The file Connect will edit. Named up front — nobody should find out afterwards. */
+  settings: string;
+}
+
 const EXT: Record<ExportFormat, string> = { json: "json", csv: "csv", markdown: "md" };
 
 export function SettingsDialog() {
@@ -35,12 +44,37 @@ export function SettingsDialog() {
   // reports the *server's* real state rather than echoing the setting back, which
   // is what let the server sit dead while the dialog claimed it was on.
   const [endpoint, setEndpoint] = useState<string | null>(null);
+  // Asked for, never assumed — same reason as the endpoint above. Whether the hook is
+  // installed is a fact about the user's settings.json, which anything (including the
+  // user, by hand) may have changed since last we looked.
+  const [hook, setHook] = useState<HookStatus | null>(null);
+  const [hookBusy, setHookBusy] = useState(false);
+  const [hookMessage, setHookMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<string | null>("agent_server_endpoint")
       .then(setEndpoint)
       .catch(() => setEndpoint(null));
+    void invoke<HookStatus>("hook_status")
+      .then(setHook)
+      .catch(() => setHook(null));
   }, []);
+
+  async function toggleHook() {
+    setHookBusy(true);
+    setHookMessage(null);
+    try {
+      const msg = await invoke<string>(hook?.installed ? "hook_uninstall" : "hook_install");
+      setHookMessage(msg);
+      // Re-read rather than assume the toggle landed: the command may have refused
+      // (malformed settings) and changed nothing at all.
+      setHook(await invoke<HookStatus>("hook_status"));
+    } catch (e) {
+      setHookMessage(String(e));
+    } finally {
+      setHookBusy(false);
+    }
+  }
 
   async function toggleAgentServer(enabled: boolean) {
     setAgentMessage(null);
@@ -262,6 +296,36 @@ export function SettingsDialog() {
               </div>
             </div>
           )}
+
+          {agentServer && (
+            <div className="settings-row">
+              <div className="settings-label">
+                Show Claude Code working, live
+                <span className="settings-sub">
+                  {hook?.installed
+                    ? "Cards show which worktree an agent is in and whether it is working right now."
+                    : "Without this, a card can only show when an agent last wrote to the board — an agent working quietly for 25 minutes looks like one that left."}
+                </span>
+              </div>
+              <button
+                className="btn small"
+                disabled={hookBusy}
+                onClick={() => void toggleHook()}
+              >
+                {hookBusy ? "Working…" : hook?.installed ? "Disconnect" : "Connect Claude Code"}
+              </button>
+            </div>
+          )}
+          {/* Say plainly that this edits their file, and exactly which one. Nobody
+              should discover after the fact that a todo app rewrote their settings. */}
+          {agentServer && hook && !hook.installed && (
+            <p className="settings-sub">
+              Adds four hooks to <code>{hook.settings}</code> and copies a script to{" "}
+              <code>{hook.script}</code>. Your existing hooks are left alone, and
+              Disconnect removes exactly what was added.
+            </p>
+          )}
+          {hookMessage && <p className="settings-message">{hookMessage}</p>}
 
           {endpoint && (
             <p className="settings-sub">

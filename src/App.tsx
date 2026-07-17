@@ -105,8 +105,21 @@ function App() {
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();
     });
+    // Presence is POLLED, not pushed, and that is the whole reason it is affordable.
+    // A heartbeat fires on every tool call of every agent; routing those through
+    // `agent-db-changed` would drag the board through a full fetchAll() of the entire
+    // database per beat (that listener, right above, is undebounced) — worse with
+    // every agent added. This asks one cheap question on a timer instead.
+    //
+    // 10s: presence is ambient. The pulse appearing a few seconds late costs nothing,
+    // while a tighter loop buys nothing a human can perceive.
+    void useStore.getState().loadPresence();
+    const presenceTimer = setInterval(() => {
+      void useStore.getState().loadPresence();
+    }, 10_000);
     return () => {
       void unlisten.then((fn) => fn());
+      clearInterval(presenceTimer);
     };
   }, []);
 

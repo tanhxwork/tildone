@@ -1208,19 +1208,60 @@ textarea:focus-visible,
    writing (a fresh activity row within the short active window), then settles to
    static as the timestamp ages out. Event-driven off the reload every write triggers —
    never a heartbeat — so it can only under-claim, never fake a live state. */
+/* Quiet and live must not look alike. That they DID look alike is the entire bug:
+   presence was the age of the last board write, so an agent grinding for 25 minutes
+   rendered exactly like one that had touched the card once and gone. A quiet card
+   now recedes — the mark dims and the label says so — while a working one keeps the
+   agent's brand colour and breathes. */
+.card-presence.quiet .card-presence-mark {
+  opacity: 0.45;
+}
+
+.card-presence.working .card-presence-time {
+  color: var(--agent-color, var(--text-muted));
+  font-weight: 600;
+}
+
+/* Blocked borrows the same token the blocked card tint uses, so a blocked agent and
+   a blocked task read as one state rather than two vocabularies. */
+.card-presence.blocked .card-presence-mark,
+.card-presence.blocked .card-presence-time {
+  color: var(--blocked);
+  font-weight: 600;
+}
+
+/* The agent's last word, on its own row: it cannot share the provenance strip
+   without evicting the worktree chip. */
+.card-log {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+
 .card-presence-mark.working {
-  animation: presence-pulse 1.4s ease-in-out infinite;
+  animation: presence-pulse 1.5s ease-in-out infinite;
   transform-origin: center;
 }
 
+/* The breathe has to be seen from across the room, because it is the ONLY thing
+   separating a live agent from a departed one — everything else on the strip looks
+   the same either way.
+   Amplitude chosen against the alternatives, in a browser: scale 1→1.22 with opacity
+   .85→1 (the first version) moves ~3px on a 14px mark and is imperceptible unless you
+   already know to look. The eye reads change, not size, so both axes swing widely.
+   Symmetric ease-in-out, not an ease-out curve: this is a loop, not an entrance —
+   a decelerating curve in a cycle reads as a stutter. */
 @keyframes presence-pulse {
   0%,
   100% {
-    transform: scale(1);
-    opacity: 0.85;
+    transform: scale(0.9);
+    opacity: 0.4;
   }
   50% {
-    transform: scale(1.22);
+    transform: scale(1.3);
     opacity: 1;
   }
 }

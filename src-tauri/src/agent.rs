@@ -3,6 +3,7 @@
 // Opens its own SQLite connection to the same tildone.db the frontend uses;
 // after every write it emits `agent-db-changed` so the UI reloads.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -68,7 +69,179 @@ pub struct AgentServer(Mutex<Option<(CancellationToken, String)>>);
 #[derive(Default)]
 pub struct TrayHandle(Mutex<Option<tauri::tray::TrayIcon>>);
 
+/// The live half of presence: who is beating right now, and a handle to read the
+/// claims that give those beats a task.
+///
+/// Separate managed state rather than fields on `AgentServer` because it outlives a
+/// stop/start cycle harmlessly — stale beats resolve to quiet on their own via the
+/// PID check, so there is nothing to tear down.
+#[derive(Default)]
+pub struct AgentLive {
+    beats: Beats,
+    /// Set when the server starts. `None` → the server never ran, so there is no
+    /// presence to report (not an error: the board simply shows none).
+    db: Mutex<Option<Db>>,
+}
+
 type Db = Arc<Mutex<Connection>>;
+
+/// Live heartbeat state, keyed by agent session id.
+///
+/// **Deliberately in memory, never SQLite.** A heartbeat fires on *every tool call
+/// of every agent*. Persisting them would write to disk several times a second, and
+/// — because the UI refreshes by answering `agent-db-changed` with a full
+/// `fetchAll()` re-read of the whole database (App.tsx) — it would drag the entire
+/// board through a reload just as often, getting worse with each agent added. The
+/// feature would make the board slower the more agents you ran, which is backwards.
+///
+/// Presence is ambient status, not a record. Losing it on restart costs one beat's
+/// latency; the `agent_claims` row that gives it meaning is the durable half.
+pub type Beats = Arc<Mutex<HashMap<String, Beat>>>;
+
+/// One session's last reported state.
+#[derive(Clone, Debug)]
+pub struct Beat {
+    /// "working" | "blocked" | "idle" — as *reported* by the agent's hook, never
+    /// inferred from silence. That inference is the bug: a five-minute build emits
+    /// no tool calls, and guessing from the gap made a busy agent look departed.
+    state: String,
+    /// Monotonic, for the TTL. Never for display: a wall clock that jumps (NTP,
+    /// sleep) must not be able to expire a live agent.
+    at: std::time::Instant,
+    /// Wall clock, for display only ("quiet 25m").
+    at_iso: String,
+    /// The session's OS process id (`$PPID` from the hook).
+    ///
+    /// Liveness has an exact answer when the agent runs on this machine, so we ask
+    /// the OS rather than time out. `None` → we fall back to `LIVE_TTL`, which is
+    /// the only reason that constant still exists.
+    pid: Option<u32>,
+}
+
+/// One row of `agent_claims`, joined with the agent's latest log line.
+#[derive(Clone, Debug)]
+pub struct ClaimRow {
+    session_id: String,
+    task_id: i64,
+    cwd: Option<String>,
+    branch: Option<String>,
+    agent_name: Option<String>,
+    claimed_at: String,
+    last_log: Option<String>,
+}
+
+/// What the card shows for one task.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct PresenceEntry {
+    task_id: i64,
+    agent_name: Option<String>,
+    /// Already resolved to what the UI renders: "working" | "blocked" | "quiet".
+    ///
+    /// Resolved here rather than in the UI because the deciding fact — does that
+    /// process still exist — is a question only the OS can answer. "idle" is a wire
+    /// value from the hook and never reaches the UI; it resolves to "quiet".
+    state: String,
+    /// ISO timestamp behind "quiet 25m": the last beat if there was one, else the
+    /// claim itself.
+    at: String,
+    branch: Option<String>,
+    cwd: Option<String>,
+    last_log: Option<String>,
+}
+
+/// Resolve claims + beats into one entry per task.
+///
+/// Pure, with process liveness injected, so the whole table below is testable
+/// without spawning or killing anything.
+///
+/// | condition                       | card    |
+/// |---------------------------------|---------|
+/// | no beat for the session         | quiet   |
+/// | beat has a pid, process is gone | quiet   | ← exact
+/// | beat older than LIVE_TTL        | quiet   | ← backstop only
+/// | beat says idle                  | quiet   |
+/// | otherwise                       | working / blocked, as reported |
+///
+/// Several sessions may claim one task (pairing is legitimate), so a task shows the
+/// liveliest state among them: working beats blocked beats quiet.
+pub fn resolve_presence(
+    claims: &[ClaimRow],
+    beats: &HashMap<String, Beat>,
+    now: std::time::Instant,
+    alive: &dyn Fn(u32) -> bool,
+) -> Vec<PresenceEntry> {
+    fn rank(state: &str) -> u8 {
+        match state {
+            "working" => 2,
+            "blocked" => 1,
+            _ => 0,
+        }
+    }
+
+    let mut by_task: HashMap<i64, PresenceEntry> = HashMap::new();
+    for claim in claims {
+        let beat = beats.get(&claim.session_id);
+        let state = match beat {
+            None => "quiet",
+            Some(b) => {
+                let dead = b.pid.map(|pid| !alive(pid)).unwrap_or(false);
+                let stale = now.saturating_duration_since(b.at) > LIVE_TTL;
+                if dead || stale || b.state == "idle" {
+                    "quiet"
+                } else {
+                    b.state.as_str()
+                }
+            }
+        };
+        let entry = PresenceEntry {
+            task_id: claim.task_id,
+            agent_name: claim.agent_name.clone(),
+            state: state.to_string(),
+            at: beat
+                .map(|b| b.at_iso.clone())
+                .unwrap_or_else(|| claim.claimed_at.clone()),
+            branch: claim.branch.clone(),
+            cwd: claim.cwd.clone(),
+            last_log: claim.last_log.clone(),
+        };
+        by_task
+            .entry(claim.task_id)
+            .and_modify(|existing| {
+                if rank(&entry.state) > rank(&existing.state) {
+                    *existing = entry.clone();
+                }
+            })
+            .or_insert(entry);
+    }
+    let mut out: Vec<PresenceEntry> = by_task.into_values().collect();
+    // Stable order so the UI never sees a task hop about between polls.
+    out.sort_by_key(|e| e.task_id);
+    out
+}
+
+/// Does that process still exist?
+///
+/// The exact answer to the question a timeout was only ever approximating. A
+/// `kill -9`'d session has no process, so its card goes quiet at once rather than
+/// claiming "working" until an arbitrary timer runs out.
+fn pid_alive(pid: u32) -> bool {
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    sys.process(pid).is_some()
+}
+
+/// Backstop for what the PID check cannot cover: PID reuse, or a beat with no pid.
+///
+/// Deliberately long, and deliberately not load-bearing. An earlier design made a
+/// freshness timeout *the* liveness mechanism and had to be tuned against the user's
+/// build times — a guess masquerading as a measurement. State is reported and death
+/// is PID-checked; this is only a safety net.
+const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// Called after every successful write so the app UI can refresh.
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -309,6 +482,56 @@ impl TildoneAgent {
             "INSERT INTO task_activity (task_id, label, created_at, actor_kind, actor_name)
              VALUES (?1, ?2, ?3, 'agent', ?4)",
             rusqlite::params![task_id, label, now_iso(), agent],
+        );
+    }
+
+    /// Bind an agent session to the task it is working on.
+    ///
+    /// There is no `claim_task` tool, and deliberately so: the board protocol already
+    /// has the agent announce its task by moving it to Doing. A separate call would
+    /// be a second declaration of the same fact at the same moment — and the second
+    /// one is the one agents forget. So the claim rides the `doing` write.
+    ///
+    /// `session_id` is the PRIMARY KEY, so one session claims at most one task and a
+    /// session moving on rebinds rather than duplicating. Several sessions may claim
+    /// the same task: pairing is legitimate, and presence resolves to the liveliest.
+    ///
+    /// Recorded on every `doing` write carrying a session, not only on a *transition*
+    /// to doing — an agent re-asserting the task it is on must refresh its claim, and
+    /// a re-claim after an app restart is exactly how a card recovers.
+    fn record_claim(
+        conn: &Connection,
+        session_id: &str,
+        task_id: i64,
+        cwd: Option<&str>,
+        branch: Option<&str>,
+        agent: Option<&str>,
+    ) {
+        // A claim is a nicety layered on the write; the status change is the user's
+        // actual intent. Never let a claim failure fail the move — hence no `?`.
+        let _ = conn.execute(
+            "INSERT INTO agent_claims (session_id, task_id, cwd, branch, agent_name, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+               task_id = excluded.task_id,
+               cwd = excluded.cwd,
+               branch = excluded.branch,
+               agent_name = excluded.agent_name,
+               claimed_at = excluded.claimed_at",
+            rusqlite::params![session_id, task_id, cwd, branch, agent, now_iso()],
+        );
+    }
+
+    /// Completing a task releases every claim on it.
+    ///
+    /// The one release signal worth trusting. Process-lifecycle events are not:
+    /// `SessionEnd` does not fire on a crash, a `kill -9`, or a closed terminal, and
+    /// background sessions outlive their terminal anyway. This is an explicit board
+    /// write, so it means what it says.
+    fn release_claims_for_task(conn: &Connection, task_id: i64) {
+        let _ = conn.execute(
+            "DELETE FROM agent_claims WHERE task_id = ?1",
+            rusqlite::params![task_id],
         );
     }
 
@@ -568,6 +791,7 @@ impl TildoneAgent {
         project: Option<String>,
         tags: Option<Vec<String>>,
         agent: Option<&str>,
+        claim: ClaimInfo,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
@@ -751,6 +975,26 @@ impl TildoneAgent {
         };
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
+        }
+        // The claim rides this write. Keyed on `status`, not `dest_status`: the latter
+        // is only set when the status *changes*, but an agent re-asserting the task it
+        // is already on must still refresh its claim — that re-claim is how a card
+        // recovers after Tildone restarts.
+        match status.as_deref() {
+            Some("doing") => {
+                if let Some(session) = claim.session() {
+                    Self::record_claim(
+                        &conn,
+                        session,
+                        id,
+                        claim.cwd.as_deref(),
+                        claim.branch.as_deref(),
+                        agent,
+                    );
+                }
+            }
+            Some("done") => Self::release_claims_for_task(&conn, id),
+            _ => {}
         }
         for label in &activity {
             Self::record_activity(&conn, id, label, agent);
@@ -1066,6 +1310,18 @@ struct CreateTaskParams {
     tags: Option<Vec<String>>,
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
+    #[schemars(
+        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+    )]
+    session_id: Option<String>,
+    #[schemars(
+        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    cwd: Option<String>,
+    #[schemars(
+        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    branch: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1084,6 +1340,40 @@ struct UpdateTaskParams {
     project: Option<String>,
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
+    #[schemars(
+        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+    )]
+    session_id: Option<String>,
+    #[schemars(
+        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    cwd: Option<String>,
+    #[schemars(
+        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    branch: Option<String>,
+}
+
+/// Who is working on a task, sent by a live agent alongside a `doing` write.
+///
+/// Grouped rather than passed as three more positional arguments: `apply_task_update`
+/// already takes nine, and three more anonymous `Option<String>`s in a row is a
+/// swap-two-and-nobody-notices bug waiting to happen.
+#[derive(Default)]
+struct ClaimInfo {
+    /// The agent's session id. Without it there is no claim: this is the identity.
+    session_id: Option<String>,
+    /// Label only — never identity. cwd is not unique per session (read-only
+    /// sessions share the main checkout), which is why it cannot be the key.
+    cwd: Option<String>,
+    branch: Option<String>,
+}
+
+impl ClaimInfo {
+    /// The claim to record, if this write carries one at all.
+    fn session(&self) -> Option<&str> {
+        self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1457,6 +1747,25 @@ impl TildoneAgent {
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
+        // A task created straight into Doing is an agent starting work in one call;
+        // the claim rides it exactly as it rides an update.
+        if status == "doing" {
+            let claim = ClaimInfo {
+                session_id: p.session_id,
+                cwd: p.cwd,
+                branch: p.branch,
+            };
+            if let Some(session) = claim.session() {
+                Self::record_claim(
+                    &conn,
+                    session,
+                    id,
+                    claim.cwd.as_deref(),
+                    claim.branch.as_deref(),
+                    agent,
+                );
+            }
+        }
         Self::record_activity(&conn, id, "Task created", agent);
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
@@ -1478,8 +1787,10 @@ impl TildoneAgent {
         p: UpdateTaskParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
+        let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
         self.apply_task_update(
             p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, agent,
+            claim,
         )
     }
 
@@ -1760,6 +2071,8 @@ impl TildoneAgent {
         TaskIdParams { id }: TaskIdParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Routes through the same status write, so completing a task releases its
+        // claims here too — no separate teardown to keep in sync.
         self.apply_task_update(
             id,
             None,
@@ -1770,6 +2083,7 @@ impl TildoneAgent {
             None,
             None,
             agent,
+            ClaimInfo::default(),
         )
     }
 
@@ -2098,6 +2412,126 @@ fn server_config(port: u16) -> StreamableHttpServerConfig {
     ])
 }
 
+#[derive(serde::Deserialize)]
+pub struct HeartbeatBody {
+    /// The agent's session id — the same value it sent when it claimed a task.
+    session_id: String,
+    /// "working" | "blocked" | "idle".
+    state: String,
+    /// The session's OS process ($PPID from the hook). Optional: without it we fall
+    /// back to LIVE_TTL, which is the only reason that constant still exists.
+    pid: Option<u32>,
+    /// Set when the beat came from a subagent's tool call.
+    agent_id: Option<String>,
+}
+
+/// Liveness, reported by a local agent's hook.
+///
+/// Deliberately **not** an MCP tool: a shell hook fires this on every tool call, and
+/// an MCP handshake per beat would be absurd. That makes it a plain axum route — and
+/// therefore something the `/mcp` service's protections do NOT cover, see below.
+///
+/// Three properties this must keep:
+///
+/// 1. **Never calls `notify()`.** Emitting `agent-db-changed` here would send the UI
+///    through a full `fetchAll()` of the whole database on every beat of every agent.
+///    Presence is polled instead, precisely so this can stay cheap.
+/// 2. **Never blocks.** It only takes a lock and inserts. A hook that waits on this
+///    starves Claude's agentic loop.
+/// 3. **Never writes to disk.** Beats are volatile by design; the durable half is
+///    the claim.
+async fn heartbeat_handler(
+    axum::extract::State(beats): axum::extract::State<Beats>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<HeartbeatBody>>,
+) -> axum::http::StatusCode {
+    // rmcp applies server_config's origin rejection to the /mcp service only; a
+    // sibling axum route inherits none of it. Same rule, same reasoning as up there:
+    // a web page always sends Origin and can never legitimately talk to this server,
+    // while a shell hook sends none. Without this, any page you visited could POST
+    // fake "working" states into the one feature whose whole point is not lying.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return axum::http::StatusCode::FORBIDDEN;
+    }
+    let Some(axum::Json(body)) = body else {
+        return axum::http::StatusCode::BAD_REQUEST;
+    };
+    if !matches!(body.state.as_str(), "working" | "blocked" | "idle") {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    // A subagent finishing is not the parent finishing. Its `working` beats are the
+    // parent's too (the parent genuinely is working), but its `idle` must never
+    // settle the parent's card.
+    if body.agent_id.is_some() && body.state == "idle" {
+        return axum::http::StatusCode::OK;
+    }
+    let session = body.session_id.trim();
+    if session.is_empty() {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    beats.lock().unwrap().insert(
+        session.to_string(),
+        Beat {
+            state: body.state,
+            at: std::time::Instant::now(),
+            at_iso: now_iso(),
+            pid: body.pid,
+        },
+    );
+    // 200 even when this session claimed nothing: most sessions are not working a
+    // board task, and their beats must be free and harmless. That is the common
+    // case, not an error — resolve_presence simply never joins them to a card.
+    axum::http::StatusCode::OK
+}
+
+/// Every claimed task, with the liveliest state among the sessions claiming it.
+///
+/// Polled by the UI (see App.tsx) rather than pushed: a beat per tool call per agent
+/// is far too chatty to hang the board's reload on.
+#[tauri::command]
+pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
+    let db = { live.db.lock().unwrap().clone() };
+    let Some(db) = db else { return Vec::new() };
+    let claims = {
+        let conn = db.lock().unwrap();
+        match read_claims(&conn) {
+            Ok(claims) => claims,
+            Err(e) => {
+                eprintln!("tildone: presence query failed: {e}");
+                return Vec::new();
+            }
+        }
+    };
+    let beats = live.beats.lock().unwrap().clone();
+    resolve_presence(&claims, &beats, std::time::Instant::now(), &pid_alive)
+}
+
+/// Every claim, joined with the agent's latest word on that task.
+///
+/// The log line is joined here rather than fetched per card: the board renders many
+/// cards, and `fetchAll` deliberately carries no activity bodies.
+fn read_claims(conn: &Connection) -> rusqlite::Result<Vec<ClaimRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.session_id, c.task_id, c.cwd, c.branch, c.agent_name, c.claimed_at,
+                (SELECT a.label FROM task_activity a
+                  WHERE a.task_id = c.task_id AND a.actor_kind = 'agent'
+                  ORDER BY a.id DESC LIMIT 1)
+           FROM agent_claims c",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(ClaimRow {
+            session_id: r.get(0)?,
+            task_id: r.get(1)?,
+            cwd: r.get(2)?,
+            branch: r.get(3)?,
+            agent_name: r.get(4)?,
+            claimed_at: r.get(5)?,
+            last_log: r.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// The port to *request* at bind time.
 ///
 /// `AGENT_PORT` is the contract: an agent's MCP config points at a fixed URL, so
@@ -2188,6 +2622,7 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
 pub async fn agent_server_start(
     app: AppHandle,
     state: State<'_, AgentServer>,
+    live: State<'_, AgentLive>,
 ) -> Result<String, String> {
     // React StrictMode (dev) fires the startup effect twice, so two of these
     // commands can run concurrently. Both used to pass the state check below
@@ -2220,6 +2655,10 @@ pub async fn agent_server_start(
     let endpoint = format!("http://127.0.0.1:{port}/mcp");
 
     let db: Db = Arc::new(Mutex::new(open_db(&app)?));
+    // Presence reads claims through this same connection. Cloned before `db` is moved
+    // into the MCP service closure below — the Arc is the point, so both share one
+    // connection and one mutex rather than opening a second handle to the file.
+    *live.db.lock().unwrap() = Some(db.clone());
     let ct = CancellationToken::new();
     let config = server_config(port).with_cancellation_token(ct.child_token());
     let emitter = app.clone();
@@ -2257,7 +2696,13 @@ pub async fn agent_server_start(
             Default::default(),
             config,
         );
-    let router = axum::Router::new().nest_service("/mcp", service);
+    // /heartbeat sits beside /mcp rather than inside it: a shell hook fires it on
+    // every tool call, where an MCP handshake per beat would be absurd. It carries
+    // its own origin guard, because rmcp's covers the nested service only.
+    let router = axum::Router::new().nest_service("/mcp", service).route(
+        "/heartbeat",
+        axum::routing::post(heartbeat_handler).with_state(live.beats.clone()),
+    );
 
     let serve_ct = ct.clone();
     tauri::async_runtime::spawn(async move {
@@ -2491,6 +2936,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/010_project_folder.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/011_task_ref.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/012_comments.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/013_agent_claims.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -2548,12 +2994,476 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
         );
         assert!(!is_err, "create_task failed: {task}");
         task["id"].as_i64().unwrap()
+    }
+
+    /// Move a task to a status as a live agent session would: the claim rides this
+    /// write, so this helper is how the claim tests start work.
+    fn work_on(
+        agent: &TildoneAgent,
+        id: i64,
+        status: &str,
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+        branch: Option<&str>,
+    ) -> (bool, Value) {
+        extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: Some(status.into()),
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: None,
+                        session_id: session_id.map(Into::into),
+                        cwd: cwd.map(Into::into),
+                        branch: branch.map(Into::into),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        )
+    }
+
+    fn claim_count(db: &Db) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM agent_claims", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Presence resolution. Pure, with liveness injected, so the whole table is
+    // testable without spawning or killing a process.
+
+    fn a_claim(session: &str, task_id: i64) -> ClaimRow {
+        ClaimRow {
+            session_id: session.into(),
+            task_id,
+            cwd: None,
+            branch: Some("wt-1".into()),
+            agent_name: Some("claude".into()),
+            claimed_at: "2026-07-17T10:00:00.000Z".into(),
+            last_log: None,
+        }
+    }
+
+    fn a_beat(state: &str, age: std::time::Duration, pid: Option<u32>) -> Beat {
+        Beat {
+            state: state.into(),
+            at: std::time::Instant::now() - age,
+            at_iso: "2026-07-17T10:05:00.000Z".into(),
+            pid,
+        }
+    }
+
+    const ALIVE: &dyn Fn(u32) -> bool = &|_| true;
+    const DEAD: &dyn Fn(u32) -> bool = &|_| false;
+
+    fn resolve_one(claims: &[ClaimRow], beats: &[(&str, Beat)], alive: &dyn Fn(u32) -> bool) -> Vec<PresenceEntry> {
+        let map: HashMap<String, Beat> =
+            beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
+        resolve_presence(claims, &map, std::time::Instant::now(), alive)
+    }
+
+    #[test]
+    fn pid_alive_answers_truthfully_about_real_processes() {
+        // The whole liveness design rests on this one call, and `cargo check` only
+        // proves it compiles — not that the sysinfo refresh flags are the ones that
+        // actually populate the process list. A wrong-but-compiling version here
+        // would make every card read quiet forever (or never), and every other test
+        // injects liveness and so would never notice.
+        assert!(pid_alive(std::process::id()), "this very process must read as alive");
+
+        // A pid that cannot exist. Above the default pid_max on macOS/Linux.
+        assert!(!pid_alive(4_294_967_294), "a nonexistent pid must read as dead");
+    }
+
+    #[test]
+    fn pid_alive_sees_a_process_die() {
+        // The kill -9 case, end to end, against the real OS.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        assert!(pid_alive(pid), "a just-spawned process must read as alive");
+        child.kill().expect("kill");
+        child.wait().expect("reap");
+        assert!(!pid_alive(pid), "a killed and reaped process must read as dead");
+    }
+
+    #[test]
+    fn a_working_beat_from_a_live_process_is_working() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, "working");
+        assert_eq!(out[0].task_id, 7);
+        assert_eq!(out[0].branch.as_deref(), Some("wt-1"));
+    }
+
+    #[test]
+    fn a_working_beat_from_a_dead_process_is_quiet_at_once() {
+        // The kill -9 case. This is why liveness is PID-checked rather than timed
+        // out: the card must not claim "working" until an arbitrary timer expires.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            DEAD,
+        );
+        assert_eq!(out[0].state, "quiet");
+    }
+
+    #[test]
+    fn a_long_silent_stretch_is_still_working_while_the_process_lives() {
+        // THE regression this design exists for. A five-minute `bun run build` inside
+        // one Bash call emits no tool calls, so no beat arrives — but nothing said
+        // idle and the process is alive, so the agent is obviously still working.
+        // The freshness-based draft would have flickered this card to quiet.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(5 * 60), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "working", "a long tool call must not read as quiet");
+    }
+
+    #[test]
+    fn a_beat_past_the_ttl_is_quiet_even_if_the_pid_looks_alive() {
+        // The backstop, for PID reuse: a recycled pid can look alive forever.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", LIVE_TTL + std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "quiet");
+    }
+
+    #[test]
+    fn a_beat_without_a_pid_falls_back_to_the_ttl() {
+        let fresh = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", std::time::Duration::from_secs(1), None))],
+            DEAD, // never consulted: there is no pid to check
+        );
+        assert_eq!(fresh[0].state, "working");
+        let stale = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("working", LIVE_TTL + std::time::Duration::from_secs(1), None))],
+            ALIVE,
+        );
+        assert_eq!(stale[0].state, "quiet");
+    }
+
+    #[test]
+    fn an_idle_beat_renders_as_quiet_and_idle_never_reaches_the_ui() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "quiet", "idle is a wire value, not a card state");
+    }
+
+    #[test]
+    fn a_blocked_beat_is_blocked() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("blocked", std::time::Duration::from_secs(1), Some(123)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "blocked");
+    }
+
+    #[test]
+    fn a_claim_with_no_beat_at_all_is_quiet() {
+        let out = resolve_one(&[a_claim("s1", 7)], &[], ALIVE);
+        assert_eq!(out[0].state, "quiet");
+        assert_eq!(out[0].at, "2026-07-17T10:00:00.000Z", "falls back to the claim time");
+    }
+
+    #[test]
+    fn a_task_claimed_by_two_sessions_shows_the_liveliest() {
+        // Pairing is legitimate. One agent working and one quiet means the task is
+        // being worked on.
+        let out = resolve_one(
+            &[a_claim("s1", 7), a_claim("s2", 7)],
+            &[
+                ("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1, "one entry per task, not per session");
+        assert_eq!(out[0].state, "working");
+    }
+
+    #[test]
+    fn working_outranks_blocked_which_outranks_quiet() {
+        let out = resolve_one(
+            &[a_claim("s1", 7), a_claim("s2", 7)],
+            &[
+                ("s1", a_beat("blocked", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "working");
+    }
+
+    #[test]
+    fn an_unclaimed_sessions_beat_joins_no_card() {
+        // The shared-cwd bug, at the resolution layer: sess-2 beats hard but claimed
+        // nothing, so it lights up nothing. Keyed on cwd it would have lit up s1's.
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[
+                ("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(1))),
+                ("s2", a_beat("working", std::time::Duration::from_secs(1), Some(2))),
+            ],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].task_id, 7);
+        assert_eq!(out[0].state, "quiet", "s2's beats must not touch s1's card");
+    }
+
+    #[test]
+    fn presence_is_ordered_by_task_so_the_board_never_hops() {
+        let out = resolve_one(&[a_claim("s1", 9), a_claim("s2", 3)], &[], ALIVE);
+        assert_eq!(out.iter().map(|e| e.task_id).collect::<Vec<_>>(), vec![3, 9]);
+    }
+
+    #[test]
+    fn the_latest_agent_log_line_rides_the_presence_read() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Rebase it");
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("wt-1"));
+        {
+            let conn = db.lock().unwrap();
+            TildoneAgent::record_activity(&conn, id, "rebasing onto main, 2 conflicts", Some("claude"));
+        }
+        let conn = db.lock().unwrap();
+        let claims = read_claims(&conn).unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].last_log.as_deref(), Some("rebasing onto main, 2 conflicts"));
+    }
+
+    #[test]
+    fn a_doing_write_with_a_session_id_claims_the_task() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        let (is_err, _) = work_on(&agent, id, "doing", Some("sess-1"), Some("/w/foo"), Some("worktree-foo"));
+        assert!(!is_err);
+        let conn = db.lock().unwrap();
+        let (task_id, branch, agent_name): (i64, String, String) = conn
+            .query_row(
+                "SELECT task_id, branch, agent_name FROM agent_claims WHERE session_id = 'sess-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(task_id, id);
+        assert_eq!(branch, "worktree-foo");
+        assert_eq!(agent_name, "claude");
+    }
+
+    #[test]
+    fn a_doing_write_without_a_session_id_claims_nothing() {
+        // A human dragging a card to Doing in the app is not a live session. So is an
+        // agent that simply did not send one: no session, no claim, no presence.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Moved by hand");
+        work_on(&agent, id, "doing", None, None, None);
+        assert_eq!(claim_count(&db), 0);
+    }
+
+    #[test]
+    fn an_empty_session_id_is_not_a_claim() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Blank session");
+        work_on(&agent, id, "doing", Some("   "), None, None);
+        assert_eq!(claim_count(&db), 0, "a blank session id must not claim");
+    }
+
+    #[test]
+    fn a_session_claiming_a_second_task_rebinds_rather_than_duplicating() {
+        let (agent, db) = test_agent_with_db();
+        let first = a_task(&agent, "First");
+        let second = a_task(&agent, "Second");
+        work_on(&agent, first, "doing", Some("sess-1"), None, None);
+        work_on(&agent, second, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_count(&db), 1, "a session claims at most one task");
+        let task_id: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_id, second, "the newer claim wins");
+    }
+
+    #[test]
+    fn re_asserting_the_same_task_refreshes_the_claim_rather_than_failing() {
+        // dest_status is only set when the status CHANGES, so a second `doing` write
+        // is a no-op for the task row. The claim must still refresh: that re-claim is
+        // how a card recovers after the app restarts.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Long job");
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("old-branch"));
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("new-branch"));
+        assert_eq!(claim_count(&db), 1);
+        let branch: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT branch FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(branch, "new-branch");
+    }
+
+    #[test]
+    fn two_sessions_may_claim_the_same_task() {
+        // Pairing is legitimate; presence resolves to the liveliest of them.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Paired work");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        assert_eq!(claim_count(&db), 2);
+    }
+
+    #[test]
+    fn completing_a_task_releases_its_claims() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        work_on(&agent, id, "done", None, None, None);
+        assert_eq!(claim_count(&db), 0, "done releases every claim on the task");
+    }
+
+    #[test]
+    fn complete_task_also_releases_claims() {
+        // complete_task routes through apply_task_update, so the release must come
+        // for free rather than needing its own teardown.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, Some("claude")).unwrap();
+        assert_eq!(claim_count(&db), 0);
+    }
+
+    #[test]
+    fn a_session_in_a_shared_cwd_that_claimed_nothing_owns_no_task() {
+        // The bug the cwd-keyed draft would have shipped. Two sessions in the SAME
+        // directory — the shared checkout, because read-only sessions are told not to
+        // isolate — only one of which claimed. Keyed on cwd, the unclaimed session's
+        // heartbeat would light up the other's card: a false "working", which is the
+        // exact lie this feature exists to remove.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Claimed by sess-1");
+        let shared = "/Users/x/projects/tildone";
+        work_on(&agent, id, "doing", Some("sess-1"), Some(shared), None);
+
+        let conn = db.lock().unwrap();
+        // sess-2 lives in the very same cwd and claimed nothing.
+        let owned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_claims WHERE session_id = 'sess-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owned, 0, "sess-2 claimed nothing, so it owns no card");
+        // And the cwd alone resolves to more than one session, which is precisely why
+        // it cannot be the key.
+        let by_cwd: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_claims WHERE cwd = ?1", [shared], |r| r.get(0))
+            .unwrap();
+        assert_eq!(by_cwd, 1, "only the session that actually claimed is bound");
+    }
+
+    #[test]
+    fn a_task_created_straight_into_doing_claims_it() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, task) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Start immediately".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        session_id: Some("sess-9".into()),
+                        cwd: None,
+                        branch: Some("wt-9".into()),
+                        status: Some("doing".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {task}");
+        let id = task["id"].as_i64().unwrap();
+        let task_id: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-9'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_id, id);
+    }
+
+    #[test]
+    fn a_task_created_as_todo_claims_nothing_even_with_a_session() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, _) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Queued, not started".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        session_id: Some("sess-9".into()),
+                        cwd: None,
+                        branch: None,
+                        status: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err);
+        assert_eq!(claim_count(&db), 0, "filing a task is not working on it");
+    }
+
+    #[test]
+    fn deleting_a_task_cascades_its_claims_away() {
+        // ON DELETE CASCADE, with foreign_keys ON — a claim must not outlive its task.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Doomed");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_count(&db), 1);
+        db.lock().unwrap().execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
+        assert_eq!(claim_count(&db), 0);
     }
 
     fn attach(
@@ -2854,6 +3764,9 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: tags.map(|t| t.into_iter().map(Into::into).collect()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                     },
                     None,
                 )
@@ -3062,6 +3975,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3094,6 +4010,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3197,6 +4116,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3225,6 +4147,9 @@ mod tests {
                     due_date: Some("2026-07-10".into()),
                     priority: Some(3),
                     tags: Some(vec!["release".into()]),
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3252,6 +4177,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3307,6 +4235,9 @@ mod tests {
                     due_date: Some("".into()),
                     project: Some("inbox".into()),
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3366,6 +4297,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3407,6 +4341,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3454,6 +4391,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3507,6 +4447,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3597,6 +4540,9 @@ mod tests {
                     due_date: Some(due.into()),
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3636,6 +4582,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: (title == "c").then(|| vec!["find-me".to_string()]),
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3676,6 +4625,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: status.map(Into::into),
                 }, None)
                 .unwrap();
@@ -3703,6 +4655,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3759,6 +4714,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3779,6 +4737,9 @@ mod tests {
                     due_date: None,
                     project: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3884,6 +4845,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3901,6 +4865,9 @@ mod tests {
                     due_date: None,
                     project: Some("work".into()),
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3935,6 +4902,9 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                session_id: None,
+                cwd: None,
+                branch: None,
             }, None)
             .unwrap();
         let conn = agent.db.lock().unwrap();
@@ -3986,6 +4956,87 @@ mod tests {
         assert_eq!(group_order(&conn, None, "done"), vec![4, 2, 3, 1]);
         // Todo: prior order (position, id) preserved, now distinct.
         assert_eq!(group_order(&conn, None, "todo"), vec![5, 6]);
+    }
+
+    /// Drives the real /heartbeat route over HTTP, the way the hook does.
+    ///
+    /// This route is deliberately outside the MCP service, so it inherits none of
+    /// rmcp's protections — the origin guard below is the whole reason this test
+    /// exists rather than a unit test of the handler.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn heartbeat_over_http() {
+        let beats: Beats = Arc::new(Mutex::new(HashMap::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = axum::Router::new().route(
+            "/heartbeat",
+            axum::routing::post(heartbeat_handler).with_state(beats.clone()),
+        );
+        let url = format!("http://{addr}/heartbeat");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let client = reqwest::Client::new();
+        let beat = |body: &'static str, origin: Option<&'static str>| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let mut req = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body);
+                if let Some(o) = origin {
+                    req = req.header("Origin", o);
+                }
+                req.send().await.unwrap().status().as_u16()
+            }
+        };
+
+        // A shell hook sends no Origin and is accepted.
+        assert_eq!(
+            beat(r#"{"session_id":"s1","state":"working","pid":1}"#, None).await,
+            200
+        );
+        assert_eq!(beats.lock().unwrap().get("s1").unwrap().state, "working");
+
+        // A web page always sends Origin, and can never legitimately reach this
+        // server. Without this guard any page you visited could post fake "working"
+        // states into the one feature whose whole point is not lying.
+        assert_eq!(
+            beat(r#"{"session_id":"evil","state":"working"}"#, Some("https://evil.example")).await,
+            403
+        );
+        assert!(
+            !beats.lock().unwrap().contains_key("evil"),
+            "a browser-originated beat must not be recorded"
+        );
+
+        // Even a same-origin-looking page is a page.
+        assert_eq!(
+            beat(r#"{"session_id":"evil2","state":"working"}"#, Some("http://127.0.0.1:1420")).await,
+            403
+        );
+
+        // Garbage in.
+        assert_eq!(beat(r#"{"session_id":"s1","state":"dancing"}"#, None).await, 400);
+        assert_eq!(beat(r#"{"session_id":"  ","state":"working"}"#, None).await, 400);
+        assert_eq!(beat(r#"not json"#, None).await, 400);
+
+        // A subagent's idle must not settle the parent's card.
+        assert_eq!(
+            beat(r#"{"session_id":"s1","state":"idle","agent_id":"sub-1"}"#, None).await,
+            200
+        );
+        assert_eq!(
+            beats.lock().unwrap().get("s1").unwrap().state,
+            "working",
+            "a subagent finishing is not the parent finishing"
+        );
+
+        // The parent's own idle does settle it.
+        assert_eq!(beat(r#"{"session_id":"s1","state":"idle"}"#, None).await, 200);
+        assert_eq!(beats.lock().unwrap().get("s1").unwrap().state, "idle");
     }
 
     /// Drives the real streamable-HTTP endpoint the way an MCP client does:
@@ -4350,6 +5401,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -4369,6 +5423,9 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                session_id: None,
+                cwd: None,
+                branch: None,
             }, None)
             .unwrap();
 
@@ -4579,6 +5636,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -4623,6 +5683,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     Some("claude-code"),
@@ -4662,6 +5725,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     None,
@@ -4690,6 +5756,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     Some("codex"),
@@ -4790,6 +5859,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     None,
@@ -4884,6 +5956,9 @@ mod tests {
                         due_date: None,
                         project: Some("Zeno Logistics".into()),
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                     },
                     None,
                 )
