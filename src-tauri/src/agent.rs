@@ -246,13 +246,14 @@ const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Called after every successful write so the app UI can refresh.
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
-/// Raise a native OS notification (title, body). A sibling of `Notify`, built the
-/// same way in `agent_server_start`, but this one reaches the *user*, not the UI.
-/// It lives on agent.rs and nowhere else on purpose: this write path is the one
-/// place that knows — by construction, not inspection — that a change came from an
-/// agent, so it is the only place that can alert without pinging the user for their
-/// own edits.
-type NotifyUser = Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// Raise a native OS notification (title, body, task ref). A sibling of `Notify`,
+/// built the same way in `agent_server_start`, but this one reaches the *user*, not
+/// the UI. It lives on agent.rs and nowhere else on purpose: this write path is the
+/// one place that knows — by construction, not inspection — that a change came from
+/// an agent, so it is the only place that can alert without pinging the user for
+/// their own edits. The ref (e.g. "TIL-42", None on legacy rows the backfill missed)
+/// is what a click on the notification opens — see `send_user_notification`.
+type NotifyUser = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
 #[derive(Clone)]
 struct TildoneAgent {
@@ -858,11 +859,11 @@ impl TildoneAgent {
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
         };
-        let current: Option<(String, Option<i64>, Option<String>, String)> = conn
+        let current: Option<(String, Option<i64>, Option<String>, String, Option<String>)> = conn
             .query_row(
-                "SELECT status, project_id, deleted_at, title FROM tasks WHERE id = ?1",
+                "SELECT status, project_id, deleted_at, title, ref FROM tasks WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -870,7 +871,7 @@ impl TildoneAgent {
                 other => Err(other),
             })
             .map_err(db_err)?;
-        let Some((old_status, old_project_id, deleted_at, db_title)) = current else {
+        let Some((old_status, old_project_id, deleted_at, db_title, db_ref)) = current else {
             return Ok(err(format!("No task with id {id}.")));
         };
         // The title a notification should name: the new one if this call changes it,
@@ -1093,9 +1094,15 @@ impl TildoneAgent {
         // only through the MCP server (the UI writes SQLite directly), so a write
         // here always came from an agent — the user's own drag to Done never lands
         // here and never notifies. Only transitions, computed above.
-        // Blocked / needs-review carry the newest comment ("{task} — {question}") so the
-        // banner holds the ask itself; without one they fall back to the bare task title.
-        // Done stays a plain title — completing raises no question to read.
+        // Every body leads with the task ref ("TIL-42 · {task}") — the name the user
+        // and their agents call the card everywhere else, so the banner is quotable
+        // even unclicked. Blocked / needs-review append the newest comment
+        // ("… — {question}") so the banner holds the ask itself; without one they
+        // fall back to the titled ref. Done raises no question to read.
+        let titled = match db_ref.as_deref() {
+            Some(r) => format!("{r} · {notify_title}"),
+            None => notify_title.clone(),
+        };
         let flagged_body = || match latest_comment.as_deref().map(str::trim) {
             Some(c) if !c.is_empty() => {
                 // Cap the comment so a long reply can't turn the banner into a wall of
@@ -1105,13 +1112,13 @@ impl TildoneAgent {
                 } else {
                     c.to_string()
                 };
-                format!("{notify_title} — {snippet}")
+                format!("{titled} — {snippet}")
             }
-            _ => notify_title.clone(),
+            _ => titled.clone(),
         };
         let mut notifications: Vec<(&str, String)> = Vec::new();
         if dest_status.as_deref() == Some("done") {
-            notifications.push(("Task done", notify_title.clone()));
+            notifications.push(("Task done", titled.clone()));
         }
         if newly_blocked {
             notifications.push(("Blocked", flagged_body()));
@@ -1120,7 +1127,7 @@ impl TildoneAgent {
             notifications.push(("Needs review", flagged_body()));
         }
         for (title, body) in notifications {
-            (self.notify_user)(title, &body);
+            (self.notify_user)(title, &body, db_ref.as_deref());
         }
         ok_json(&ack)
     }
@@ -2786,15 +2793,11 @@ pub async fn agent_server_start(
     // reaches the user, not the UI. Gated by NOTIFY_USER_ENABLED so the Settings
     // toggle can mute it without restarting the server.
     let notifier = app.clone();
-    let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str| {
+    let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str, task_ref: Option<&str>| {
         if !NOTIFY_USER_ENABLED.load(Ordering::Relaxed) {
             return;
         }
-        use tauri_plugin_notification::NotificationExt;
-        // A denied OS permission (or any show() failure) is a silent no-op, never an
-        // error surfaced into an agent's tool result — the notification is a courtesy,
-        // not part of the write's contract.
-        let _ = notifier.notification().builder().title(title).body(body).show();
+        send_user_notification(&notifier, title, body, task_ref);
     });
     // The same token the server shuts down on, so a parked list_changes is
     // released by agent_server_stop / app exit instead of holding them up.
@@ -2908,6 +2911,74 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// The task ref inside a `tildone://task/<REF>` deep link, if the URL is one.
+/// Deliberately tolerant on the way in (trailing slash is fine, `task` host is
+/// case-insensitive) and strict on the way out (exactly one non-empty path
+/// segment). Anything else is None — a deep link must never error at the user,
+/// so the caller just shows the window for URLs this doesn't recognise.
+pub fn deep_link_task_ref(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("tildone://")?;
+    let mut parts = rest.trim_end_matches('/').splitn(2, '/');
+    if !parts.next()?.eq_ignore_ascii_case("task") {
+        return None;
+    }
+    let task_ref = parts.next()?.trim();
+    if task_ref.is_empty() || task_ref.contains('/') {
+        return None;
+    }
+    Some(task_ref.to_string())
+}
+
+/// Raise one agent notification. macOS bypasses the notification plugin and drives
+/// mac-notification-sys — the same crate the plugin uses underneath, so identity and
+/// the ObjC delegate are shared, not fought over — because the plugin's click API is
+/// mobile-only, and a click on an agent banner should open the task it names, not
+/// bounce off a tray-hidden window. Failures (denied permission, anything) stay
+/// silent no-ops: the notification is a courtesy, never part of the write's contract.
+#[cfg(target_os = "macos")]
+fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Option<&str>) {
+    // Identity first, with the plugin's exact dev/prod logic: no bundle of our own
+    // in dev, so borrow Terminal's. set_application is call-once per process; a
+    // second call (ours or the plugin's first-hide hint) erroring is fine.
+    let bundle_id = if tauri::is_dev() {
+        "com.apple.Terminal".to_string()
+    } else {
+        app.config().identifier.clone()
+    };
+    let app = app.clone();
+    let title = title.to_string();
+    let body = body.to_string();
+    let task_ref = task_ref.map(str::to_string);
+    // One detached thread per notification: with wait_for_click, send() parks on a
+    // condvar until the banner is clicked or dismissed (auto-dismiss resolves it —
+    // verified in mac-notification-sys 0.6 bridge.rs), and the MCP write path must
+    // never wait on a human. A handful of parked waiters is condvars, not spins.
+    std::thread::spawn(move || {
+        let _ = mac_notification_sys::set_application(&bundle_id);
+        let response = mac_notification_sys::Notification::new()
+            .title(&title)
+            .message(&body)
+            .wait_for_click(true)
+            .send();
+        if let Ok(mac_notification_sys::NotificationResponse::Click) = response {
+            // The same landing action as a tildone://task/<REF> deep link: show the
+            // window (fixes the tray-mode dead click), then open the named card.
+            show_main_window(&app);
+            if let Some(r) = task_ref {
+                let _ = app.emit("open-task-ref", r);
+            }
+        }
+    });
+}
+
+/// Non-macOS: the plugin path, unchanged. No desktop click reporting exists here;
+/// the ref already rides in the body so the banner stays quotable.
+#[cfg(not(target_os = "macos"))]
+fn send_user_notification(app: &AppHandle, title: &str, body: &str, _task_ref: Option<&str>) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Fire the "still running in the menu bar" hint exactly once, ever. Guarded by a
@@ -3061,7 +3132,7 @@ mod tests {
 
     /// A no-op notify_user for tests that don't assert on notifications.
     fn no_notify() -> NotifyUser {
-        Arc::new(|_: &str, _: &str| {})
+        Arc::new(|_: &str, _: &str, _: Option<&str>| {})
     }
 
     fn test_agent() -> TildoneAgent {
@@ -3081,15 +3152,18 @@ mod tests {
         )
     }
 
-    type NotifySink = Arc<Mutex<Vec<(String, String)>>>;
+    type NotifySink = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
 
-    /// An agent whose notify_user records every (title, body) it fires, so a test can
-    /// assert exactly which notifications a write raised — and which it didn't.
+    /// An agent whose notify_user records every (title, body, ref) it fires, so a test
+    /// can assert exactly which notifications a write raised — and which it didn't.
     fn test_agent_with_notifications() -> (TildoneAgent, NotifySink) {
         let sink: NotifySink = Arc::new(Mutex::new(Vec::new()));
         let recorder = sink.clone();
-        let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str| {
-            recorder.lock().unwrap().push((title.to_string(), body.to_string()));
+        let notify_user: NotifyUser = Arc::new(move |title: &str, body: &str, r: Option<&str>| {
+            recorder
+                .lock()
+                .unwrap()
+                .push((title.to_string(), body.to_string(), r.map(str::to_string)));
         });
         let agent = TildoneAgent::new(
             Arc::new(Mutex::new(migrated_conn())),
@@ -3965,7 +4039,12 @@ mod tests {
         extract(&agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap());
         assert_eq!(
             *fired.lock().unwrap(),
-            vec![("Task done".to_string(), "Ship item 8".to_string())],
+            vec![(
+                "Task done".to_string(),
+                "INBOX-1 · Ship item 8".to_string(),
+                Some("INBOX-1".to_string()),
+            )],
+            "the body leads with the ref and the ref rides along for click-through",
         );
     }
 
@@ -3976,7 +4055,11 @@ mod tests {
         update(&agent, id, Some(vec!["blocked"]), None);
         assert_eq!(
             *fired.lock().unwrap(),
-            vec![("Blocked".to_string(), "Needs a decision".to_string())],
+            vec![(
+                "Blocked".to_string(),
+                "INBOX-1 · Needs a decision".to_string(),
+                Some("INBOX-1".to_string()),
+            )],
         );
         // Re-applying a tag set that still contains blocked is not a transition — the
         // task was already blocked. No second ping (the WHEN-guard lesson).
@@ -3995,7 +4078,11 @@ mod tests {
         update(&agent, id, Some(vec!["needs-review"]), None);
         assert_eq!(
             *fired.lock().unwrap(),
-            vec![("Needs review".to_string(), "Review me".to_string())],
+            vec![(
+                "Needs review".to_string(),
+                "INBOX-1 · Review me".to_string(),
+                Some("INBOX-1".to_string()),
+            )],
         );
     }
 
@@ -4148,7 +4235,8 @@ mod tests {
             *fired.lock().unwrap(),
             vec![(
                 "Blocked".to_string(),
-                "Ship the API — Which port should the dev build use?".to_string(),
+                "INBOX-1 · Ship the API — Which port should the dev build use?".to_string(),
+                Some("INBOX-1".to_string()),
             )],
             "a blocked task with a comment surfaces that comment in the notification body",
         );
@@ -4163,9 +4251,29 @@ mod tests {
         update(&agent, id, Some(vec!["needs-review"]), None);
         assert_eq!(
             *fired.lock().unwrap(),
-            vec![("Needs review".to_string(), "Review me".to_string())],
-            "no comment → the body is exactly the task title, no trailing separator",
+            vec![(
+                "Needs review".to_string(),
+                "INBOX-1 · Review me".to_string(),
+                Some("INBOX-1".to_string()),
+            )],
+            "no comment → the body is the titled ref alone, no trailing separator",
         );
+    }
+
+    /// The deep-link parser in one table: exactly `tildone://task/<REF>` (trailing
+    /// slash tolerated, host case-insensitive) yields a ref; everything else — other
+    /// hosts, extra segments, empty refs, other schemes — is None, because the
+    /// handler's contract is "never error at the user, just show the window".
+    #[test]
+    fn deep_link_parsing_accepts_task_refs_and_nothing_else() {
+        assert_eq!(deep_link_task_ref("tildone://task/TIL-3"), Some("TIL-3".into()));
+        assert_eq!(deep_link_task_ref("tildone://task/TIL-3/"), Some("TIL-3".into()));
+        assert_eq!(deep_link_task_ref("tildone://TASK/INBOX-12"), Some("INBOX-12".into()));
+        assert_eq!(deep_link_task_ref("tildone://task/"), None);
+        assert_eq!(deep_link_task_ref("tildone://task"), None);
+        assert_eq!(deep_link_task_ref("tildone://project/TIL"), None);
+        assert_eq!(deep_link_task_ref("tildone://task/TIL-3/extra"), None);
+        assert_eq!(deep_link_task_ref("https://task/TIL-3"), None);
     }
 
     /// AGENT_PORT is a contract: an agent's MCP config points at a fixed URL, so

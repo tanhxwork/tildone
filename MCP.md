@@ -192,6 +192,10 @@ only *your* writes do — the user's own drag to Done never pings them. A `block
 `needs-review` notification carries the task's **newest comment** in its body, so the
 natural flow — `add_comment` your question, then tag the task `blocked` — puts that
 question straight on the user's banner. No comment yet? The body is just the title.
+Every body leads with the task ref (`TIL-42 · …`), and on macOS clicking the
+notification opens that task in Tildone. The same door is open to you in prose:
+`tildone://task/TIL-42` is a deep link that opens the app at that card (installed
+app; the scheme comes from the bundle).
 
 **Flagging `needs-review` has a protocol.** A review card must carry what to review
 and where, so when you tag a task `needs-review`, in the same breath:
