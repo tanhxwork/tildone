@@ -76,6 +76,20 @@ export interface Subtask {
   position: number;
 }
 
+/** Subtasks titled "verify: …" are the task's review checklist: proposed by the
+ * agent that flags needs-review, ticked only by the user (the MCP server refuses
+ * agent ticks). The prefix IS the storage — no separate table, no new tools.
+ * Keep this pattern in step with `is_verify_title` in src-tauri/src/agent.rs. */
+export const VERIFY_PREFIX = /^verify:\s+/i;
+
+export function isVerifyStep(s: Subtask): boolean {
+  return VERIFY_PREFIX.test(s.title.trim());
+}
+
+export function verifyStepLabel(s: Subtask): string {
+  return s.title.trim().replace(VERIFY_PREFIX, "");
+}
+
 export interface ActivityEntry {
   id: number;
   task_id: number;

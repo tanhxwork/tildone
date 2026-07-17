@@ -169,8 +169,8 @@ cursor. Loop on it.
 | `log_progress` | `task_id`, `text` | One narrative line — what you just did, found or decided. Lands in the task's **Activity** feed, timestamped. **Prefer this for progress logs**, not a `## Log` section in `notes`. |
 | `complete_task` | `id` | Shorthand for `status: "done"`; sets the completion timestamp. |
 | `delete_task` | `id` | Soft delete to the app's trash (restorable by the user). |
-| `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. |
-| `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. |
+| `add_subtask` | `task_id`, `title` | Appends to the end of the task's checklist. Title one `verify: <step>` to make it a **review step** (see below). |
+| `set_subtask` | `id` (the **subtask** id), optional `done`, `title` | Tick/untick or rename. Only provided fields change. Ticking a `verify: …` step is **refused** — those are the user's to check. |
 | `delete_subtask` | `id` (the **subtask** id) | **Hard** delete — subtasks have no trash. |
 | `add_link` | `task_id`, `url` (http/https); optional `label`, `kind` (`pr`/`branch`/`commit`/`worktree`/`other`) | Attaches a repo link, clickable on the card. `label` defaults to the URL's last path segment; `kind` to `other`. Non-http schemes are refused. |
 | `delete_link` | `id` (the **link** id, from `get_task`) | **Hard** delete — links have no trash. |
@@ -192,6 +192,21 @@ only *your* writes do — the user's own drag to Done never pings them. A `block
 `needs-review` notification carries the task's **newest comment** in its body, so the
 natural flow — `add_comment` your question, then tag the task `blocked` — puts that
 question straight on the user's banner. No comment yet? The body is just the title.
+
+**Flagging `needs-review` has a protocol.** A review card must carry what to review
+and where, so when you tag a task `needs-review`, in the same breath:
+
+1. `add_link` the PR (`kind: "pr"`) — on the board it renders as the card's door.
+2. `add_subtask` one `verify: <step>` per thing the user should check by hand
+   (e.g. `verify: paste a long URL — the pane must not widen`). While the tag is
+   on, these render as the user's tickable verify checklist — on the card as a
+   `0/2` counter with a popover, in the editor inside the review band — and leave
+   the build progress bar. Only the user can tick them; your tick is refused.
+3. `log_progress` the evidence (tests run, build status) — the review band quotes
+   your latest log lines.
+
+A card that reaches review with no PR link and no verify steps is flagged in the
+UI as "In review with no PR and no verify steps" — that line is about your write.
 
 ### Examples
 
