@@ -135,6 +135,17 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
+/* Live init narration ("Opening the database…", "Loading your board…"). Same
+ * quiet voice as the old static label; the width cap keeps a retry line that
+ * carries an error string wrapping instead of stretching across the window. */
+.app-loading-status {
+  max-width: 420px;
+  margin: 0 24px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* Shown only when the first load exhausts its retries — a legible failure in
  * place of an endless spinner. Kept quiet and centred like the rest of this
  * state; the <pre> carries the raw reason for a bug report. */

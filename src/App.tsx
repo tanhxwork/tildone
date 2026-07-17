@@ -57,6 +57,7 @@ function App() {
   const {
     loaded,
     initError,
+    initStatus,
     init,
     selection,
     viewMode,
@@ -154,7 +155,7 @@ function App() {
             <pre>{initError}</pre>
           </div>
         ) : (
-          <span>Loading…</span>
+          <span className="app-loading-status">{initStatus}</span>
         )}
       </div>
     );

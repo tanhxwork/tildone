@@ -42,6 +42,14 @@ interface Store {
    * into a legible message.
    */
   initError: string | null;
+  /**
+   * What init is doing right now, narrated on the loading screen. A first load
+   * can legitimately take seconds (opening the database races the agent
+   * server's own connection, and a wedged load only errors after 15s) — a bare
+   * spinner over that window is indistinguishable from a hang, which is
+   * exactly how the stuck-loading incident stayed invisible.
+   */
+  initStatus: string;
   projects: Project[];
   /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
   projectIcons: Record<number, ProjectIcon>;
@@ -232,6 +240,7 @@ export function groupSlot(
 export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   initError: null,
+  initStatus: "Loading…",
   projects: [],
   projectIcons: {},
   tasks: [],
@@ -264,15 +273,25 @@ export const useStore = create<Store>()((set, get) => ({
     // the rejection.
     const backoffMs = [200, 400, 800, 1600, 3000];
     let lastErr: unknown;
+    // Narrate every step on the loading screen AND into startup-trace.log. The
+    // screen is for the user (a visible step distinguishes "slow" from "hung");
+    // the file is for diagnosis after the window is gone.
+    const step = (label: string, traceMsg: string) => {
+      set({ initStatus: label });
+      db.trace(traceMsg);
+    };
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+      const nth = attempt > 0 ? ` (attempt ${attempt + 1})` : "";
       try {
-        db.trace(`init: attempt ${attempt} purge`);
+        step(`Opening the database…${nth}`, `init: attempt ${attempt} openDb`);
+        await db.openDb();
+        step(`Cleaning up old trash…${nth}`, `init: attempt ${attempt} purge`);
         await db.purgeTrashedBefore(cutoff);
         // Give pre-migration-010 projects/tasks their code/number/ref before the
         // first read, so nothing ever renders the raw #id fallback. Idempotent.
-        db.trace(`init: attempt ${attempt} backfillRefs`);
+        step(`Checking task references…${nth}`, `init: attempt ${attempt} backfillRefs`);
         await db.backfillRefs();
-        db.trace(`init: attempt ${attempt} fetchAll`);
+        step(`Loading your board…${nth}`, `init: attempt ${attempt} fetchAll`);
         const data = await db.fetchAll();
         db.trace(`init: attempt ${attempt} loaded ok`);
         set({ ...data, loaded: true, initError: null });
@@ -292,6 +311,11 @@ export const useStore = create<Store>()((set, get) => ({
         lastErr = err;
         db.trace(`init: attempt ${attempt} FAILED: ${String(err)}`);
         if (attempt < backoffMs.length) {
+          // Say what went wrong while we retry, not just that we're busy — the
+          // user watching this screen is the diagnostic of last resort.
+          set({
+            initStatus: `Hit a snag — retrying… (${String(err)})`,
+          });
           await new Promise((r) => setTimeout(r, backoffMs[attempt]));
         }
       }

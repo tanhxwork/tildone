@@ -14,6 +14,15 @@ export function trace(msg: string): void {
 
 let db: Database | null = null;
 
+/**
+ * Warm the connection as its own init step, so the loading screen can say
+ * "Opening the database…" while it happens — that is the step that wedged in
+ * the stuck-loading incident, and the one place a first load can take seconds.
+ */
+export async function openDb(): Promise<void> {
+  await getDb();
+}
+
 async function getDb(): Promise<Database> {
   if (!db) {
     // Seen live: `Database.load` can wedge forever (first load parked the app on
