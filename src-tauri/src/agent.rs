@@ -668,8 +668,14 @@ impl TildoneAgent {
     }
 
     /// Find-or-create tags by name (case-insensitive) and link them to a task.
+    ///
+    /// Diff-aware, not rewrite-the-set: task_tags rows feed the change feed
+    /// (migration 015), and row-level triggers fire per row actually touched.
+    /// A DELETE-all + re-INSERT of an identical tag set would emit 2N phantom
+    /// 'tag' changes; deleting only removed rows and INSERT OR IGNORE-ing
+    /// additions makes an unchanged set touch zero rows and emit nothing.
     fn set_tags(conn: &Connection, task_id: i64, tags: &[String]) -> Result<(), rusqlite::Error> {
-        conn.execute("DELETE FROM task_tags WHERE task_id = ?1", [task_id])?;
+        let mut keep_ids: Vec<i64> = Vec::new();
         for raw in tags {
             let name = raw.trim();
             if name.is_empty() {
@@ -696,11 +702,28 @@ impl TildoneAgent {
                     conn.last_insert_rowid()
                 }
             };
+            keep_ids.push(tag_id);
             conn.execute(
                 "INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?1, ?2)",
                 rusqlite::params![task_id, tag_id],
             )?;
         }
+        if keep_ids.is_empty() {
+            conn.execute("DELETE FROM task_tags WHERE task_id = ?1", [task_id])?;
+            return Ok(());
+        }
+        let placeholders = keep_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM task_tags WHERE task_id = ?1 AND tag_id NOT IN ({placeholders})"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&task_id];
+        params.extend(keep_ids.iter().map(|id| id as &dyn rusqlite::ToSql));
+        conn.execute(&sql, params.as_slice())?;
         Ok(())
     }
 
@@ -2330,7 +2353,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "What changed on the board since a cursor. Call once with no arguments to get the current cursor, then pass it back as `since`. With `wait_ms` the call blocks until something changes — so an agent can park here and wake when the user moves a card, instead of polling list_tasks. Returns {cursor, changes:[{id, entity, entity_id, kind, created_at}]}; kind is created/status/moved/trashed/restored/edited/link/comment/tag. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
         &self,
@@ -2962,6 +2985,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/012_comments.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/013_agent_claims.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/014_unseen_at.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/015_task_tags_changes.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -3772,6 +3796,71 @@ mod tests {
             ("task".to_string(), id, "comment".to_string()),
             "a comment must emit a change on the TASK with kind=comment"
         );
+    }
+
+    // ---- change feed: tag changes (migration 015) ----
+
+    /// Tagging addresses the TASK (kind=tag): an agent watching for needs-review
+    /// parks on the board, and the tag arriving is the event it needs to see.
+    #[test]
+    fn tagging_and_untagging_land_in_the_changes_feed() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "review me");
+        let cursor = |db: &Arc<Mutex<Connection>>| -> i64 {
+            db.lock()
+                .unwrap()
+                .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+                .unwrap()
+        };
+        let last_after = |db: &Arc<Mutex<Connection>>, before: i64| -> (String, i64, String) {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT entity, entity_id, kind FROM changes WHERE id > ?1 ORDER BY id DESC LIMIT 1",
+                    [before],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        let before = cursor(&db);
+        update(&agent, id, Some(vec!["needs-review"]), None);
+        assert_eq!(
+            last_after(&db, before),
+            ("task".to_string(), id, "tag".to_string()),
+            "adding a tag must emit a change on the TASK with kind=tag"
+        );
+
+        let before = cursor(&db);
+        update(&agent, id, Some(vec![]), None);
+        assert_eq!(
+            last_after(&db, before),
+            ("task".to_string(), id, "tag".to_string()),
+            "removing a tag must emit a change on the TASK with kind=tag"
+        );
+    }
+
+    /// 005's WHEN-guard lesson, applied to tags: set_tags is diff-aware, so a
+    /// rewrite of an identical tag set (update_task replaces the full list)
+    /// touches no task_tags rows and must not wake a parked agent.
+    #[test]
+    fn rewriting_an_identical_tag_set_emits_no_change() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "steady");
+        update(&agent, id, Some(vec!["release", "Urgent"]), None);
+        let before: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        // Same set, different order and case — resolves to the same tag rows.
+        update(&agent, id, Some(vec!["urgent", "release"]), None);
+        let after: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM changes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before, "an identical tag rewrite must emit no phantom change");
     }
 
     // ---- item 8: native notifications on complete / blocked / needs-review ----

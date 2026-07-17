@@ -485,9 +485,21 @@ export async function mergeTags(fromId: number, toId: number): Promise<void> {
 
 export async function setTaskTags(taskId: number, tagIds: number[]): Promise<void> {
   const d = await getDb();
-  await d.execute("DELETE FROM task_tags WHERE task_id = $1", [taskId]);
+  // Diff, don't rewrite: task_tags rows feed the change feed (migration 015),
+  // and its row-level triggers fire per row touched. Deleting only removed rows
+  // and OR IGNORE-ing additions keeps an unchanged tag set from emitting
+  // phantom 'tag' changes.
+  if (tagIds.length === 0) {
+    await d.execute("DELETE FROM task_tags WHERE task_id = $1", [taskId]);
+    return;
+  }
+  const placeholders = tagIds.map((_, i) => `$${i + 2}`).join(", ");
+  await d.execute(
+    `DELETE FROM task_tags WHERE task_id = $1 AND tag_id NOT IN (${placeholders})`,
+    [taskId, ...tagIds],
+  );
   for (const tagId of tagIds) {
-    await d.execute("INSERT INTO task_tags (task_id, tag_id) VALUES ($1, $2)", [
+    await d.execute("INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES ($1, $2)", [
       taskId,
       tagId,
     ]);

@@ -127,6 +127,12 @@ pub fn run() {
             sql: include_str!("../migrations/014_unseen_at.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "add_task_tags_changes",
+            sql: include_str!("../migrations/015_task_tags_changes.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
