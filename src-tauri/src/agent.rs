@@ -3079,6 +3079,33 @@ mod tests {
     }
 
     #[test]
+    fn pid_alive_answers_truthfully_about_real_processes() {
+        // The whole liveness design rests on this one call, and `cargo check` only
+        // proves it compiles — not that the sysinfo refresh flags are the ones that
+        // actually populate the process list. A wrong-but-compiling version here
+        // would make every card read quiet forever (or never), and every other test
+        // injects liveness and so would never notice.
+        assert!(pid_alive(std::process::id()), "this very process must read as alive");
+
+        // A pid that cannot exist. Above the default pid_max on macOS/Linux.
+        assert!(!pid_alive(4_294_967_294), "a nonexistent pid must read as dead");
+    }
+
+    #[test]
+    fn pid_alive_sees_a_process_die() {
+        // The kill -9 case, end to end, against the real OS.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        assert!(pid_alive(pid), "a just-spawned process must read as alive");
+        child.kill().expect("kill");
+        child.wait().expect("reap");
+        assert!(!pid_alive(pid), "a killed and reaped process must read as dead");
+    }
+
+    #[test]
     fn a_working_beat_from_a_live_process_is_working() {
         let out = resolve_one(
             &[a_claim("s1", 7)],
