@@ -114,6 +114,12 @@ pub fn run() {
             sql: include_str!("../migrations/012_comments.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "add_agent_claims",
+            sql: include_str!("../migrations/013_agent_claims.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

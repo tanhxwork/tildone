@@ -312,6 +312,56 @@ impl TildoneAgent {
         );
     }
 
+    /// Bind an agent session to the task it is working on.
+    ///
+    /// There is no `claim_task` tool, and deliberately so: the board protocol already
+    /// has the agent announce its task by moving it to Doing. A separate call would
+    /// be a second declaration of the same fact at the same moment — and the second
+    /// one is the one agents forget. So the claim rides the `doing` write.
+    ///
+    /// `session_id` is the PRIMARY KEY, so one session claims at most one task and a
+    /// session moving on rebinds rather than duplicating. Several sessions may claim
+    /// the same task: pairing is legitimate, and presence resolves to the liveliest.
+    ///
+    /// Recorded on every `doing` write carrying a session, not only on a *transition*
+    /// to doing — an agent re-asserting the task it is on must refresh its claim, and
+    /// a re-claim after an app restart is exactly how a card recovers.
+    fn record_claim(
+        conn: &Connection,
+        session_id: &str,
+        task_id: i64,
+        cwd: Option<&str>,
+        branch: Option<&str>,
+        agent: Option<&str>,
+    ) {
+        // A claim is a nicety layered on the write; the status change is the user's
+        // actual intent. Never let a claim failure fail the move — hence no `?`.
+        let _ = conn.execute(
+            "INSERT INTO agent_claims (session_id, task_id, cwd, branch, agent_name, claimed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+               task_id = excluded.task_id,
+               cwd = excluded.cwd,
+               branch = excluded.branch,
+               agent_name = excluded.agent_name,
+               claimed_at = excluded.claimed_at",
+            rusqlite::params![session_id, task_id, cwd, branch, agent, now_iso()],
+        );
+    }
+
+    /// Completing a task releases every claim on it.
+    ///
+    /// The one release signal worth trusting. Process-lifecycle events are not:
+    /// `SessionEnd` does not fire on a crash, a `kill -9`, or a closed terminal, and
+    /// background sessions outlive their terminal anyway. This is an explicit board
+    /// write, so it means what it says.
+    fn release_claims_for_task(conn: &Connection, task_id: i64) {
+        let _ = conn.execute(
+            "DELETE FROM agent_claims WHERE task_id = ?1",
+            rusqlite::params![task_id],
+        );
+    }
+
     /// The calling MCP client's own name for itself (e.g. `claude-code`), from the
     /// `initialize` handshake.
     ///
@@ -568,6 +618,7 @@ impl TildoneAgent {
         project: Option<String>,
         tags: Option<Vec<String>>,
         agent: Option<&str>,
+        claim: ClaimInfo,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
@@ -751,6 +802,26 @@ impl TildoneAgent {
         };
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
+        }
+        // The claim rides this write. Keyed on `status`, not `dest_status`: the latter
+        // is only set when the status *changes*, but an agent re-asserting the task it
+        // is already on must still refresh its claim — that re-claim is how a card
+        // recovers after Tildone restarts.
+        match status.as_deref() {
+            Some("doing") => {
+                if let Some(session) = claim.session() {
+                    Self::record_claim(
+                        &conn,
+                        session,
+                        id,
+                        claim.cwd.as_deref(),
+                        claim.branch.as_deref(),
+                        agent,
+                    );
+                }
+            }
+            Some("done") => Self::release_claims_for_task(&conn, id),
+            _ => {}
         }
         for label in &activity {
             Self::record_activity(&conn, id, label, agent);
@@ -1066,6 +1137,18 @@ struct CreateTaskParams {
     tags: Option<Vec<String>>,
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
+    #[schemars(
+        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+    )]
+    session_id: Option<String>,
+    #[schemars(
+        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    cwd: Option<String>,
+    #[schemars(
+        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    branch: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1084,6 +1167,40 @@ struct UpdateTaskParams {
     project: Option<String>,
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
+    #[schemars(
+        description = "Your agent session id — the CLAUDE_CODE_SESSION_ID environment variable. Send it with status \"doing\" to claim the task, so the board can show you working on it live. Omit it if you are not a live session."
+    )]
+    session_id: Option<String>,
+    #[schemars(
+        description = "Absolute path of the checkout or worktree you are working in. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    cwd: Option<String>,
+    #[schemars(
+        description = "The git branch you are working on. Shown as a chip on the card. Only meaningful alongside session_id."
+    )]
+    branch: Option<String>,
+}
+
+/// Who is working on a task, sent by a live agent alongside a `doing` write.
+///
+/// Grouped rather than passed as three more positional arguments: `apply_task_update`
+/// already takes nine, and three more anonymous `Option<String>`s in a row is a
+/// swap-two-and-nobody-notices bug waiting to happen.
+#[derive(Default)]
+struct ClaimInfo {
+    /// The agent's session id. Without it there is no claim: this is the identity.
+    session_id: Option<String>,
+    /// Label only — never identity. cwd is not unique per session (read-only
+    /// sessions share the main checkout), which is why it cannot be the key.
+    cwd: Option<String>,
+    branch: Option<String>,
+}
+
+impl ClaimInfo {
+    /// The claim to record, if this write carries one at all.
+    fn session(&self) -> Option<&str> {
+        self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -1457,6 +1574,25 @@ impl TildoneAgent {
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
+        // A task created straight into Doing is an agent starting work in one call;
+        // the claim rides it exactly as it rides an update.
+        if status == "doing" {
+            let claim = ClaimInfo {
+                session_id: p.session_id,
+                cwd: p.cwd,
+                branch: p.branch,
+            };
+            if let Some(session) = claim.session() {
+                Self::record_claim(
+                    &conn,
+                    session,
+                    id,
+                    claim.cwd.as_deref(),
+                    claim.branch.as_deref(),
+                    agent,
+                );
+            }
+        }
         Self::record_activity(&conn, id, "Task created", agent);
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         drop(conn);
@@ -1478,8 +1614,10 @@ impl TildoneAgent {
         p: UpdateTaskParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
+        let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
         self.apply_task_update(
             p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, agent,
+            claim,
         )
     }
 
@@ -1760,6 +1898,8 @@ impl TildoneAgent {
         TaskIdParams { id }: TaskIdParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Routes through the same status write, so completing a task releases its
+        // claims here too — no separate teardown to keep in sync.
         self.apply_task_update(
             id,
             None,
@@ -1770,6 +1910,7 @@ impl TildoneAgent {
             None,
             None,
             agent,
+            ClaimInfo::default(),
         )
     }
 
@@ -2491,6 +2632,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/010_project_folder.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/011_task_ref.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/012_comments.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/013_agent_claims.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -2548,12 +2690,255 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
         );
         assert!(!is_err, "create_task failed: {task}");
         task["id"].as_i64().unwrap()
+    }
+
+    /// Move a task to a status as a live agent session would: the claim rides this
+    /// write, so this helper is how the claim tests start work.
+    fn work_on(
+        agent: &TildoneAgent,
+        id: i64,
+        status: &str,
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+        branch: Option<&str>,
+    ) -> (bool, Value) {
+        extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: Some(status.into()),
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: None,
+                        session_id: session_id.map(Into::into),
+                        cwd: cwd.map(Into::into),
+                        branch: branch.map(Into::into),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        )
+    }
+
+    fn claim_count(db: &Db) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM agent_claims", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_doing_write_with_a_session_id_claims_the_task() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        let (is_err, _) = work_on(&agent, id, "doing", Some("sess-1"), Some("/w/foo"), Some("worktree-foo"));
+        assert!(!is_err);
+        let conn = db.lock().unwrap();
+        let (task_id, branch, agent_name): (i64, String, String) = conn
+            .query_row(
+                "SELECT task_id, branch, agent_name FROM agent_claims WHERE session_id = 'sess-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(task_id, id);
+        assert_eq!(branch, "worktree-foo");
+        assert_eq!(agent_name, "claude");
+    }
+
+    #[test]
+    fn a_doing_write_without_a_session_id_claims_nothing() {
+        // A human dragging a card to Doing in the app is not a live session. So is an
+        // agent that simply did not send one: no session, no claim, no presence.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Moved by hand");
+        work_on(&agent, id, "doing", None, None, None);
+        assert_eq!(claim_count(&db), 0);
+    }
+
+    #[test]
+    fn an_empty_session_id_is_not_a_claim() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Blank session");
+        work_on(&agent, id, "doing", Some("   "), None, None);
+        assert_eq!(claim_count(&db), 0, "a blank session id must not claim");
+    }
+
+    #[test]
+    fn a_session_claiming_a_second_task_rebinds_rather_than_duplicating() {
+        let (agent, db) = test_agent_with_db();
+        let first = a_task(&agent, "First");
+        let second = a_task(&agent, "Second");
+        work_on(&agent, first, "doing", Some("sess-1"), None, None);
+        work_on(&agent, second, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_count(&db), 1, "a session claims at most one task");
+        let task_id: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_id, second, "the newer claim wins");
+    }
+
+    #[test]
+    fn re_asserting_the_same_task_refreshes_the_claim_rather_than_failing() {
+        // dest_status is only set when the status CHANGES, so a second `doing` write
+        // is a no-op for the task row. The claim must still refresh: that re-claim is
+        // how a card recovers after the app restarts.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Long job");
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("old-branch"));
+        work_on(&agent, id, "doing", Some("sess-1"), None, Some("new-branch"));
+        assert_eq!(claim_count(&db), 1);
+        let branch: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT branch FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(branch, "new-branch");
+    }
+
+    #[test]
+    fn two_sessions_may_claim_the_same_task() {
+        // Pairing is legitimate; presence resolves to the liveliest of them.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Paired work");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        assert_eq!(claim_count(&db), 2);
+    }
+
+    #[test]
+    fn completing_a_task_releases_its_claims() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        work_on(&agent, id, "done", None, None, None);
+        assert_eq!(claim_count(&db), 0, "done releases every claim on the task");
+    }
+
+    #[test]
+    fn complete_task_also_releases_claims() {
+        // complete_task routes through apply_task_update, so the release must come
+        // for free rather than needing its own teardown.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Ship item 7");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, Some("claude")).unwrap();
+        assert_eq!(claim_count(&db), 0);
+    }
+
+    #[test]
+    fn a_session_in_a_shared_cwd_that_claimed_nothing_owns_no_task() {
+        // The bug the cwd-keyed draft would have shipped. Two sessions in the SAME
+        // directory — the shared checkout, because read-only sessions are told not to
+        // isolate — only one of which claimed. Keyed on cwd, the unclaimed session's
+        // heartbeat would light up the other's card: a false "working", which is the
+        // exact lie this feature exists to remove.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Claimed by sess-1");
+        let shared = "/Users/x/projects/tildone";
+        work_on(&agent, id, "doing", Some("sess-1"), Some(shared), None);
+
+        let conn = db.lock().unwrap();
+        // sess-2 lives in the very same cwd and claimed nothing.
+        let owned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_claims WHERE session_id = 'sess-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owned, 0, "sess-2 claimed nothing, so it owns no card");
+        // And the cwd alone resolves to more than one session, which is precisely why
+        // it cannot be the key.
+        let by_cwd: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_claims WHERE cwd = ?1", [shared], |r| r.get(0))
+            .unwrap();
+        assert_eq!(by_cwd, 1, "only the session that actually claimed is bound");
+    }
+
+    #[test]
+    fn a_task_created_straight_into_doing_claims_it() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, task) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Start immediately".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        session_id: Some("sess-9".into()),
+                        cwd: None,
+                        branch: Some("wt-9".into()),
+                        status: Some("doing".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {task}");
+        let id = task["id"].as_i64().unwrap();
+        let task_id: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-9'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_id, id);
+    }
+
+    #[test]
+    fn a_task_created_as_todo_claims_nothing_even_with_a_session() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, _) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Queued, not started".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        session_id: Some("sess-9".into()),
+                        cwd: None,
+                        branch: None,
+                        status: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err);
+        assert_eq!(claim_count(&db), 0, "filing a task is not working on it");
+    }
+
+    #[test]
+    fn deleting_a_task_cascades_its_claims_away() {
+        // ON DELETE CASCADE, with foreign_keys ON — a claim must not outlive its task.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Doomed");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_count(&db), 1);
+        db.lock().unwrap().execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
+        assert_eq!(claim_count(&db), 0);
     }
 
     fn attach(
@@ -2854,6 +3239,9 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: tags.map(|t| t.into_iter().map(Into::into).collect()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                     },
                     None,
                 )
@@ -3062,6 +3450,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3094,6 +3485,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3197,6 +3591,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3225,6 +3622,9 @@ mod tests {
                     due_date: Some("2026-07-10".into()),
                     priority: Some(3),
                     tags: Some(vec!["release".into()]),
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3252,6 +3652,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3307,6 +3710,9 @@ mod tests {
                     due_date: Some("".into()),
                     project: Some("inbox".into()),
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3366,6 +3772,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3407,6 +3816,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3454,6 +3866,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3507,6 +3922,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3597,6 +4015,9 @@ mod tests {
                     due_date: Some(due.into()),
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3636,6 +4057,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: (title == "c").then(|| vec!["find-me".to_string()]),
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3676,6 +4100,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: status.map(Into::into),
                 }, None)
                 .unwrap();
@@ -3703,6 +4130,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap();
@@ -3759,6 +4189,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3779,6 +4212,9 @@ mod tests {
                     due_date: None,
                     project: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3884,6 +4320,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -3901,6 +4340,9 @@ mod tests {
                     due_date: None,
                     project: Some("work".into()),
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                 }, None)
                 .unwrap(),
         );
@@ -3935,6 +4377,9 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                session_id: None,
+                cwd: None,
+                branch: None,
             }, None)
             .unwrap();
         let conn = agent.db.lock().unwrap();
@@ -4350,6 +4795,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -4369,6 +4817,9 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                session_id: None,
+                cwd: None,
+                branch: None,
             }, None)
             .unwrap();
 
@@ -4579,6 +5030,9 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    session_id: None,
+                    cwd: None,
+                    branch: None,
                     status: None,
                 }, None)
                 .unwrap(),
@@ -4623,6 +5077,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     Some("claude-code"),
@@ -4662,6 +5119,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     None,
@@ -4690,6 +5150,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     Some("codex"),
@@ -4790,6 +5253,9 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                         status: None,
                     },
                     None,
@@ -4884,6 +5350,9 @@ mod tests {
                         due_date: None,
                         project: Some("Zeno Logistics".into()),
                         tags: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
                     },
                     None,
                 )
