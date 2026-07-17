@@ -1,4 +1,4 @@
-/* Theme tokens follow the Notion design system (docs/design/notion-DESIGN.md):
+/* Theme tokens follow the Tildone design system (docs/DESIGN.md):
    warm gray neutrals around charcoal ink #37352f, hairline borders, purple primary. */
 :root {
   color-scheme: light;
@@ -27,6 +27,11 @@
   --shadow-pop: 0 8px 30px rgba(15, 15, 15, 0.18);
   --radius: 8px;
   --radius-sm: 6px;
+  /* Notion's own database cards measure 10px — the sanctioned step for board
+     cards and columns, between --radius and the 12px top of the scale. */
+  --radius-card: 10px;
+  /* Warning text. The doing hue's ink tier: fills use --doing, text uses this. */
+  --warn: #c03f00;
 }
 
 :root[data-theme="dark"] {
@@ -47,6 +52,7 @@
   --danger: #ff7369;
   --success: #4dab5e;
   --doing: #ffa344;
+  --warn: #ffa344;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
 }
@@ -436,7 +442,7 @@ textarea:focus-visible,
   border: 1px solid color-mix(in srgb, var(--tag-color) 45%, transparent);
   color: color-mix(in srgb, var(--tag-color) 80%, var(--text));
   background: color-mix(in srgb, var(--tag-color) 8%, transparent);
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
   transition: background 150ms, border-color 150ms;
 }
@@ -453,7 +459,7 @@ textarea:focus-visible,
 
 .tag-chip.mini {
   padding: 0 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: default;
 }
 
@@ -634,7 +640,7 @@ textarea:focus-visible,
 }
 
 .filters-label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -805,7 +811,7 @@ textarea:focus-visible,
 }
 
 .status-pill {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--doing);
   border: 1px solid color-mix(in srgb, var(--doing) 45%, transparent);
@@ -817,7 +823,7 @@ textarea:focus-visible,
 /* Reserved-tag states. Same shape as .status-pill — these read as states, not
    as one more tag chip, which is the whole point of pulling them out. */
 .state-pill {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   border-radius: 999px;
   padding: 0 6px;
@@ -908,7 +914,7 @@ textarea:focus-visible,
   max-width: 340px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   padding: 8px;
 }
 
@@ -1148,7 +1154,7 @@ textarea:focus-visible,
 }
 
 .card-id {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
@@ -1201,7 +1207,7 @@ textarea:focus-visible,
 }
 
 .card-progress-count {
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
@@ -1213,7 +1219,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
@@ -1430,7 +1436,7 @@ textarea:focus-visible,
 }
 
 .backfill-tag {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -1582,7 +1588,7 @@ textarea:focus-visible,
   width: 24px;
   height: 24px;
   object-fit: contain;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 
 .icon-preview-status {
@@ -1755,7 +1761,7 @@ textarea:focus-visible,
 
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -1820,7 +1826,7 @@ textarea:focus-visible,
 }
 
 .ai-intro {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -1901,7 +1907,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-card);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .ai-server.selected {
@@ -1918,13 +1924,13 @@ textarea:focus-visible,
 
 .ai-server-url {
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .ai-server-count {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .ai-model-field {
@@ -1943,7 +1949,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-card);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .ai-custom input:focus {
@@ -1959,7 +1965,7 @@ textarea:focus-visible,
 
 .ai-progress {
   height: 6px;
-  border-radius: 3px;
+  border-radius: 999px;
   background: var(--bg-hover);
   overflow: hidden;
 }
@@ -1970,7 +1976,7 @@ textarea:focus-visible,
 .ai-progress-fill {
   width: 100%;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 999px;
   background: var(--accent);
   transform-origin: left center;
   transition: transform 0.3s ease-out;
@@ -1993,13 +1999,13 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--success);
 }
 
 .btn.small {
   padding: 4px 10px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .btn.ai-action {
@@ -2046,7 +2052,7 @@ textarea:focus-visible,
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   padding: 0 1px 4px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
   color: var(--text-faint);
@@ -2127,7 +2133,7 @@ textarea:focus-visible,
   align-items: center;
   gap: 5px;
   padding: 1px 6px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--bg-inset);
   border: 1px solid var(--border);
   font-size: 11px;
@@ -2172,7 +2178,7 @@ textarea:focus-visible,
 
 .calendar-more {
   align-self: flex-start;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   padding: 0 6px;
   border-radius: 4px;
@@ -2265,7 +2271,7 @@ textarea:focus-visible,
 
 .week-day-count {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -2328,7 +2334,7 @@ textarea:focus-visible,
 
 .week-card-overdue {
   margin-left: auto;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--danger);
   text-transform: uppercase;
@@ -2411,7 +2417,7 @@ textarea:focus-visible,
 }
 
 .stat-label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -2515,7 +2521,7 @@ textarea:focus-visible,
 .review-progress-track {
   flex: 1;
   height: 6px;
-  border-radius: 3px;
+  border-radius: 999px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -2525,7 +2531,7 @@ textarea:focus-visible,
 .review-progress-fill {
   display: block;
   height: 100%;
-  border-radius: 3px;
+  border-radius: 999px;
 }
 
 .review-project-pct {
@@ -2539,7 +2545,7 @@ textarea:focus-visible,
 
 .review-clear {
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: 13px;
   padding: 2px 10px;
 }
 
@@ -2668,7 +2674,7 @@ textarea:focus-visible,
 .task-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .task-table th {
@@ -2766,7 +2772,7 @@ textarea:focus-visible,
 
 .col-created {
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -2870,7 +2876,7 @@ textarea:focus-visible,
 }
 
 .palette-section-title {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -2961,7 +2967,7 @@ textarea:focus-visible,
 }
 
 .settings-sub {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-faint);
 }
@@ -3042,7 +3048,7 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 /* ---------- First run ---------- */
@@ -3103,7 +3109,7 @@ textarea:focus-visible,
 }
 
 .firstrun-emoji {
-  font-size: 26px;
+  font-size: 27px;
 }
 
 .firstrun-template-title {
@@ -3144,7 +3150,7 @@ textarea:focus-visible,
   width: min(760px, calc(100vw - 48px));
   max-height: calc(100vh - 96px);
   background: var(--bg-main);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 18px 60px rgba(15, 15, 15, 0.35);
   display: flex;
   flex-direction: column;
@@ -3218,7 +3224,7 @@ textarea:focus-visible,
   align-items: center;
   justify-content: center;
   border: 1.5px solid var(--border-strong);
-  border-radius: 4.5px;
+  border-radius: 4px;
   color: var(--accent-contrast);
   transition: border-color 150ms, background 150ms;
 }
@@ -3269,9 +3275,9 @@ textarea:focus-visible,
   -webkit-appearance: none;
   border: 1px solid transparent;
   background: none;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   padding: 2px 7px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text);
   cursor: pointer;
   max-width: 220px;
@@ -3358,7 +3364,7 @@ textarea:focus-visible,
 .detail-tag-add {
   border: none;
   background: none;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   width: 64px;
   padding: 1px 6px;
@@ -3376,7 +3382,7 @@ textarea:focus-visible,
 }
 
 .detail-created {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -3385,7 +3391,7 @@ textarea:focus-visible,
   border: none;
   background: none;
   resize: none;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--text);
   padding: 8px 0 14px;
@@ -3446,11 +3452,11 @@ textarea:focus-visible,
 }
 
 .detail-notes-rendered h1 {
-  font-size: 18px;
+  font-size: 19px;
 }
 
 .detail-notes-rendered h2 {
-  font-size: 15.5px;
+  font-size: 15px;
 }
 
 .detail-notes-rendered h3 {
@@ -3458,7 +3464,7 @@ textarea:focus-visible,
 }
 
 .detail-notes-rendered h4 {
-  font-size: 13.5px;
+  font-size: 14px;
 }
 
 .detail-notes-rendered p {
@@ -3517,7 +3523,7 @@ textarea:focus-visible,
 .detail-notes-rendered pre code {
   background: none;
   padding: 0;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .detail-notes-rendered blockquote {
@@ -3536,7 +3542,7 @@ textarea:focus-visible,
 .detail-notes-rendered table {
   border-collapse: collapse;
   margin: 8px 0;
-  font-size: 12.5px;
+  font-size: 13px;
   /* A wide table scrolls in its own box (like `pre`), never the whole pane. */
   display: block;
   max-width: 100%;
@@ -3789,7 +3795,7 @@ textarea:focus-visible,
   text-align: left;
   border: none;
   background: none;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text);
   padding: 5px 8px;
   border-radius: var(--radius-sm);
@@ -4056,7 +4062,7 @@ textarea:focus-visible,
 }
 
 .detail-footer-hint {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -4076,7 +4082,7 @@ textarea:focus-visible,
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .ai-model.active {
@@ -4105,20 +4111,20 @@ textarea:focus-visible,
 
 .ai-model-detail {
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ai-model-warn {
-  color: #f59e0b;
+  color: var(--warn);
   font-size: 11px;
 }
 
 .ai-model-size {
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -4154,7 +4160,7 @@ textarea:focus-visible,
 .ai-disk {
   margin: 0 0 4px;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .ai-tier-badge {
@@ -4163,14 +4169,14 @@ textarea:focus-visible,
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .ai-warn {
   margin: 0 0 10px;
   font-size: 12px;
-  color: #f59e0b;
+  color: var(--warn);
 }
 
 .ai-autostart {
@@ -4178,7 +4184,7 @@ textarea:focus-visible,
   align-items: center;
   gap: 7px;
   margin-top: 10px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -4205,7 +4211,7 @@ textarea:focus-visible,
 }
 
 .daily-plan-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -4322,7 +4328,7 @@ textarea:focus-visible,
   border: none;
   cursor: pointer;
   padding: 1px 4px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 600;
