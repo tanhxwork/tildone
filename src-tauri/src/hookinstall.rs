@@ -240,10 +240,23 @@ pub fn hook_install(app: tauri::AppHandle) -> Result<String, String> {
     }
     let added = add_hooks(&mut settings, &home);
     write_settings(&path, &settings)?;
+    // Claude Code reads hook config once, at session start — sessions already
+    // running when Connect is pressed never fire these hooks, so their cards
+    // stay "quiet" and the feature looks broken at the exact moment the user
+    // is judging whether it works. Say so here, in the success message.
     Ok(if added == 0 {
-        "Already connected — no changes made.".to_string()
+        // A second press of Connect is usually someone wondering why presence
+        // looks dead — the answer is almost always a pre-Connect session.
+        "Already connected — no changes made. If a session isn't showing up, \
+         restart it: sessions running before Connect don't load the hooks."
+            .to_string()
     } else {
-        format!("Connected. Added {added} hook(s) to {}.", path.display())
+        format!(
+            "Connected. Added {added} hook(s) to {}. \
+             Claude Code sessions already running won't appear here until \
+             restarted — sessions started from now on show up live.",
+            path.display()
+        )
     })
 }
 
