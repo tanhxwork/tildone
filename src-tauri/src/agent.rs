@@ -389,6 +389,48 @@ fn ok_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::text(msg.into())]))
 }
 
+/// Integer `format` tags schemars emits for Rust int types (i64 → "int64", …).
+/// They are advisory only: no MCP client needs them, and serde parses the
+/// concrete Rust param type regardless of what the advertised schema claims.
+const INT_FORMATS: &[&str] = &[
+    "int8", "int16", "int32", "int64", "int128", "uint", "uint8", "uint16", "uint32", "uint64",
+    "uint128",
+];
+
+/// Strip wire-noise from a generated tool input schema that no MCP client uses:
+/// the `$schema` dialect URL (~52 bytes per tool) and the advisory integer
+/// `format` tags above. Recursive, so it reaches `$defs` and nested properties.
+///
+/// Purely cosmetic — it changes what a schema *advertises*, never how arguments
+/// are parsed (that is serde over the Rust param type). The tool list is fixed
+/// context every connected session carries verbatim for the whole session, so
+/// this ~1.3KB of boilerplate is a token tax on every agent; trimming it once at
+/// build hands that context back. Only integer formats are dropped — a semantic
+/// string format like "date" or "uri" would be a real hint and is kept.
+fn slim_tool_schema(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("$schema");
+            let drop_format = matches!(
+                map.get("format"),
+                Some(Value::String(f)) if INT_FORMATS.contains(&f.as_str())
+            );
+            if drop_format {
+                map.remove("format");
+            }
+            for v in map.values_mut() {
+                slim_tool_schema(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                slim_tool_schema(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn db_err(e: rusqlite::Error) -> ErrorData {
     ErrorData::internal_error(format!("database error: {e}"), None)
 }
@@ -400,8 +442,20 @@ impl TildoneAgent {
         notify_user: NotifyUser,
         shutdown: CancellationToken,
     ) -> Self {
+        // The macro-generated tool list is fixed context every connected session
+        // carries all session. Trim its wire-noise ($schema URLs, integer format
+        // tags) once, here at build — see slim_tool_schema.
+        let mut tool_router = Self::tool_router();
+        for route in tool_router.map.values_mut() {
+            let obj = Arc::make_mut(&mut route.attr.input_schema);
+            let mut schema = Value::Object(std::mem::take(obj));
+            slim_tool_schema(&mut schema);
+            if let Value::Object(map) = schema {
+                *obj = map;
+            }
+        }
         Self {
-            tool_router: Self::tool_router(),
+            tool_router,
             db,
             on_change,
             notify_user,
@@ -3172,6 +3226,76 @@ mod tests {
             CancellationToken::new(),
         );
         (agent, sink)
+    }
+
+    // ---- tool-schema wire-noise (TIL-85) ----
+
+    #[test]
+    fn tool_schemas_carry_no_wire_noise() {
+        // The `$schema` dialect URL and integer `format` tags (int64, …) are pure
+        // boilerplate no MCP client uses — but the tool list is fixed context every
+        // connected session carries all session, so shipping them is a token tax on
+        // every agent. slim_tool_schema strips them at build; guard that here.
+        let agent = test_agent();
+        for tool in agent.tool_router.list_all() {
+            let schema = serde_json::to_string(&tool.input_schema).unwrap();
+            assert!(
+                !schema.contains("$schema"),
+                "tool {} still advertises a $schema dialect URL: {schema}",
+                tool.name
+            );
+            for fmt in INT_FORMATS {
+                assert!(
+                    !schema.contains(&format!("\"format\":\"{fmt}\"")),
+                    "tool {} still advertises integer format {fmt}: {schema}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slimming_preserves_schema_structure() {
+        // The trim is cosmetic: it must not damage the parts a client relies on.
+        // update_task is the richest schema (object root, a $ref to the shared
+        // TaskRef $defs, many typed properties) — if the trim left it intact, it
+        // left every schema intact.
+        let agent = test_agent();
+        let update = agent.tool_router.get("update_task").expect("update_task exists");
+        let s = &*update.input_schema;
+        assert_eq!(s.get("type").and_then(|v| v.as_str()), Some("object"));
+        assert!(
+            s.get("properties").and_then(|p| p.get("id")).is_some(),
+            "id property survived the trim"
+        );
+        assert!(
+            s.get("$defs").and_then(|d| d.get("TaskRef")).is_some(),
+            "shared TaskRef $defs survived the trim"
+        );
+        // The int|string union that makes ids accept "TIL-3" or a number is intact.
+        let taskref = s.get("$defs").unwrap().get("TaskRef").unwrap();
+        assert!(taskref.get("anyOf").and_then(|a| a.as_array()).is_some_and(|a| a.len() == 2));
+    }
+
+    #[test]
+    fn slimming_shrinks_the_served_tool_list() {
+        // Prove the trim removes real bytes, robustly to future tool additions:
+        // compare the raw macro output against the slimmed router the server
+        // actually serves. Measuring the delta (not an absolute cap) means adding
+        // a tool later never breaks this guard.
+        fn schema_bytes(router: &ToolRouter<TildoneAgent>) -> usize {
+            router
+                .list_all()
+                .iter()
+                .map(|t| serde_json::to_string(&t.input_schema).unwrap().len())
+                .sum()
+        }
+        let raw = schema_bytes(&TildoneAgent::tool_router());
+        let slim = schema_bytes(&test_agent().tool_router);
+        eprintln!("tool-defs input_schema bytes: raw={raw} slim={slim} saved={}", raw - slim);
+        assert!(slim < raw, "slimmed {slim} is not smaller than raw {raw}");
+        // Observed on the current tool set: $schema ×18 + integer format ×18.
+        assert!(raw - slim >= 1000, "expected >=1KB trimmed, got {}", raw - slim);
     }
 
     // ---- item 7: task <-> repo links ----
