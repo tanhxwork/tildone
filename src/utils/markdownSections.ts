@@ -48,6 +48,16 @@ function collectHeadings(tree: Root): HeadingInfo[] {
 
 type NodeData = { hName?: string; hProperties?: Record<string, unknown> };
 
+// How many source lines a collapsed section is hiding — the heading itself
+// doesn't count, only what folds away under it. Read off mdast positions, so
+// it measures the note as written rather than as rendered.
+function bodyLines(children: RootContent[]): number {
+  const body = children.slice(1);
+  const start = body[0]?.position?.start.line;
+  const end = body[body.length - 1]?.position?.end.line;
+  return start && end ? end - start + 1 : 0;
+}
+
 // Wraps each shallowest-depth heading and its following siblings (up to the
 // next such heading) in a node rendered as <section data-section-key …>, and
 // stamps every root-level heading with data-note-heading so the section bar
@@ -75,6 +85,7 @@ export function remarkSections() {
           hProperties: {
             "data-section-key": bucket.info.key,
             "data-section-title": bucket.info.title,
+            "data-section-lines": String(bodyLines(bucket.children)),
           },
         },
         children: bucket.children,

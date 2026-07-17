@@ -85,6 +85,28 @@ describe("remarkSections", () => {
     const out = render("just a paragraph\n\n- and a list");
     expect(out).not.toContain("<section");
   });
+
+  // The count a collapsed row shows: source lines hidden under the heading.
+  const linesOf = (md: string) =>
+    [...render(md).matchAll(/data-section-lines="(\d+)"/g)].map((m) => Number(m[1]));
+
+  it("measures the body lines each section hides, excluding the heading", () => {
+    // Alpha's body spans lines 3-5 (two paragraphs and the blank between).
+    expect(linesOf("## Alpha\n\nbody a\n\nmore a\n\n## Beta\n\nbody b")).toEqual([3, 1]);
+  });
+
+  it("counts every line of a multi-line block, not just its first", () => {
+    expect(linesOf("## Alpha\n\n- one\n- two\n- three")).toEqual([3]);
+  });
+
+  it("reports zero for a heading with nothing under it", () => {
+    expect(linesOf("## Empty\n\n## Beta\n\nbody")).toEqual([0, 1]);
+  });
+
+  it("counts a nested subsection's lines toward its parent section", () => {
+    // Only top-level headings open sections, so ### and its body belong to Alpha.
+    expect(linesOf("## Alpha\n\nintro\n\n### Sub\n\nnested")).toEqual([5]);
+  });
 });
 
 describe("parseNoteSections", () => {
