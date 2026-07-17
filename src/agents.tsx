@@ -10,7 +10,8 @@
 
 import type { ReactElement, SVGProps } from "react";
 import { useStore } from "./store";
-import { isActivelyWorking, isRecentPresence, timeAgo } from "./utils/dates";
+import { timeAgo } from "./utils/dates";
+import { cardPresence } from "./utils/presence";
 
 type MarkProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -128,25 +129,44 @@ export function agentIdentity(rawName: string | null | undefined): AgentIdentity
  * reload every agent write already triggers; there is no live/dead flag to clear.
  */
 export function AgentPresence({ taskId }: { taskId: number }) {
-  const entry = useStore((s) => s.presence[taskId]);
-  if (!entry || !isRecentPresence(entry.at)) return null;
+  const live = useStore((s) => s.live);
+  const fallback = useStore((s) => s.presence);
+  const entry = cardPresence(taskId, live, fallback);
+  if (!entry) return null;
   const { label, color, Mark } = agentIdentity(entry.name);
-  // The mark alone identifies the agent — no name text. It breathes (pulse) only
-  // while the agent is actively writing (a fresh row within the active window),
-  // then settles to static as the timestamp ages. Event-driven off the same reload
-  // every write already triggers — no heartbeat, no timer. The name lives on hover
-  // (title) and for assistive tech (aria-label).
-  const working = isActivelyWorking(entry.at);
   const when = timeAgo(entry.at);
+
+  // The mark alone identifies the agent — no name text; the name lives on hover
+  // (title) and for assistive tech (aria-label).
+  //
+  // The state is REPORTED, not inferred. It used to be guessed from the age of the
+  // last board write, which made the two cases this most needs to separate look
+  // identical: an agent grinding for 25 minutes in a worktree rendered exactly like
+  // one that touched the card once and left. Now a live agent's hook says "working"
+  // on every tool call, and Rust asks the OS whether that process still exists.
+  //
+  // The guarantee survives, and is now cheaper to hold: this can only ever
+  // UNDER-claim liveness. "working" requires a live session to have said so and its
+  // process to still exist; anything unknown reads as quiet.
+  const text =
+    entry.state === "working" ? "working" : entry.state === "blocked" ? "blocked" : `quiet ${when}`;
+  const title =
+    entry.state === "quiet"
+      ? `${label} · last active ${when}${entry.live ? "" : " · no live connection"}`
+      : `${label} · ${entry.state} now · last active ${when}`;
+
   return (
     <span
-      className="card-presence"
+      className={`card-presence ${entry.state}`}
       style={{ ["--agent-color" as string]: color }}
-      title={`${label} · ${working ? "working now · " : ""}last active ${when}`}
-      aria-label={`${label}${working ? ", working now" : ""}, last active ${when}`}
+      title={title}
+      aria-label={`${label}, ${entry.state === "quiet" ? `quiet, last active ${when}` : entry.state}`}
     >
-      <Mark className={`card-presence-mark${working ? " working" : ""}`} size={14} />
-      <span className="card-presence-time">{when}</span>
+      <Mark
+        className={`card-presence-mark${entry.state === "working" ? " working" : ""}`}
+        size={14}
+      />
+      <span className="card-presence-time">{text}</span>
     </span>
   );
 }

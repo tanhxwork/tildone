@@ -19,6 +19,7 @@ import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
 import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
+import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 
 export interface ImportedTask {
@@ -66,12 +67,26 @@ interface Store {
    * (loadComments); this is refreshed by the same reload every agent write triggers. */
   commentCounts: Record<number, number>;
   /**
-   * Newest agent activity per task_id — this is presence. Derived from
-   * task_activity on every load, never stored: a dead session stops writing and
-   * its entry simply ages, so nothing is ever cleared. `at` is an ISO timestamp;
-   * the card decides how fresh is fresh.
+   * Newest agent activity per task_id — the FALLBACK half of presence. Derived from
+   * task_activity on every load, never stored: a dead session stops writing and its
+   * entry simply ages, so nothing is ever cleared.
+   *
+   * This is only what we can infer from the age of a board write, which is why it can
+   * never say "working": an agent grinding for 25 minutes without logging looks
+   * identical to one that touched the card once and left. It remains the honest best
+   * effort for agents with no heartbeat hook (Codex, Cursor, an unconnected Claude
+   * Code). `live` below is the real signal. Merge with `cardPresence()`.
    */
   presence: Record<number, { name: string | null; at: string }>;
+  /**
+   * Live agent presence per task_id, reported by agents' hooks and resolved in Rust.
+   *
+   * Kept apart from `presence` on purpose: `reload()` replaces everything `fetchAll()`
+   * returns wholesale, so a merged map would let any agent's board write clobber live
+   * state until the next poll — cards blinking working→quiet→working. This field is
+   * written only by `loadPresence`.
+   */
+  live: Record<number, LivePresence>;
 
   selection: Selection;
   viewMode: ViewMode;
@@ -86,6 +101,12 @@ interface Store {
   init: () => Promise<void>;
   /** Re-read everything from SQLite, e.g. after an external agent writes. */
   reload: () => Promise<void>;
+  /**
+   * Re-read live agent presence. Cheap by design — one command, one small query —
+   * because it is polled: a heartbeat fires on every tool call of every agent, far
+   * too chatty to hang the board's full reload on.
+   */
+  loadPresence: () => Promise<void>;
   select: (selection: Selection) => void;
   setViewMode: (mode: ViewMode) => void;
   setSearch: (search: string) => void;
@@ -251,6 +272,7 @@ export const useStore = create<Store>()((set, get) => ({
   comments: [],
   commentCounts: {},
   presence: {},
+  live: {},
 
   ...loadNav(),
   search: "",
@@ -341,6 +363,22 @@ export const useStore = create<Store>()((set, get) => ({
     if (editingTaskId !== null) {
       await get().loadActivity(editingTaskId);
       await get().loadComments(editingTaskId);
+    }
+    // A claim may have just landed with that write, so refresh the live view too.
+    // Cheap, and it makes a card light up on the claim rather than on the next tick.
+    void get().loadPresence();
+  },
+
+  loadPresence: async () => {
+    try {
+      const entries = await invoke<LivePresence[]>("agent_presence");
+      set({ live: byTask(entries) });
+    } catch {
+      // The agent server may simply not be running — that is a normal state, not an
+      // error, and it means there is no live presence to show. Cards fall back to the
+      // activity-derived entry on their own. Swallowing this keeps a stopped server
+      // from spamming the console every poll.
+      set({ live: {} });
     }
   },
 

@@ -105,37 +105,35 @@ export function timeAgo(timestamp: string): string {
   return format(date, sameYear ? "MMM d" : "MMM d, yyyy");
 }
 
-/** How long an agent's last activity keeps surfacing as presence on the card. */
+/**
+ * How long an agent's last activity keeps surfacing as FALLBACK presence on the card.
+ *
+ * Only reached for agents with no heartbeat hook installed (Codex, Cursor, an
+ * unconnected Claude Code) — a live agent reports its own state and never consults
+ * this. See src/utils/presence.ts.
+ */
 export const PRESENCE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
- * Whether an agent touch is recent enough to surface on the card.
+ * Whether an agent touch is recent enough to surface on the card at all.
  *
- * This is NOT a live/dead verdict — the card shows the honest "2m ago" / "3h ago"
- * and lets the reader judge. It is only the point past which a timestamp stops
- * being *presence* and becomes *history* (still in the Activity feed). Beyond the
- * window, a card an agent touched last week carries no stale badge.
+ * This is NOT a live/dead verdict, and must never become one. It is only the point
+ * past which a timestamp stops being *presence* and becomes *history* (still in the
+ * Activity feed). Beyond the window, a card an agent touched last week carries no
+ * stale badge.
+ *
+ * There was a companion to this — `isActivelyWorking`, a 2-minute window whose
+ * freshness decided whether the mark pulsed "working". It is gone. Its own doc
+ * comment named the flaw it shipped with: "a long silent build ages out of the window
+ * and the mark settles to static". That was accepted because an MCP agent had no
+ * heartbeat and there was no better signal available. There is now — agents report
+ * their state on every tool call and Rust checks the process — so liveness is no
+ * longer guessed from the age of a write. Do not reintroduce that inference: it made
+ * a busy agent and a departed one render identically, which is the whole reason the
+ * live path exists.
  */
 export function isRecentPresence(timestamp: string): boolean {
   const t = new Date(toIsoUtc(timestamp)).getTime();
   if (isNaN(t)) return false;
   return Date.now() - t < PRESENCE_WINDOW_MS;
-}
-
-/**
- * A much shorter window than PRESENCE_WINDOW: "an agent is writing right now",
- * used only to animate the presence mark (spin + pulse), never to gate whether
- * presence shows at all.
- *
- * Kept short and honest. An MCP agent has no heartbeat, so this can only ever
- * *under*-claim: a long silent build ages out of the window and the mark settles
- * to static, while a dead session never keeps spinning — it simply stops producing
- * the fresh writes that would renew the window. It cannot invent a live state.
- */
-export const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
-
-export function isActivelyWorking(timestamp: string): boolean {
-  const t = new Date(toIsoUtc(timestamp)).getTime();
-  if (isNaN(t)) return false;
-  return Date.now() - t < ACTIVE_WINDOW_MS;
 }
