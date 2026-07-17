@@ -32,6 +32,7 @@ import {
   asLinkKind,
 } from "../types";
 import { isRecentPresence, todayStr } from "../utils/dates";
+import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
 import { CompletionFlourish } from "./Brand";
 import { IconCheck, IconMessage, LinkKindIcon } from "./Icons";
@@ -486,15 +487,16 @@ function CardProvenance({
       )}
       {links.length > 0 && (
         <span className="card-links">
-          {links.map((link) => {
+          {latestLinkPerKind(links).map(({ link, total }) => {
             const kind = asLinkKind(link.kind);
             const short = cardLinkShort(link);
+            const older = total > 1 ? ` · latest of ${total}` : "";
             return (
               <button
                 key={link.id}
                 className="card-link"
                 style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
-                title={`${LINK_KIND_LABELS[kind]} · ${link.label} · ${link.url}`}
+                title={`${LINK_KIND_LABELS[kind]} · ${link.label}${older} · ${link.url}`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();

@@ -1,4 +1,4 @@
-import type { LinkKind } from "../types";
+import { asLinkKind, LINK_KINDS, type LinkKind, type TaskLink } from "../types";
 
 /** Only http(s) is clickable — mirrors valid_http_url in agent.rs. The app opens
  *  links via tauri-plugin-opener, so a file:// or javascript: URL is a local-code
@@ -29,6 +29,23 @@ export function deriveLinkLabel(url: string, kind: LinkKind): string {
   if (kind === "pr") return /^\d+$/.test(last) ? `PR #${last}` : last;
   if (kind === "commit") return /^[0-9a-f]{7,40}$/i.test(last) ? last.slice(0, 7) : last;
   return last;
+}
+
+/** One entry per link kind — the most recently added link of that kind, plus how
+ *  many of that kind exist in total. A long-running task accumulates a link per
+ *  attempt (six PRs, a branch per worktree); a card only has room for the state
+ *  of play, so it shows the newest of each and lets the detail view hold history.
+ *  Ordered by LINK_KINDS so a card's chips don't reshuffle as links are added. */
+export function latestLinkPerKind(links: TaskLink[]): { link: TaskLink; total: number }[] {
+  const byKind = new Map<LinkKind, { link: TaskLink; total: number }>();
+  for (const link of links) {
+    const kind = asLinkKind(link.kind);
+    const seen = byKind.get(kind);
+    // Links arrive ordered by id, but don't lean on it — id is the age.
+    if (!seen) byKind.set(kind, { link, total: 1 });
+    else byKind.set(kind, { link: link.id > seen.link.id ? link : seen.link, total: seen.total + 1 });
+  }
+  return LINK_KINDS.map((kind) => byKind.get(kind)).filter((e) => e !== undefined);
 }
 
 function lastSegment(url: string): string {
