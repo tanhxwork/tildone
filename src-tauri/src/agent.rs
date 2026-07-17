@@ -2011,18 +2011,21 @@ impl TildoneAgent {
         // Verify steps are the user's checklist: an agent proposes them when it
         // flags review, but a tick asserts "I checked this on my machine" — a
         // claim only the person at the machine can make. Everything else stays
-        // open (add, rename, untick, delete). Checked against the FINAL title,
-        // before any write, so a refused call leaves nothing half-applied.
+        // open (add, rename, untick, delete). The tick is refused when EITHER
+        // the stored title or the requested one is a verify title — checking
+        // only the result would let one call rename the step off the prefix and
+        // tick it in the same breath — and it is refused before any write, so a
+        // refused call leaves nothing half-applied.
         if done == Some(true) {
-            let final_title: String = match &title {
-                Some(t) => t.trim().to_string(),
-                None => conn
-                    .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
-                        r.get(0)
-                    })
-                    .map_err(db_err)?,
-            };
-            if Self::is_verify_title(&final_title) {
+            let stored_title: String = conn
+                .query_row("SELECT title FROM subtasks WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .map_err(db_err)?;
+            let requested_is_verify = title
+                .as_deref()
+                .is_some_and(|t| Self::is_verify_title(t.trim()));
+            if Self::is_verify_title(&stored_title) || requested_is_verify {
                 return Ok(err(format!(
                     "Subtask {id} is a verify step — verify steps are checked by the user \
                      in the app. An agent can add, rename, untick or delete them, but not \
@@ -4854,8 +4857,35 @@ mod tests {
             .unwrap();
         assert_eq!(done, 0, "the refused tick must not have written");
 
-        // The guard reads the FINAL title, so rename-to-verify + tick in one
-        // call is refused whole — nothing half-applied.
+        // Renaming AWAY from the prefix while ticking is refused too — one call
+        // must not both strip the guard and claim the check.
+        let (is_err, _) = extract(
+            &agent
+                .set_subtask_as(
+                    SetSubtaskParams {
+                        id: verify,
+                        done: Some(true),
+                        title: Some("just a step now".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "rename-away-from-verify + tick in one call must be refused");
+        let kept_verify: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT title FROM subtasks WHERE id = ?1", [verify], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            TildoneAgent::is_verify_title(&kept_verify),
+            "the refused rename-away must not have written"
+        );
+
+        // The guard also reads the REQUESTED title, so rename-to-verify + tick
+        // in one call is refused whole — nothing half-applied.
         let (is_err, _) = extract(
             &agent
                 .set_subtask_as(
