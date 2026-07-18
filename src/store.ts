@@ -15,7 +15,7 @@ import type {
   TaskLink,
   ViewMode,
 } from "./types";
-import { COLOR_CHOICES, PRIORITY_LABELS, STATUS_LABELS } from "./types";
+import { COLOR_CHOICES, DONE_CLEARED_TAGS, PRIORITY_LABELS, STATUS_LABELS } from "./types";
 import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
@@ -262,6 +262,25 @@ export function groupSlot(
   if (group.length === 0) return 0;
   const positions = group.map((t) => t.position);
   return status === "done" ? Math.min(...positions) - 1 : Math.max(...positions) + 1;
+}
+
+/**
+ * The tag ids a task keeps when it lands in Done, or null when nothing changes.
+ * Landing in Done retires `blocked` / `needs-review` (see DONE_CLEARED_TAGS) —
+ * without this the user completes a reviewed card and then has to x the stale
+ * "Needs review" pill off by hand. Mirrored by apply_task_update in
+ * src-tauri/src/agent.rs, the database's other writer.
+ */
+function tagIdsAfterDone(task: Task, tags: Tag[]): number[] | null {
+  const cleared = new Set(
+    tags
+      .filter((t) =>
+        (DONE_CLEARED_TAGS as readonly string[]).includes(t.name.toLowerCase()),
+      )
+      .map((t) => t.id),
+  );
+  const kept = task.tag_ids.filter((id) => !cleared.has(id));
+  return kept.length === task.tag_ids.length ? null : kept;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -576,6 +595,16 @@ export const useStore = create<Store>()((set, get) => ({
       tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...full } : t)),
     }));
 
+    if (patch.status === "done" && current.status !== "done") {
+      const kept = tagIdsAfterDone(current, get().tags);
+      if (kept) {
+        await db.setTaskTags(id, kept);
+        set((s) => ({
+          tasks: s.tasks.map((t) => (t.id === id ? { ...t, tag_ids: kept } : t)),
+        }));
+      }
+    }
+
     const labels: string[] = [];
     if (patch.status && patch.status !== current.status) {
       labels.push(`Status changed to ${STATUS_LABELS[patch.status]}`);
@@ -720,6 +749,17 @@ export const useStore = create<Store>()((set, get) => ({
         position: u.position,
         completed_at: u.completed_at,
       });
+      if (u.status === "done" && prev.status !== "done") {
+        const kept = tagIdsAfterDone(prev, get().tags);
+        if (kept) {
+          await db.setTaskTags(u.id, kept);
+          set((s) => ({
+            tasks: s.tasks.map((t) =>
+              t.id === u.id ? { ...t, tag_ids: kept } : t,
+            ),
+          }));
+        }
+      }
     }
   },
 

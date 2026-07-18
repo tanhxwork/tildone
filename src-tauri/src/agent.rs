@@ -1504,6 +1504,25 @@ impl TildoneAgent {
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
+        // Landing in Done retires the review-cycle tags: `blocked` and `needs-review`
+        // are questions to the user, and a completed card asks neither any more —
+        // left alone they sit stale until someone x-es them off by hand.
+        // `needs-landing` survives: done-with-an-unmerged-PR is exactly the state it
+        // marks (TIL-84). Mirrors tagIdsAfterDone in src/store.ts, the database's
+        // other writer. Runs after set_tags so it also wins over a contradictory
+        // tags list sent in the same call — which is why the "newly added" alert
+        // flags must drop too: a notification for a tag this write just removed
+        // would announce nothing.
+        if dest_status.as_deref() == Some("done") {
+            conn.execute(
+                "DELETE FROM task_tags WHERE task_id = ?1 AND tag_id IN \
+                 (SELECT id FROM tags WHERE LOWER(name) IN ('blocked', 'needs-review'))",
+                [id],
+            )
+            .map_err(db_err)?;
+            newly_blocked = false;
+            newly_needs_review = false;
+        }
         // Mark the card unseen: an agent changed something the user needs to know
         // and has not looked at yet. The board renders it as the tilde held before
         // its check settles, and opening the card clears it.
@@ -5041,6 +5060,109 @@ mod tests {
         work_on(&agent, id, "doing", Some("sess-1"), None, None);
         let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, Some("claude")).unwrap();
         assert_eq!(claim_count(&db), 0);
+    }
+
+    // ---- Done retires the review-cycle tags (TIL-97) ----
+    // The TS half of the same contract lives in tests/doneClearsReviewTags.test.ts.
+
+    fn tag_names(db: &Db, id: i64) -> Vec<String> {
+        db.lock()
+            .unwrap()
+            .prepare(
+                "SELECT t.name FROM tags t JOIN task_tags tt ON tt.tag_id = t.id \
+                 WHERE tt.task_id = ?1 ORDER BY t.name",
+            )
+            .unwrap()
+            .query_map([id], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn set_task_tags(agent: &TildoneAgent, id: i64, tags: &[&str]) {
+        let (is_err, out) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: Some(tags.iter().map(|t| t.to_string()).collect()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "tagging failed: {out}");
+    }
+
+    #[test]
+    fn complete_task_retires_blocked_and_needs_review_but_not_needs_landing() {
+        // Casing is not canonical — tags are auto-created from whatever name an
+        // agent sent — so the strip must match case-insensitively.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Reviewed work");
+        set_task_tags(&agent, id, &["blocked", "Needs-Review", "needs-landing", "frontend"]);
+
+        let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap();
+
+        assert_eq!(tag_names(&db, id), vec!["frontend", "needs-landing"]);
+    }
+
+    #[test]
+    fn a_non_done_transition_leaves_review_tags_alone() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Still in flight");
+        set_task_tags(&agent, id, &["blocked", "needs-review"]);
+
+        work_on(&agent, id, "doing", None, None, None);
+
+        assert_eq!(tag_names(&db, id), vec!["blocked", "needs-review"]);
+    }
+
+    #[test]
+    fn done_wins_over_a_contradictory_tags_list_and_raises_no_review_alert() {
+        // status: done and tags: [needs-review] in one call contradict each other;
+        // done wins, and the "Needs review" notification must not fire for a tag
+        // this same write just removed.
+        let (agent, sink) = test_agent_with_notifications();
+        let id = a_task(&agent, "Contradictory close");
+        let (is_err, out) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: Some("done".into()),
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: Some(vec!["needs-review".into(), "keep-me".into()]),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "update failed: {out}");
+
+        let titles: Vec<String> =
+            sink.lock().unwrap().iter().map(|(t, _, _)| t.clone()).collect();
+        assert!(titles.contains(&"Task done".to_string()));
+        assert!(
+            !titles.contains(&"Needs review".to_string()),
+            "alerted about a tag this write just removed"
+        );
     }
 
     #[test]

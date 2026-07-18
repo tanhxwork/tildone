@@ -215,6 +215,15 @@ export const PRIORITY_COLORS: Record<number, string> = {
 export const RESERVED_TAGS = ["blocked", "needs-review", "needs-landing"] as const;
 export type ReservedTag = (typeof RESERVED_TAGS)[number];
 
+/** The reserved tags a landing in Done retires. Both are questions to the user —
+ * answer me, check me — and a card the user (or an agent) just completed asks
+ * neither any more; left alone they sit stale on the done card until someone
+ * x-es them off by hand. `needs-landing` is exempt: done-with-an-unmerged-PR is
+ * exactly the state it exists to mark (see above). Matched case-insensitively,
+ * like reservedState. Both DB writers enforce this — the store on patchTask /
+ * applyDrag, and agent.rs in apply_task_update. */
+export const DONE_CLEARED_TAGS: readonly ReservedTag[] = ["blocked", "needs-review"];
+
 export const RESERVED_TAG_LABELS: Record<ReservedTag, string> = {
   blocked: "Blocked",
   "needs-review": "Needs review",
