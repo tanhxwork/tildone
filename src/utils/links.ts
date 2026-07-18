@@ -29,6 +29,17 @@ export function isFileEvidence(target: string): boolean {
   return EVIDENCE_EXTENSIONS.has(fileExtension(t));
 }
 
+/** Extensions that execute script when handed to the OS default app: an HTML or
+ *  SVG file opens in the browser and runs any inline JavaScript (in a file://
+ *  origin). They stay attachable as evidence, but the UI reveals them in Finder
+ *  instead of opening them — the user opens them deliberately if they trust the
+ *  source. Never call openPath on these. See openLink in TaskEditor. */
+export const REVEAL_ONLY_EXTENSIONS = new Set(["html", "htm", "svg"]);
+
+export function isRevealOnlyEvidence(target: string): boolean {
+  return REVEAL_ONLY_EXTENSIONS.has(fileExtension(target));
+}
+
 /** Best-effort guess of a repo URL's kind from its shape. The user or agent can
  *  always override it; when nothing matches, it's just a generic link. */
 export function deriveLinkKind(url: string): LinkKind {

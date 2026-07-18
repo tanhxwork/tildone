@@ -327,9 +327,10 @@ fn valid_date(s: &str) -> bool {
 const LINK_KINDS: [&str; 6] = ["pr", "branch", "commit", "worktree", "other", "file"];
 
 /// Extensions a file-evidence link may point at. Kept in lockstep with
-/// EVIDENCE_EXTENSIONS in src/utils/links.ts — a file gets handed to the OS
-/// "open in default app", so this is an allowlist (never a denylist) and never
-/// admits an executable or a script.
+/// EVIDENCE_EXTENSIONS in src/utils/links.ts — an allowlist, never a denylist,
+/// and never an executable or a script. `html`/`htm`/`svg` are attachable but
+/// the UI reveals them in Finder rather than opening them (they would run inline
+/// JS in a browser) — see REVEAL_ONLY_EXTENSIONS in src/utils/links.ts.
 const EVIDENCE_EXTENSIONS: &[&str] = &[
     "md", "txt", "html", "htm", "png", "jpg", "jpeg", "gif", "svg", "webp", "pdf", "json", "csv",
     "log",

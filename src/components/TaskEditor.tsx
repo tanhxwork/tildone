@@ -15,7 +15,7 @@ import {
   verifyStepLabel,
 } from "../types";
 import { relativeDueLabel, timeAgo } from "../utils/dates";
-import { isFileEvidence, isHttpUrl } from "../utils/links";
+import { isFileEvidence, isHttpUrl, isRevealOnlyEvidence } from "../utils/links";
 import {
   FileEvidenceIcon,
   IconAlert,
@@ -201,8 +201,14 @@ export function TaskEditor() {
 
   // A file opens in its default app (openPath); a URL opens in the browser. A
   // moved or deleted file surfaces an inline message rather than a dead click.
+  // HTML/SVG would run script if handed to the browser, so those reveal in
+  // Finder instead — the user opens them deliberately if they trust the source.
   async function openLink(link: TaskLink) {
     if (asLinkKind(link.kind) === "file") {
+      if (isRevealOnlyEvidence(link.url)) {
+        void revealItemInDir(link.url);
+        return;
+      }
       try {
         await openPath(link.url);
         setLinkError("");
@@ -621,7 +627,13 @@ export function TaskEditor() {
                   >
                     <button
                       className="link-chip-open"
-                      title={isFile ? link.url : `${LINK_KIND_LABELS[kind]} · ${link.url}`}
+                      title={
+                        isFile
+                          ? isRevealOnlyEvidence(link.url)
+                            ? `${link.url} — reveals in Finder (HTML/SVG can run scripts in a browser)`
+                            : link.url
+                          : `${LINK_KIND_LABELS[kind]} · ${link.url}`
+                      }
                       onClick={() => void openLink(link)}
                     >
                       {isFile ? (
