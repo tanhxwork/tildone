@@ -7,9 +7,32 @@ export function isHttpUrl(url: string): boolean {
   return /^https?:\/\/\S+/i.test(url.trim());
 }
 
+/** Extensions a file-evidence link may point at — kept in lockstep with
+ *  EVIDENCE_EXTENSIONS in src-tauri/src/agent.rs. A file opens in its default
+ *  app, so this is an allowlist and never admits an executable or a script. */
+export const EVIDENCE_EXTENSIONS = new Set([
+  "md", "txt", "html", "htm", "png", "jpg", "jpeg", "gif", "svg", "webp", "pdf", "json", "csv", "log",
+]);
+
+/** The lowercased extension of a path's basename, or "" for none / a dotfile. */
+function fileExtension(target: string): string {
+  const name = target.trim().split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/** An absolute local path (`/…` or `~/…`) to an allowlisted evidence file.
+ *  Mirrors valid_file_path in agent.rs; the extension is the real guard. */
+export function isFileEvidence(target: string): boolean {
+  const t = target.trim();
+  if (!(t.startsWith("/") || t.startsWith("~/"))) return false;
+  return EVIDENCE_EXTENSIONS.has(fileExtension(t));
+}
+
 /** Best-effort guess of a repo URL's kind from its shape. The user or agent can
  *  always override it; when nothing matches, it's just a generic link. */
 export function deriveLinkKind(url: string): LinkKind {
+  if (isFileEvidence(url)) return "file";
   const u = url.toLowerCase();
   if (u.includes("/pull/") || u.includes("/pulls/") || u.includes("/merge_requests/")) {
     return "pr";

@@ -324,7 +324,16 @@ fn valid_date(s: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
-const LINK_KINDS: [&str; 5] = ["pr", "branch", "commit", "worktree", "other"];
+const LINK_KINDS: [&str; 6] = ["pr", "branch", "commit", "worktree", "other", "file"];
+
+/// Extensions a file-evidence link may point at. Kept in lockstep with
+/// EVIDENCE_EXTENSIONS in src/utils/links.ts — a file gets handed to the OS
+/// "open in default app", so this is an allowlist (never a denylist) and never
+/// admits an executable or a script.
+const EVIDENCE_EXTENSIONS: &[&str] = &[
+    "md", "txt", "html", "htm", "png", "jpg", "jpeg", "gif", "svg", "webp", "pdf", "json", "csv",
+    "log",
+];
 
 /// Only http(s) links are clickable. The app opens a link with
 /// tauri-plugin-opener, which hands the string to the OS to open with whatever
@@ -348,6 +357,43 @@ fn link_label_from_url(url: &str) -> String {
         .find(|s| !s.is_empty())
         .unwrap_or(trimmed)
         .to_string()
+}
+
+/// Expand a leading `~` to $HOME, so a path a human typed opens as an absolute
+/// path. Anything without a `~` prefix is returned trimmed, unchanged.
+fn expand_home(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return home;
+        }
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{}/{}", home.trim_end_matches('/'), rest);
+        }
+    }
+    trimmed.to_string()
+}
+
+/// An absolute local path to an allowlisted evidence file — the file counterpart
+/// of `valid_http_url`, mirroring isFileEvidence in src/utils/links.ts. Opening a
+/// file hands it to the OS "open in default app", so the extension allowlist is
+/// the real guard, not the path. Relative paths and bare filenames are refused.
+fn valid_file_path(path: &str) -> bool {
+    let expanded = expand_home(path);
+    if !expanded.starts_with('/') {
+        return false;
+    }
+    let name = expanded.rsplit('/').next().unwrap_or("");
+    match name.rsplit_once('.') {
+        // A leading dot is not an extension: rsplit_once gives ("", "bashrc")
+        // for ".bashrc", and the empty stem rejects it.
+        Some((stem, ext)) if !stem.is_empty() => {
+            let ext = ext.to_ascii_lowercase();
+            EVIDENCE_EXTENSIONS.contains(&ext.as_str())
+        }
+        _ => false,
+    }
 }
 
 fn err(msg: impl Into<String>) -> CallToolResult {
@@ -1517,13 +1563,17 @@ impl ClaimInfo {
 struct AddLinkParams {
     #[schemars(description = "Task to attach the link to")]
     task_id: TaskRef,
-    #[schemars(description = "The URL to open. Must be http(s) — other schemes are refused.")]
+    #[schemars(
+        description = "An http(s) URL (opens in the browser), or an absolute path to an evidence file — md/txt/html/htm/png/jpg/jpeg/gif/svg/webp/pdf/json/csv/log — which opens in its default app. A leading ~ is expanded. Other URL schemes and relative paths are refused."
+    )]
     url: String,
     #[schemars(
-        description = "What to show on the chip (e.g. \"PR #12\", a branch name, a short SHA). Defaults to the URL's last path segment."
+        description = "What to show on the chip (e.g. \"PR #12\", a branch name, a short SHA). Defaults to the URL's last path segment, or the file's basename."
     )]
     label: Option<String>,
-    #[schemars(description = "One of: pr, branch, commit, worktree, other. Defaults to other.")]
+    #[schemars(
+        description = "For a URL: one of pr, branch, commit, worktree, other (default other). Ignored for a file path — a file is always kind \"file\"."
+    )]
     kind: Option<String>,
 }
 
@@ -2301,7 +2351,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Attach a repo link to a task — a branch, PR, commit or worktree URL — rendered as a clickable chip on the card. Only http(s) URLs are accepted."
+        description = "Attach a link or a file to a task, rendered as a clickable chip in the task's Evidence & links. Accepts an http(s) URL (a branch, PR, commit or worktree — opens in the browser) or an absolute path to an evidence file — md, txt, html, htm, png, jpg, jpeg, gif, svg, webp, pdf, json, csv, log — which opens in its default app and is stored as kind \"file\". Other URL schemes, relative paths, and any other extension are refused."
     )]
     fn add_link(
         &self,
@@ -2321,23 +2371,40 @@ impl TildoneAgent {
         }: AddLinkParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = url.trim().to_string();
-        if !valid_http_url(&url) {
+        let raw = url.trim().to_string();
+        let is_url = valid_http_url(&raw);
+        let is_file = !is_url && valid_file_path(&raw);
+        if !is_url && !is_file {
             return Ok(err(
-                "url must be an http(s) link; other schemes (file, javascript, mailto, custom app schemes) are refused.",
+                "url must be an http(s) link, or an absolute path to an evidence file \
+                 (md, txt, html, htm, png, jpg, jpeg, gif, svg, webp, pdf, json, csv, log). \
+                 Other URL schemes and relative paths are refused.",
             ));
         }
-        let kind = kind
-            .map(|k| k.trim().to_ascii_lowercase())
-            .filter(|k| !k.is_empty())
-            .unwrap_or_else(|| "other".to_string());
-        if !LINK_KINDS.contains(&kind.as_str()) {
-            return Ok(err("kind must be one of: pr, branch, commit, worktree, other."));
-        }
+        // A file always stores kind "file", derived from the target rather than
+        // taken from the caller; its `~` is expanded so the UI opens an absolute
+        // path. A URL keeps the caller's kind (default "other").
+        let (stored, kind) = if is_file {
+            (expand_home(&raw), "file".to_string())
+        } else {
+            let kind = kind
+                .map(|k| k.trim().to_ascii_lowercase())
+                .filter(|k| !k.is_empty())
+                .unwrap_or_else(|| "other".to_string());
+            if kind == "file" {
+                return Ok(err(
+                    "kind \"file\" is only for file paths; give an absolute path, not a URL.",
+                ));
+            }
+            if !LINK_KINDS.contains(&kind.as_str()) {
+                return Ok(err("kind must be one of: pr, branch, commit, worktree, other."));
+            }
+            (raw, kind)
+        };
         let label = label
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
-            .unwrap_or_else(|| link_label_from_url(&url));
+            .unwrap_or_else(|| link_label_from_url(&stored));
 
         let conn = self.db.lock().unwrap();
         let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
@@ -2354,7 +2421,7 @@ impl TildoneAgent {
         }
         conn.execute(
             "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![task_id, url, label, kind, now_iso()],
+            rusqlite::params![task_id, stored, label, kind, now_iso()],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
@@ -2364,7 +2431,7 @@ impl TildoneAgent {
         ok_json(&json!({
             "id": id,
             "task_id": task_id,
-            "url": url,
+            "url": stored,
             "label": label,
             "kind": kind,
         }))
@@ -3891,6 +3958,50 @@ mod tests {
         assert_eq!(link["kind"], "worktree");
         let (bad, _) = attach(&agent, id, "https://example.com/z", None, Some("banana"));
         assert!(bad, "an unknown kind must be refused");
+    }
+
+    #[test]
+    fn add_link_attaches_an_allowlisted_file_path_as_kind_file() {
+        let agent = test_agent();
+        let id = a_task(&agent, "evidence");
+        let (is_err, link) = attach(&agent, id, "/Users/x/shots/before.png", None, None);
+        assert!(!is_err, "an allowlisted file path must attach: {link}");
+        assert_eq!(link["kind"], "file", "a file path is stored as kind \"file\"");
+        assert_eq!(link["label"], "before.png", "label defaults to the basename");
+        assert_eq!(link["url"], "/Users/x/shots/before.png");
+    }
+
+    /// A file opens in its default app, so the extension allowlist is the whole
+    /// guard: executables, scripts, extensionless and relative paths are refused,
+    /// and a refusal writes nothing.
+    #[test]
+    fn add_link_refuses_unsafe_and_relative_file_paths_and_writes_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "guard files");
+        for bad in [
+            "/Users/x/deploy.sh", // executable extension
+            "/Users/x/Some.app",  // bundle
+            "/Users/x/noext",     // no extension
+            "docs/specs/foo.md",  // relative path
+            "before.png",         // bare filename
+        ] {
+            let (is_err, msg) = attach(&agent, id, bad, None, None);
+            assert!(is_err, "expected refusal for {bad}, got {msg}");
+        }
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM task_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused file link must write nothing");
+    }
+
+    #[test]
+    fn add_link_rejects_kind_file_on_a_url() {
+        let agent = test_agent();
+        let id = a_task(&agent, "kind guard");
+        let (is_err, _) = attach(&agent, id, "https://example.com/x", None, Some("file"));
+        assert!(is_err, "kind \"file\" with a URL must be refused");
     }
 
     #[test]

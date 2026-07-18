@@ -4628,6 +4628,28 @@ textarea:focus-visible,
 .link-chip:hover .link-delete {
   color: var(--danger);
 }
+/* Reveal-in-Finder, on a file-evidence chip only. Same footprint as the delete
+   button so the chip's height never shifts; hover lifts it to the accent. */
+.link-reveal {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.link-reveal:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+/* Why the add box refused a link/file — sits under the chips, in the danger ink. */
+.detail-link-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--danger);
+}
 .detail-link-add {
   display: inline-flex;
   align-items: center;
