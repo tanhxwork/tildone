@@ -2847,6 +2847,101 @@ async fn heartbeat_handler(
     axum::http::StatusCode::OK
 }
 
+/// Shared state for sidecar routes that need more than beats (the DB for
+/// claim→task resolution). Sits beside `/heartbeat`'s beats-only state; grows
+/// as later sidecar routes need more of the server's context.
+#[derive(Clone)]
+pub struct SidecarState {
+    beats: Beats,
+    db: Db,
+}
+
+/// The card a session claimed, joined to its live state — the row behind
+/// `GET /session/{id}/task`. Split from the handler so tests exercise the
+/// decision (claim? done? which state?) without axum.
+///
+/// `None` covers every "nothing to show" case in one answer: unknown session,
+/// claim on a trashed or done task. State resolution follows `resolve_presence`
+/// exactly — pid is the truth, TTL the backstop, `idle` reads as quiet — but
+/// for a single named session rather than per task.
+fn session_task_lookup(
+    conn: &Connection,
+    beats: &HashMap<String, Beat>,
+    session_id: &str,
+    now: std::time::Instant,
+    alive: &dyn Fn(u32) -> bool,
+) -> Option<serde_json::Value> {
+    let (task_id, task_ref, title, status, branch) = conn
+        .query_row(
+            "SELECT c.task_id, t.ref, t.title, t.status, c.branch
+               FROM agent_claims c JOIN tasks t ON t.id = c.task_id
+              WHERE c.session_id = ?1 AND t.deleted_at IS NULL
+                AND t.status != 'done'",
+            [session_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .ok()?;
+    let state = match beats.get(session_id) {
+        None => "quiet",
+        Some(b) => {
+            let dead = b.pid.map(|pid| !alive(pid)).unwrap_or(false);
+            let stale = now.saturating_duration_since(b.at) > LIVE_TTL;
+            if dead || stale || b.state == "idle" {
+                "quiet"
+            } else {
+                b.state.as_str()
+            }
+        }
+    };
+    Some(json!({
+        "task_id": task_id,
+        "ref": task_ref,
+        "title": title,
+        "status": status,
+        "branch": branch,
+        "state": state,
+    }))
+}
+
+/// The card a session is working, for the terminal's status line.
+///
+/// Read-only and poll-friendly: it never calls `notify()` and never writes.
+/// A session that claimed nothing answers 204 — that is the common case, not
+/// an error, exactly as `/heartbeat` treats unclaimed beats.
+async fn session_task_handler(
+    axum::extract::State(state): axum::extract::State<SidecarState>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Same origin rule as /heartbeat, same reasoning: a web page always sends
+    // Origin and can never legitimately talk to this server.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let session = session_id.trim().to_string();
+    if session.is_empty() {
+        return axum::http::StatusCode::NO_CONTENT.into_response();
+    }
+    let beats = state.beats.lock().unwrap().clone();
+    let row = {
+        let conn = state.db.lock().unwrap();
+        session_task_lookup(&conn, &beats, &session, std::time::Instant::now(), &pid_alive)
+    };
+    match row {
+        Some(v) => axum::Json(v).into_response(),
+        None => axum::http::StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
 /// Every claimed task, with the liveliest state among the sessions claiming it.
 ///
 /// Polled by the UI (see App.tsx) rather than pushed: a beat per tool call per agent
@@ -3022,6 +3117,8 @@ pub async fn agent_server_start(
     // into the MCP service closure below — the Arc is the point, so both share one
     // connection and one mutex rather than opening a second handle to the file.
     *live.db.lock().unwrap() = Some(db.clone());
+    // Same rule for the sidecar routes' handle (see the router below).
+    let sidecar_db = db.clone();
     let ct = CancellationToken::new();
     let config = server_config(port).with_cancellation_token(ct.child_token());
     let emitter = app.clone();
@@ -3057,11 +3154,20 @@ pub async fn agent_server_start(
         );
     // /heartbeat sits beside /mcp rather than inside it: a shell hook fires it on
     // every tool call, where an MCP handshake per beat would be absurd. It carries
-    // its own origin guard, because rmcp's covers the nested service only.
-    let router = axum::Router::new().nest_service("/mcp", service).route(
-        "/heartbeat",
-        axum::routing::post(heartbeat_handler).with_state(live.beats.clone()),
-    );
+    // its own origin guard, because rmcp's covers the nested service only. The
+    // session→task route is the reverse read of the same rail: the status line in
+    // the terminal asking which card this session claimed.
+    let sidecar = SidecarState { beats: live.beats.clone(), db: sidecar_db };
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .route(
+            "/heartbeat",
+            axum::routing::post(heartbeat_handler).with_state(live.beats.clone()),
+        )
+        .route(
+            "/session/{session_id}/task",
+            axum::routing::get(session_task_handler).with_state(sidecar),
+        );
 
     let serve_ct = ct.clone();
     tauri::async_runtime::spawn(async move {
@@ -3682,6 +3788,88 @@ mod tests {
             ALIVE,
         );
         assert_eq!(out[0].state, "quiet", "idle is a wire value, not a card state");
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /session/{id}/task — the status line's read of the claim rail.
+    // Exercised through session_task_lookup so the decision is tested without
+    // axum; the handler adds only Origin/204 plumbing shared with /heartbeat.
+
+    fn lookup(
+        db: &Db,
+        beats: &[(&str, Beat)],
+        session: &str,
+        alive: &dyn Fn(u32) -> bool,
+    ) -> Option<Value> {
+        let map: HashMap<String, Beat> =
+            beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
+        let conn = db.lock().unwrap();
+        session_task_lookup(&conn, &map, session, std::time::Instant::now(), alive)
+    }
+
+    #[test]
+    fn a_claimed_session_reads_its_card_with_live_state() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "wire the endpoint");
+        work_on(&agent, id, "doing", Some("sess-1"), Some("/wt"), Some("wt-1"));
+        let out = lookup(
+            &db,
+            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            "sess-1",
+            ALIVE,
+        )
+        .expect("a claimed session must resolve");
+        assert_eq!(out["task_id"].as_i64(), Some(id));
+        assert_eq!(out["ref"], "INBOX-1");
+        assert_eq!(out["title"], "wire the endpoint");
+        assert_eq!(out["status"], "doing");
+        assert_eq!(out["branch"], "wt-1");
+        assert_eq!(out["state"], "working");
+    }
+
+    #[test]
+    fn a_claimed_session_with_no_beat_is_quiet_not_absent() {
+        // The claim is durable, the beat volatile: after an app restart the
+        // status line must still name the card, just without a live state.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let out = lookup(&db, &[], "sess-1", ALIVE).expect("claim without beat resolves");
+        assert_eq!(out["state"], "quiet");
+    }
+
+    #[test]
+    fn a_dead_pid_reads_quiet_in_the_status_line_too() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let out = lookup(
+            &db,
+            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            "sess-1",
+            DEAD,
+        )
+        .unwrap();
+        assert_eq!(out["state"], "quiet");
+    }
+
+    #[test]
+    fn an_unknown_session_resolves_to_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert!(lookup(&db, &[], "sess-other", ALIVE).is_none());
+    }
+
+    #[test]
+    fn a_claim_on_a_done_task_resolves_to_nothing() {
+        // The segment is for work in progress; a done card in the terminal
+        // status line would just be stale noise.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "done", Some("sess-1"), None, None);
+        assert!(lookup(&db, &[], "sess-1", ALIVE).is_none());
     }
 
     #[test]
