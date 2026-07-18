@@ -4736,3 +4736,15 @@ textarea:focus-visible,
   color: var(--text-faint);
   font-weight: 600;
 }
+/* The merged badge is an icon, not a self-coloured span, so it needs an explicit
+   tint to read green both as a plain chip and inside the review-door — whose
+   `.review-door svg` rule would otherwise review-tint it along with the door's
+   kind-icon (the second selector outranks that rule). */
+.pr-check {
+  display: inline-flex;
+  align-items: center;
+}
+.pr-check svg,
+.card-link.review-door .pr-check svg {
+  color: var(--success);
+}
