@@ -116,6 +116,13 @@ pub struct Beat {
     /// the OS rather than time out. `None` → we fall back to `LIVE_TTL`, which is
     /// the only reason that constant still exists.
     pid: Option<u32>,
+    /// When the session *entered* blocked — set on the transition into blocked,
+    /// carried forward unchanged on subsequent blocked beats, cleared by any
+    /// other state. This is the episode identity: the blocked-notification
+    /// watch fires only if the same episode is still standing after its delay,
+    /// so one episode can never banner twice and an answered prompt never
+    /// banners at all.
+    blocked_since: Option<std::time::Instant>,
 }
 
 /// One row of `agent_claims`, joined with the agent's latest log line.
@@ -2804,7 +2811,7 @@ pub struct HeartbeatBody {
 /// 3. **Never writes to disk.** Beats are volatile by design; the durable half is
 ///    the claim.
 async fn heartbeat_handler(
-    axum::extract::State(beats): axum::extract::State<Beats>,
+    axum::extract::State(state): axum::extract::State<SidecarState>,
     headers: axum::http::HeaderMap,
     body: Option<axum::Json<HeartbeatBody>>,
 ) -> axum::http::StatusCode {
@@ -2832,28 +2839,111 @@ async fn heartbeat_handler(
     if session.is_empty() {
         return axum::http::StatusCode::BAD_REQUEST;
     }
-    beats.lock().unwrap().insert(
-        session.to_string(),
-        Beat {
-            state: body.state,
-            at: std::time::Instant::now(),
-            at_iso: now_iso(),
-            pid: body.pid,
-        },
-    );
+    let now = std::time::Instant::now();
+    let entering_blocked = {
+        let mut beats = state.beats.lock().unwrap();
+        let blocked_since = next_blocked_since(beats.get(session), &body.state, now);
+        beats.insert(
+            session.to_string(),
+            Beat {
+                state: body.state,
+                at: now,
+                at_iso: now_iso(),
+                pid: body.pid,
+                blocked_since,
+            },
+        );
+        blocked_since == Some(now)
+    };
+    if entering_blocked {
+        spawn_blocked_watch(state, session.to_string(), now);
+    }
     // 200 even when this session claimed nothing: most sessions are not working a
     // board task, and their beats must be free and harmless. That is the common
     // case, not an error — resolve_presence simply never joins them to a card.
     axum::http::StatusCode::OK
 }
 
+/// Episode identity for an incoming beat: a fresh block starts an episode
+/// (`Some(now)`), repeated blocked beats extend the existing one unchanged,
+/// and any other state ends it. Pure so the identity rules are testable
+/// without axum or threads.
+fn next_blocked_since(
+    prev: Option<&Beat>,
+    new_state: &str,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    let was_blocked = prev.is_some_and(|b| b.state == "blocked");
+    match (new_state, was_blocked) {
+        ("blocked", true) => prev.and_then(|b| b.blocked_since),
+        ("blocked", false) => Some(now),
+        _ => None,
+    }
+}
+
+/// The noise gate for blocked notifications: a permission prompt the user
+/// answers at the keyboard must never banner. Only a block still standing
+/// after this delay — same episode, no working/idle beat in between — is an
+/// *unattended* block worth interrupting for.
+const BLOCKED_NOTIFY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn spawn_blocked_watch(state: SidecarState, session: String, episode: std::time::Instant) {
+    // A detached OS thread per episode, not a tokio task: it sleeps once and
+    // exits, entering-blocked happens a handful of times a day, and a parked
+    // thread is a condvar — never worth coupling to the runtime for.
+    std::thread::spawn(move || {
+        std::thread::sleep(BLOCKED_NOTIFY_AFTER);
+        fire_if_still_blocked(&state, &session, episode);
+    });
+}
+
+/// The decision half of the blocked watch, split from the spawn so tests run
+/// it synchronously with a fabricated episode instead of sleeping.
+///
+/// The claim is resolved at FIRE time, not capture time — the session may
+/// have claimed, re-claimed, or finished a task during the delay, and the
+/// banner must name what it is blocked on *now*. No claim → no banner: there
+/// is no card to name, and the user sitting at that terminal sees the prompt
+/// itself. The existing Settings toggle mutes this like every other
+/// notification, because it rides the same `notify_user` closure.
+fn fire_if_still_blocked(state: &SidecarState, session: &str, episode: std::time::Instant) {
+    let still_blocked = state
+        .beats
+        .lock()
+        .unwrap()
+        .get(session)
+        .is_some_and(|b| b.state == "blocked" && b.blocked_since == Some(episode));
+    if !still_blocked {
+        return;
+    }
+    let named = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT t.ref, t.title FROM agent_claims c
+               JOIN tasks t ON t.id = c.task_id
+              WHERE c.session_id = ?1 AND t.deleted_at IS NULL
+                AND t.status != 'done'",
+            [session],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+    };
+    let Some((task_ref, title)) = named else { return };
+    let body = match &task_ref {
+        Some(r) => format!("{r} · {title}"),
+        None => title,
+    };
+    (state.notify_user)("Waiting on you", &body, task_ref.as_deref());
+}
+
 /// Shared state for sidecar routes that need more than beats (the DB for
-/// claim→task resolution). Sits beside `/heartbeat`'s beats-only state; grows
-/// as later sidecar routes need more of the server's context.
+/// claim→task resolution, the notifier for the blocked watch). `/heartbeat`
+/// and `/session/{id}/task` both run on this.
 #[derive(Clone)]
 pub struct SidecarState {
     beats: Beats,
     db: Db,
+    notify_user: NotifyUser,
 }
 
 /// The card a session claimed, joined to its live state — the row behind
@@ -3139,6 +3229,10 @@ pub async fn agent_server_start(
     // The same token the server shuts down on, so a parked list_changes is
     // released by agent_server_stop / app exit instead of holding them up.
     let agent_ct = ct.clone();
+    // Cloned before notify_user moves into the MCP service closure: the
+    // sidecar's blocked watch sends through the same closure (and therefore
+    // the same Settings mute) as the MCP write path.
+    let sidecar_notify = notify_user.clone();
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
@@ -3157,12 +3251,16 @@ pub async fn agent_server_start(
     // its own origin guard, because rmcp's covers the nested service only. The
     // session→task route is the reverse read of the same rail: the status line in
     // the terminal asking which card this session claimed.
-    let sidecar = SidecarState { beats: live.beats.clone(), db: sidecar_db };
+    let sidecar = SidecarState {
+        beats: live.beats.clone(),
+        db: sidecar_db,
+        notify_user: sidecar_notify,
+    };
     let router = axum::Router::new()
         .nest_service("/mcp", service)
         .route(
             "/heartbeat",
-            axum::routing::post(heartbeat_handler).with_state(live.beats.clone()),
+            axum::routing::post(heartbeat_handler).with_state(sidecar.clone()),
         )
         .route(
             "/session/{session_id}/task",
@@ -3670,11 +3768,13 @@ mod tests {
     }
 
     fn a_beat(state: &str, age: std::time::Duration, pid: Option<u32>) -> Beat {
+        let at = std::time::Instant::now() - age;
         Beat {
             state: state.into(),
-            at: std::time::Instant::now() - age,
+            at,
             at_iso: "2026-07-17T10:05:00.000Z".into(),
             pid,
+            blocked_since: (state == "blocked").then_some(at),
         }
     }
 
@@ -3870,6 +3970,121 @@ mod tests {
         work_on(&agent, id, "doing", Some("sess-1"), None, None);
         work_on(&agent, id, "done", Some("sess-1"), None, None);
         assert!(lookup(&db, &[], "sess-1", ALIVE).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Blocked-on-permission banner: episode identity + the fire decision.
+    // fire_if_still_blocked is called synchronously with fabricated episodes —
+    // the 20s sleep lives only in spawn_blocked_watch, which these skip.
+
+    fn sidecar_for(db: &Db, beats: &[(&str, Beat)]) -> (SidecarState, NotifySink) {
+        let sink: NotifySink = Arc::new(Mutex::new(Vec::new()));
+        let recorder = sink.clone();
+        let notify_user: NotifyUser = Arc::new(move |t: &str, b: &str, r: Option<&str>| {
+            recorder
+                .lock()
+                .unwrap()
+                .push((t.to_string(), b.to_string(), r.map(str::to_string)));
+        });
+        let beats_map: Beats = Arc::new(Mutex::new(
+            beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect(),
+        ));
+        (SidecarState { beats: beats_map, db: db.clone(), notify_user }, sink)
+    }
+
+    fn blocked_beat(episode: std::time::Instant) -> Beat {
+        Beat {
+            state: "blocked".into(),
+            at: episode,
+            at_iso: "2026-07-17T10:05:00.000Z".into(),
+            pid: None,
+            blocked_since: Some(episode),
+        }
+    }
+
+    #[test]
+    fn an_unattended_block_banners_once_naming_the_card() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "ship the thing");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let ep = std::time::Instant::now();
+        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "sess-1", ep);
+        let fired = sink.lock().unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, "Waiting on you");
+        assert_eq!(fired[0].1, "INBOX-1 · ship the thing");
+        assert_eq!(fired[0].2.as_deref(), Some("INBOX-1"));
+    }
+
+    #[test]
+    fn an_answered_prompt_never_banners() {
+        // The user approved within the gate: the beat is working again by the
+        // time the watch wakes. Silence is the whole feature.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let ep = std::time::Instant::now();
+        let (state, sink) = sidecar_for(
+            &db,
+            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), None))],
+        );
+        fire_if_still_blocked(&state, "sess-1", ep);
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_expired_episode_does_not_banner_for_a_new_one() {
+        // Approve, then block again: the old watch's episode is gone and only
+        // the NEW episode's watch may banner — otherwise one long session
+        // could double-banner from a stale thread.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let old_ep = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        let new_ep = std::time::Instant::now();
+        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(new_ep))]);
+        fire_if_still_blocked(&state, "sess-1", old_ep);
+        assert!(sink.lock().unwrap().is_empty(), "stale watch must stay silent");
+        fire_if_still_blocked(&state, "sess-1", new_ep);
+        assert_eq!(sink.lock().unwrap().len(), 1, "the live episode still banners");
+    }
+
+    #[test]
+    fn an_unclaimed_blocked_session_stays_silent() {
+        let (agent, db) = test_agent_with_db();
+        let _ = &agent; // schema via the agent; no task claimed
+        let ep = std::time::Instant::now();
+        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "sess-1", ep);
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_block_on_a_finished_task_stays_silent() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "done", Some("sess-1"), None, None);
+        let ep = std::time::Instant::now();
+        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "sess-1", ep);
+        assert!(sink.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn episode_identity_survives_repeated_blocked_beats() {
+        let ep = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let now = std::time::Instant::now();
+        let prev = blocked_beat(ep);
+        // A second blocked beat extends the SAME episode…
+        assert_eq!(next_blocked_since(Some(&prev), "blocked", now), Some(ep));
+        // …a working beat ends it…
+        assert_eq!(next_blocked_since(Some(&prev), "working", now), None);
+        // …and a fresh block (from non-blocked, or from nothing) starts a new one.
+        let working = a_beat("working", std::time::Duration::from_secs(1), None);
+        assert_eq!(next_blocked_since(Some(&working), "blocked", now), Some(now));
+        assert_eq!(next_blocked_since(None, "blocked", now), Some(now));
     }
 
     #[test]
@@ -6126,11 +6341,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn heartbeat_over_http() {
         let beats: Beats = Arc::new(Mutex::new(HashMap::new()));
+        let sidecar = SidecarState {
+            beats: beats.clone(),
+            db: Arc::new(Mutex::new(migrated_conn())),
+            notify_user: no_notify(),
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let router = axum::Router::new().route(
             "/heartbeat",
-            axum::routing::post(heartbeat_handler).with_state(beats.clone()),
+            axum::routing::post(heartbeat_handler).with_state(sidecar),
         );
         let url = format!("http://{addr}/heartbeat");
         tokio::spawn(async move {
