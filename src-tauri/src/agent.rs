@@ -3133,14 +3133,28 @@ fn apply_git_event(conn: &Connection, ev: &GitEventBody) -> bool {
             true
         }
         "pr_merged" => {
+            // The event names a URL — flip THAT chip. Falling back to the
+            // newest PR link covers a chip whose URL was hand-attached in a
+            // slightly different shape; with one PR link (the common card)
+            // the two answers coincide, with several only the exact match
+            // may flip a non-newest one.
             let link = conn
                 .query_row(
                     "SELECT id, label FROM task_links
-                      WHERE task_id = ?1 AND kind = 'pr' ORDER BY id DESC LIMIT 1",
-                    [task_id],
+                      WHERE task_id = ?1 AND kind = 'pr' AND url = ?2",
+                    rusqlite::params![task_id, ev.url],
                     |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
                 )
-                .ok();
+                .ok()
+                .or_else(|| {
+                    conn.query_row(
+                        "SELECT id, label FROM task_links
+                          WHERE task_id = ?1 AND kind = 'pr' ORDER BY id DESC LIMIT 1",
+                        [task_id],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                    )
+                    .ok()
+                });
             let Some((link_id, label)) = link else { return false };
             if conn
                 .execute(
@@ -4178,6 +4192,31 @@ mod tests {
         let links = link_rows(&db, id);
         assert_eq!(links.len(), 1, "merge flips the existing chip, never adds one");
         assert_eq!(links[0].3.as_deref(), Some("merged"));
+    }
+
+    #[test]
+    fn a_merge_event_flips_the_pr_it_names_not_the_newest() {
+        // A card can carry two PR chips (a reopened PR, out-of-order events).
+        // The merge event names a URL; that chip flips, not the latest one.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        for n in [5, 7] {
+            let ev = git_ev(
+                "sess-1",
+                "pr",
+                &format!("https://github.com/o/r/pull/{n}"),
+                Some(&format!("PR #{n}")),
+            );
+            assert!(apply_git_event(&db.lock().unwrap(), &ev));
+        }
+        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/5", None);
+        assert!(apply_git_event(&db.lock().unwrap(), &merged));
+        let links = link_rows(&db, id);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0, "https://github.com/o/r/pull/5");
+        assert_eq!(links[0].3.as_deref(), Some("merged"), "the named PR flips");
+        assert_eq!(links[1].3, None, "the newer, unnamed PR does not");
     }
 
     #[test]
