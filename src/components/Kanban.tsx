@@ -734,7 +734,10 @@ function CardProvenance({
   const live = useStore((s) => s.live);
   const fallback = useStore((s) => s.presence);
   const entry = cardPresence(task.id, live, fallback);
-  if (!project && links.length === 0 && !entry) return null;
+  // File evidence lives in the task detail's Evidence section, never as a card
+  // chip — the card carries only the git-workflow "state of play".
+  const chipLinks = links.filter((l) => asLinkKind(l.kind) !== "file");
+  if (!project && chipLinks.length === 0 && !entry) return null;
   // The agent's worktree, from its claim. Suppressed when the task already carries a
   // hand-attached worktree link, which is a real URL and therefore strictly more
   // useful than a bare name.
@@ -777,9 +780,9 @@ function CardProvenance({
           <LinkKindIcon kind="worktree" size={13} />
         </span>
       )}
-      {links.length > 0 && (
+      {chipLinks.length > 0 && (
         <span className="card-links">
-          {latestLinkPerKind(links).map(({ link, total }) => {
+          {latestLinkPerKind(chipLinks).map(({ link, total }) => {
             const kind = asLinkKind(link.kind);
             const isDoor = door && kind === "pr";
             const short = isDoor ? prDoorLabel(link) : cardLinkShort(link);

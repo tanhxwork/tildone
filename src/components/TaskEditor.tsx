@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { useStore } from "../store";
-import type { Status } from "../types";
+import type { Status, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -15,10 +15,12 @@ import {
   verifyStepLabel,
 } from "../types";
 import { relativeDueLabel, timeAgo } from "../utils/dates";
-import { isHttpUrl } from "../utils/links";
+import { isFileEvidence, isHttpUrl, isRevealOnlyEvidence } from "../utils/links";
 import {
+  FileEvidenceIcon,
   IconAlert,
   IconCheck,
+  IconFolderOpen,
   IconLink,
   IconMaximize,
   IconMessage,
@@ -96,6 +98,7 @@ export function TaskEditor() {
   const [tagInput, setTagInput] = useState("");
   const [subtaskInput, setSubtaskInput] = useState("");
   const [linkInput, setLinkInput] = useState("");
+  const [linkError, setLinkError] = useState("");
   const [commentInput, setCommentInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(loadExpanded);
@@ -109,6 +112,7 @@ export function TaskEditor() {
       setTagInput("");
       setSubtaskInput("");
       setLinkInput("");
+      setLinkError("");
       setCommentInput("");
       setConfirmDelete(false);
       setAiError("");
@@ -183,10 +187,37 @@ export function TaskEditor() {
   }
 
   async function addLinkFromInput() {
-    const url = linkInput.trim();
-    if (!isHttpUrl(url)) return;
-    await addLink(task!.id, url);
+    const value = linkInput.trim();
+    if (!isHttpUrl(value) && !isFileEvidence(value)) {
+      if (value) {
+        setLinkError("Add an http(s) link, or an absolute path to a document or image.");
+      }
+      return;
+    }
+    setLinkError("");
+    await addLink(task!.id, value);
     setLinkInput("");
+  }
+
+  // A file opens in its default app (openPath); a URL opens in the browser. A
+  // moved or deleted file surfaces an inline message rather than a dead click.
+  // HTML/SVG would run script if handed to the browser, so those reveal in
+  // Finder instead — the user opens them deliberately if they trust the source.
+  async function openLink(link: TaskLink) {
+    if (asLinkKind(link.kind) === "file") {
+      if (isRevealOnlyEvidence(link.url)) {
+        void revealItemInDir(link.url);
+        return;
+      }
+      try {
+        await openPath(link.url);
+        setLinkError("");
+      } catch {
+        setLinkError(`Can't find ${link.label} — was it moved?`);
+      }
+    } else {
+      void openUrl(link.url);
+    }
   }
 
   async function addCommentFromInput() {
@@ -470,9 +501,13 @@ export function TaskEditor() {
                         className={isDoor ? "card-link review-door" : "card-link"}
                         style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
                         title={`${LINK_KIND_LABELS[kind]} · ${link.label} · ${link.url}`}
-                        onClick={() => void openUrl(link.url)}
+                        onClick={() => void openLink(link)}
                       >
-                        <LinkKindIcon kind={link.kind} size={13} />
+                        {kind === "file" ? (
+                          <FileEvidenceIcon path={link.url} size={13} />
+                        ) : (
+                          <LinkKindIcon kind={link.kind} size={13} />
+                        )}
                         <span className="card-link-label">{link.label}</span>
                       </button>
                     );
@@ -575,7 +610,7 @@ export function TaskEditor() {
 
           <section className="detail-section">
             <h3 className="detail-section-title">
-              Links
+              Evidence &amp; links
               {taskLinks.length > 0 && (
                 <span className="detail-section-count">{taskLinks.length}</span>
               )}
@@ -583,6 +618,7 @@ export function TaskEditor() {
             <div className="detail-links">
               {taskLinks.map((link) => {
                 const kind = asLinkKind(link.kind);
+                const isFile = kind === "file";
                 return (
                   <span
                     key={link.id}
@@ -591,12 +627,32 @@ export function TaskEditor() {
                   >
                     <button
                       className="link-chip-open"
-                      title={`${LINK_KIND_LABELS[kind]} · ${link.url}`}
-                      onClick={() => void openUrl(link.url)}
+                      title={
+                        isFile
+                          ? isRevealOnlyEvidence(link.url)
+                            ? `${link.url} — reveals in Finder (HTML/SVG can run scripts in a browser)`
+                            : link.url
+                          : `${LINK_KIND_LABELS[kind]} · ${link.url}`
+                      }
+                      onClick={() => void openLink(link)}
                     >
-                      <LinkKindIcon kind={link.kind} size={13} />
+                      {isFile ? (
+                        <FileEvidenceIcon path={link.url} size={13} />
+                      ) : (
+                        <LinkKindIcon kind={link.kind} size={13} />
+                      )}
                       <span className="link-chip-label">{link.label}</span>
                     </button>
+                    {isFile && (
+                      <button
+                        className="link-reveal"
+                        aria-label={`Reveal ${link.label} in Finder`}
+                        title="Reveal in Finder"
+                        onClick={() => void revealItemInDir(link.url)}
+                      >
+                        <IconFolderOpen size={12} />
+                      </button>
+                    )}
                     <button
                       className="link-delete"
                       aria-label={`Remove link ${link.label}`}
@@ -611,13 +667,17 @@ export function TaskEditor() {
                 <IconLink size={12} />
                 <input
                   value={linkInput}
-                  placeholder="Paste a PR, branch, or commit URL"
-                  aria-label="Add link"
-                  onChange={(e) => setLinkInput(e.target.value)}
+                  placeholder="Paste a URL or an absolute file path"
+                  aria-label="Add a link or a file path"
+                  onChange={(e) => {
+                    setLinkInput(e.target.value);
+                    if (linkError) setLinkError("");
+                  }}
                   onKeyDown={(e) => e.key === "Enter" && void addLinkFromInput()}
                 />
               </div>
             </div>
+            {linkError && <p className="detail-link-error">{linkError}</p>}
           </section>
 
           <section className="detail-section">

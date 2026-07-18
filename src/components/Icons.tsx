@@ -279,6 +279,35 @@ export const IconGitWorktree = (p: IconProps) => (
   </Svg>
 );
 
+export const IconImage = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <path d="m21 15-4.5-4.5L6 21" />
+  </Svg>
+);
+
+export const IconFileText = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+    <path d="M14 3v6h6" />
+    <path d="M9 13h6M9 17h4" />
+  </Svg>
+);
+
+export const IconFile = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+    <path d="M14 3v6h6" />
+  </Svg>
+);
+
+export const IconFolderOpen = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </Svg>
+);
+
 /** The icon for a link kind, shared by the card and the editor. */
 export function LinkKindIcon({ kind, size = 13 }: { kind: string; size?: number }) {
   switch (kind) {
@@ -293,4 +322,14 @@ export function LinkKindIcon({ kind, size = 13 }: { kind: string; size?: number 
     default:
       return <IconLink size={size} />;
   }
+}
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp"]);
+
+/** The icon for a file-evidence chip, chosen from the path's extension. */
+export function FileEvidenceIcon({ path, size = 13 }: { path: string; size?: number }) {
+  const ext = (path.split("/").pop() ?? "").split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTENSIONS.has(ext)) return <IconImage size={size} />;
+  if (ext === "pdf") return <IconFile size={size} />;
+  return <IconFileText size={size} />;
 }

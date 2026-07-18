@@ -122,9 +122,11 @@ export interface Comment {
   created_at: string;
 }
 
-export type LinkKind = "pr" | "branch" | "commit" | "worktree" | "other";
+// "file" is local evidence (a screenshot, a spec, a PDF) opened in its default
+// app; the rest are http(s) links. See add_link in src-tauri/src/agent.rs.
+export type LinkKind = "pr" | "branch" | "commit" | "worktree" | "other" | "file";
 
-export const LINK_KINDS: LinkKind[] = ["pr", "branch", "commit", "worktree", "other"];
+export const LINK_KINDS: LinkKind[] = ["pr", "branch", "commit", "worktree", "other", "file"];
 
 export const LINK_KIND_LABELS: Record<LinkKind, string> = {
   pr: "Pull request",
@@ -132,6 +134,7 @@ export const LINK_KIND_LABELS: Record<LinkKind, string> = {
   commit: "Commit",
   worktree: "Worktree",
   other: "Link",
+  file: "File",
 };
 
 // Per-kind accent, hardcoded like PRIORITY_COLORS and picked to read on both themes.
@@ -141,6 +144,7 @@ export const LINK_KIND_COLORS: Record<LinkKind, string> = {
   commit: "#dd5b00",
   worktree: "#2a9d99",
   other: "#787671",
+  file: "#4b8fd6",
 };
 
 /** A stored kind string is untrusted (an older or hand-written row); fold anything
