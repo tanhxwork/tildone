@@ -2937,13 +2937,15 @@ fn fire_if_still_blocked(state: &SidecarState, session: &str, episode: std::time
 }
 
 /// Shared state for sidecar routes that need more than beats (the DB for
-/// claim→task resolution, the notifier for the blocked watch). `/heartbeat`
-/// and `/session/{id}/task` both run on this.
+/// claim→task resolution, the notifier for the blocked watch, the UI reload
+/// signal for routes that write). `/heartbeat`, `/session/{id}/task` and
+/// `/git-event` all run on this.
 #[derive(Clone)]
 pub struct SidecarState {
     beats: Beats,
     db: Db,
     notify_user: NotifyUser,
+    on_change: Notify,
 }
 
 /// The card a session claimed, joined to its live state — the row behind
@@ -3029,6 +3031,135 @@ async fn session_task_handler(
     match row {
         Some(v) => axum::Json(v).into_response(),
         None => axum::http::StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+/// A git artifact the moment it is born, as the shell hook saw it.
+#[derive(serde::Deserialize)]
+pub struct GitEventBody {
+    session_id: String,
+    kind: String,
+    url: String,
+    label: Option<String>,
+}
+
+/// A chip the moment the artifact exists — no model in the loop. The global
+/// PostToolUse hook gathered the facts from git itself; here we only resolve
+/// the session to its claimed card and attach, deduped by URL. Sessions with
+/// no claim answer 200 and vanish: most sessions work no card, and the hook
+/// has nothing useful to do with an error either way.
+async fn git_event_handler(
+    axum::extract::State(state): axum::extract::State<SidecarState>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<GitEventBody>>,
+) -> axum::http::StatusCode {
+    // Same origin rule as /heartbeat, same reasoning: a web page always sends
+    // Origin and can never legitimately talk to this server.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return axum::http::StatusCode::FORBIDDEN;
+    }
+    let Some(axum::Json(body)) = body else {
+        return axum::http::StatusCode::BAD_REQUEST;
+    };
+    if !matches!(body.kind.as_str(), "branch" | "pr" | "pr_merged")
+        || !body.url.starts_with("https://")
+    {
+        return axum::http::StatusCode::BAD_REQUEST;
+    }
+    let changed = {
+        let conn = state.db.lock().unwrap();
+        apply_git_event(&conn, &body)
+    };
+    if changed {
+        (state.on_change)();
+    }
+    axum::http::StatusCode::OK
+}
+
+/// The decision half of `/git-event`, split from the handler so tests run it
+/// against an in-memory DB without axum. Returns whether the DB changed —
+/// the handler's cue to reload the UI, and nothing else's business.
+///
+/// `branch`/`pr` attach a link chip, deduped by exact URL (a second push of
+/// the same branch is a no-op, not a second chip). `pr_merged` flips the most
+/// recent PR link's `pr_state` — the same row the card renders — and clears
+/// `pr_behind`, which is meaningless once merged.
+fn apply_git_event(conn: &Connection, ev: &GitEventBody) -> bool {
+    let claim = conn
+        .query_row(
+            "SELECT c.task_id, c.agent_name FROM agent_claims c
+               JOIN tasks t ON t.id = c.task_id
+              WHERE c.session_id = ?1 AND t.deleted_at IS NULL
+                AND t.status != 'done'",
+            [ev.session_id.trim()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .ok();
+    let Some((task_id, agent)) = claim else { return false };
+    match ev.kind.as_str() {
+        "branch" | "pr" => {
+            let dup: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM task_links WHERE task_id = ?1 AND url = ?2)",
+                    rusqlite::params![task_id, ev.url],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if dup {
+                return false;
+            }
+            let label = ev
+                .label
+                .clone()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| link_label_from_url(&ev.url));
+            if conn
+                .execute(
+                    "INSERT INTO task_links (task_id, url, label, kind, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![task_id, ev.url, label, ev.kind, now_iso()],
+                )
+                .is_err()
+            {
+                return false;
+            }
+            TildoneAgent::record_activity(
+                conn,
+                task_id,
+                &format!("Link added: {label}"),
+                agent.as_deref(),
+            );
+            true
+        }
+        "pr_merged" => {
+            let link = conn
+                .query_row(
+                    "SELECT id, label FROM task_links
+                      WHERE task_id = ?1 AND kind = 'pr' ORDER BY id DESC LIMIT 1",
+                    [task_id],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .ok();
+            let Some((link_id, label)) = link else { return false };
+            if conn
+                .execute(
+                    "UPDATE task_links SET pr_state = 'merged', pr_behind = NULL WHERE id = ?1",
+                    [link_id],
+                )
+                .is_err()
+            {
+                return false;
+            }
+            TildoneAgent::record_activity(
+                conn,
+                task_id,
+                &format!("PR status: merged ({label})"),
+                agent.as_deref(),
+            );
+            true
+        }
+        _ => false,
     }
 }
 
@@ -3231,8 +3362,10 @@ pub async fn agent_server_start(
     let agent_ct = ct.clone();
     // Cloned before notify_user moves into the MCP service closure: the
     // sidecar's blocked watch sends through the same closure (and therefore
-    // the same Settings mute) as the MCP write path.
+    // the same Settings mute) as the MCP write path. Same for on_change —
+    // /git-event reloads the UI through the same signal as MCP writes.
     let sidecar_notify = notify_user.clone();
+    let sidecar_on_change = on_change.clone();
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
@@ -3255,6 +3388,7 @@ pub async fn agent_server_start(
         beats: live.beats.clone(),
         db: sidecar_db,
         notify_user: sidecar_notify,
+        on_change: sidecar_on_change,
     };
     let router = axum::Router::new()
         .nest_service("/mcp", service)
@@ -3264,7 +3398,11 @@ pub async fn agent_server_start(
         )
         .route(
             "/session/{session_id}/task",
-            axum::routing::get(session_task_handler).with_state(sidecar),
+            axum::routing::get(session_task_handler).with_state(sidecar.clone()),
+        )
+        .route(
+            "/git-event",
+            axum::routing::post(git_event_handler).with_state(sidecar),
         );
 
     let serve_ct = ct.clone();
@@ -3973,6 +4111,120 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // POST /git-event — chips attached mechanically by the global git hook.
+    // Exercised through apply_git_event so the decision is tested without
+    // axum; the handler adds only Origin/kind/https validation on top.
+
+    fn git_ev(session: &str, kind: &str, url: &str, label: Option<&str>) -> GitEventBody {
+        GitEventBody {
+            session_id: session.into(),
+            kind: kind.into(),
+            url: url.into(),
+            label: label.map(Into::into),
+        }
+    }
+
+    fn link_rows(db: &Db, task_id: i64) -> Vec<(String, String, String, Option<String>)> {
+        let conn = db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT url, label, kind, pr_state FROM task_links
+                  WHERE task_id = ?1 ORDER BY id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([task_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn a_branch_event_attaches_one_chip_and_only_one() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let ev = git_ev("sess-1", "branch", "https://github.com/o/r/tree/wt-1", Some("wt-1"));
+        assert!(apply_git_event(&db.lock().unwrap(), &ev));
+        // The same push again is a no-op, not a second chip.
+        assert!(!apply_git_event(&db.lock().unwrap(), &ev));
+        let links = link_rows(&db, id);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].0, "https://github.com/o/r/tree/wt-1");
+        assert_eq!(links[0].1, "wt-1");
+        assert_eq!(links[0].2, "branch");
+        let activity: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM task_activity WHERE task_id = ?1 AND label = 'Link added: wt-1'",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(activity, 1, "the dedup'd second event must not log either");
+    }
+
+    #[test]
+    fn a_merge_event_flips_the_latest_pr_chip() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let pr = git_ev("sess-1", "pr", "https://github.com/o/r/pull/7", Some("PR #7"));
+        assert!(apply_git_event(&db.lock().unwrap(), &pr));
+        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/7", None);
+        assert!(apply_git_event(&db.lock().unwrap(), &merged));
+        let links = link_rows(&db, id);
+        assert_eq!(links.len(), 1, "merge flips the existing chip, never adds one");
+        assert_eq!(links[0].3.as_deref(), Some("merged"));
+    }
+
+    #[test]
+    fn a_merge_event_with_no_pr_chip_changes_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/7", None);
+        assert!(!apply_git_event(&db.lock().unwrap(), &merged));
+        assert!(link_rows(&db, id).is_empty());
+    }
+
+    #[test]
+    fn an_unclaimed_session_attaches_nothing() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let ev = git_ev("sess-other", "branch", "https://github.com/o/r/tree/b", None);
+        assert!(!apply_git_event(&db.lock().unwrap(), &ev));
+        assert!(link_rows(&db, id).is_empty());
+    }
+
+    #[test]
+    fn a_claim_on_a_done_task_attaches_nothing() {
+        // Chips are for work in progress; a done card must not keep growing
+        // links from a session that merely never re-claimed.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "done", Some("sess-1"), None, None);
+        let ev = git_ev("sess-1", "branch", "https://github.com/o/r/tree/b", None);
+        assert!(!apply_git_event(&db.lock().unwrap(), &ev));
+        assert!(link_rows(&db, id).is_empty());
+    }
+
+    #[test]
+    fn a_missing_label_falls_back_to_the_url_tail() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        let ev = git_ev("sess-1", "pr", "https://github.com/o/r/pull/12", None);
+        assert!(apply_git_event(&db.lock().unwrap(), &ev));
+        let links = link_rows(&db, id);
+        assert_eq!(links[0].1, link_label_from_url("https://github.com/o/r/pull/12"));
+    }
+
+    // -----------------------------------------------------------------------
     // Blocked-on-permission banner: episode identity + the fire decision.
     // fire_if_still_blocked is called synchronously with fabricated episodes —
     // the 20s sleep lives only in spawn_blocked_watch, which these skip.
@@ -3989,7 +4241,10 @@ mod tests {
         let beats_map: Beats = Arc::new(Mutex::new(
             beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect(),
         ));
-        (SidecarState { beats: beats_map, db: db.clone(), notify_user }, sink)
+        (
+            SidecarState { beats: beats_map, db: db.clone(), notify_user, on_change: Arc::new(|| {}) },
+            sink,
+        )
     }
 
     fn blocked_beat(episode: std::time::Instant) -> Beat {
@@ -6345,6 +6600,7 @@ mod tests {
             beats: beats.clone(),
             db: Arc::new(Mutex::new(migrated_conn())),
             notify_user: no_notify(),
+            on_change: Arc::new(|| {}),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
