@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Without this key macOS hard-denies Apple Events (no prompt, silent
+	     -1743), and jump-to-session can never raise a terminal. The string is
+	     what the one-time Automation permission dialog shows the user. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Tildone uses System Events to bring an agent session's terminal window to the front when you click its jump-to-session button.</string>
+</dict>
+</plist>

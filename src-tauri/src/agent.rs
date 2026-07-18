@@ -141,6 +141,9 @@ pub struct ClaimRow {
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct PresenceEntry {
     task_id: i64,
+    /// Which session won the liveliness contest for this task — the handle the
+    /// jump-to-session button passes back to `focus_session`.
+    session_id: String,
     agent_name: Option<String>,
     /// Already resolved to what the UI renders: "working" | "blocked" | "quiet".
     ///
@@ -202,6 +205,7 @@ pub fn resolve_presence(
         };
         let entry = PresenceEntry {
             task_id: claim.task_id,
+            session_id: claim.session_id.clone(),
             agent_name: claim.agent_name.clone(),
             state: state.to_string(),
             at: beat
@@ -240,6 +244,173 @@ fn pid_alive(pid: u32) -> bool {
         sysinfo::ProcessRefreshKind::nothing(),
     );
     sys.process(pid).is_some()
+}
+
+/// Process names that mean "this ancestor is the terminal app hosting the session".
+/// Substring, case-insensitive, against the process name the OS reports — which is
+/// the binary name (`ghostty`, `Terminal`, `iTerm2`, `wezterm-gui`, `kitty`,
+/// `alacritty`), not the bundle display name.
+const TERMINAL_PROCESS_NAMES: [&str; 6] =
+    ["ghostty", "terminal", "iterm", "wezterm", "kitty", "alacritty"];
+
+/// Walk a session's ancestor chain looking for the terminal process hosting it.
+///
+/// Pure, with the process table injected, so every branch is testable without
+/// spawning anything: `lookup(pid)` answers `(parent pid, process name)` or `None`
+/// for a process that no longer exists. Returns the terminal's pid, or `None` when
+/// the chain ends (launchd, a dead pid, a headless/background session) — which the
+/// caller must treat as "not reachable", never as an error.
+fn find_terminal_ancestor(
+    start: u32,
+    lookup: &dyn Fn(u32) -> Option<(Option<u32>, String)>,
+) -> Option<u32> {
+    let mut pid = start;
+    // A real chain is ~4 hops (claude → shell → login → terminal); 15 is a cycle
+    // guard, not a tuning knob.
+    for _ in 0..15 {
+        let (parent, name) = lookup(pid)?;
+        let lower = name.to_lowercase();
+        if TERMINAL_PROCESS_NAMES.iter().any(|t| lower.contains(t)) {
+            return Some(pid);
+        }
+        let next = parent?;
+        // pid 1 is launchd/init: past it there is no terminal. Equality guards a
+        // degenerate table from looping forever.
+        if next <= 1 || next == pid {
+            return None;
+        }
+        pid = next;
+    }
+    None
+}
+
+/// The real process table behind `find_terminal_ancestor`: parent pid + name via
+/// `ps`. Not sysinfo, deliberately: the chain crosses `/usr/bin/login`, which runs
+/// as root, and sysinfo answered existence for it but not parent/name (seen live —
+/// the walk died on its first hop). `ps` reads the whole table regardless of
+/// ownership, and a click-time walk of ~4 hops doesn't care about subprocess cost.
+fn process_info(pid: u32) -> Option<(Option<u32>, String)> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let mut parts = line.split_whitespace();
+    let ppid = parts.next()?.parse::<u32>().ok();
+    // comm is the full executable path on macOS; the terminal match wants the
+    // binary name ("/usr/bin/login" → "login").
+    let comm = parts.collect::<Vec<_>>().join(" ");
+    let name = comm.rsplit('/').next().unwrap_or("").to_string();
+    Some((ppid, name))
+}
+
+/// Escape a string for interpolation inside AppleScript double quotes.
+fn applescript_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The AppleScript that brings a terminal frontmost, with a best-effort raise of
+/// the window whose title mentions the session's working directory. The raise is
+/// inside `try` on purpose: no matching window (tabs, renamed titles) must still
+/// leave the app-level focus as the result — still useful, per the spec.
+fn focus_script(terminal_pid: u32, window_hint: Option<&str>) -> String {
+    let raise = window_hint
+        .map(|hint| {
+            format!(
+                "\n    try\n      perform action \"AXRaise\" of \
+                 (first window whose name contains \"{}\")\n    end try",
+                applescript_quote(hint)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "tell application \"System Events\"\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             set frontmost to true{raise}\n  \
+           end tell\n\
+         end tell"
+    )
+}
+
+/// Run one AppleScript; false on any failure, including the user denying the
+/// macOS Automation prompt (osascript exits non-zero — exactly the silent
+/// `false` the spec wants).
+fn run_osascript(script: &str) -> bool {
+    match std::process::Command::new("osascript").arg("-e").arg(script).output() {
+        Ok(o) if o.status.success() => true,
+        // stderr breadcrumb only: the UI answer stays a quiet false, but a
+        // permission denial (-1743) vs a script error must be tellable apart
+        // from the log when a jump silently does nothing.
+        Ok(o) => {
+            eprintln!(
+                "tildone: focus_session osascript failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("tildone: focus_session cannot run osascript: {e}");
+            false
+        }
+    }
+}
+
+/// Jump from a card to the terminal window its claimed session runs in.
+///
+/// `false` covers every "cannot" uniformly — no beat, no pid, headless session,
+/// Automation permission denied — because from the board's side they are all the
+/// same fact: this session has no reachable window. The UI answers with a quiet
+/// toast, never an error dialog.
+#[tauri::command]
+pub async fn focus_session(
+    session_id: String,
+    live: State<'_, AgentLive>,
+) -> Result<bool, String> {
+    let pid = {
+        let beats = live.beats.lock().unwrap();
+        beats.get(&session_id).and_then(|b| b.pid)
+    };
+    let Some(pid) = pid else {
+        eprintln!("tildone: focus_session {session_id}: no live beat pid");
+        return Ok(false);
+    };
+    // The window hint comes from the claim's cwd basename: worktree paths are what
+    // terminal tabs actually put in their titles.
+    let db = { live.db.lock().unwrap().clone() };
+    let hint = db.and_then(|db| {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT cwd FROM agent_claims WHERE session_id = ?1",
+            [&session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    });
+    let hint = hint.as_deref().and_then(|cwd| {
+        std::path::Path::new(cwd)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    });
+    // osascript can block for as long as the Automation permission prompt sits
+    // unanswered — never on the main thread.
+    let focused = tauri::async_runtime::spawn_blocking(move || {
+        let Some(terminal_pid) = find_terminal_ancestor(pid, &process_info) else {
+            eprintln!("tildone: focus_session: no terminal ancestor above pid {pid}");
+            return false;
+        };
+        run_osascript(&focus_script(terminal_pid, hint.as_deref()))
+    })
+    .await
+    .unwrap_or(false);
+    Ok(focused)
 }
 
 /// Backstop for what the PID check cannot cover: PID reuse, or a beat with no pid.
@@ -4261,6 +4432,91 @@ mod tests {
         assert!(apply_git_event(&db.lock().unwrap(), &ev));
         let links = link_rows(&db, id);
         assert_eq!(links[0].1, link_label_from_url("https://github.com/o/r/pull/12"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Jump-to-session: the ancestor walk and the AppleScript it feeds. The walk
+    // is pure with the process table injected; only process_info touches the OS,
+    // and it gets one real-process test so the sysinfo refresh flags are proven
+    // to actually populate name and parent (a wrong-but-compiling flag set would
+    // make every jump silently "not reachable").
+
+    fn table<'a>(
+        rows: &'a [(u32, Option<u32>, &'a str)],
+    ) -> impl Fn(u32) -> Option<(Option<u32>, String)> + 'a {
+        move |pid| {
+            rows.iter()
+                .find(|(p, _, _)| *p == pid)
+                .map(|(_, parent, name)| (*parent, name.to_string()))
+        }
+    }
+
+    #[test]
+    fn the_walk_finds_the_terminal_up_a_real_shaped_chain() {
+        // claude → zsh → login → ghostty → launchd
+        let t = table(&[
+            (100, Some(50), "claude"),
+            (50, Some(40), "zsh"),
+            (40, Some(30), "login"),
+            (30, Some(1), "ghostty"),
+        ]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(30));
+    }
+
+    #[test]
+    fn a_chain_ending_at_launchd_with_no_terminal_is_not_reachable() {
+        // A headless/background session: the chain tops out without a terminal.
+        let t = table(&[(100, Some(50), "claude"), (50, Some(1), "node")]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn a_dead_pid_is_not_reachable() {
+        let t = table(&[]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn terminal_names_match_case_insensitively_and_by_substring() {
+        // The OS reports binary names: "iTerm2", "wezterm-gui". Both must hit.
+        let t = table(&[(100, Some(60), "claude"), (60, Some(1), "iTerm2")]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(60));
+        let t = table(&[(100, Some(60), "claude"), (60, Some(1), "wezterm-gui")]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(60));
+    }
+
+    #[test]
+    fn a_degenerate_self_parented_table_cannot_loop_forever() {
+        let t = table(&[(100, Some(100), "claude")]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn process_info_reads_this_very_process() {
+        let (parent, name) = process_info(std::process::id())
+            .expect("this very process must be readable");
+        assert!(!name.is_empty(), "sysinfo must populate the process name");
+        assert!(parent.is_some(), "a test runner always has a parent process");
+    }
+
+    #[test]
+    fn applescript_quoting_survives_quotes_and_backslashes() {
+        assert_eq!(applescript_quote(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn the_focus_script_raises_by_window_hint_only_when_there_is_one() {
+        let with = focus_script(42, Some("til94-jump-to-session"));
+        assert!(with.contains("unix id is 42"));
+        assert!(with.contains("AXRaise"));
+        assert!(with.contains("name contains \"til94-jump-to-session\""));
+        // The raise is best-effort: it must sit inside a try block so a missing
+        // window still leaves app-level focus as the result.
+        assert!(with.contains("try"));
+
+        let without = focus_script(42, None);
+        assert!(without.contains("set frontmost to true"));
+        assert!(!without.contains("AXRaise"));
     }
 
     // -----------------------------------------------------------------------

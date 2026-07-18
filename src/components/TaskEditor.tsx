@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
+import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { useStore } from "../store";
@@ -21,12 +22,14 @@ import {
   IconAlert,
   IconCheck,
   IconFolderOpen,
+  IconGitBranch,
   IconLink,
   IconMaximize,
   IconMessage,
   IconMinimize,
   IconPlus,
   IconSparkles,
+  IconTerminal,
   IconTrash,
   IconX,
   LinkKindIcon,
@@ -86,6 +89,7 @@ export function TaskEditor() {
     removeLink,
     comments,
     addComment,
+    live,
   } = useStore();
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
@@ -105,6 +109,7 @@ export function TaskEditor() {
   const [expanded, setExpanded] = useState(loadExpanded);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [jumpMiss, setJumpMiss] = useState(false);
 
   useEffect(() => {
     if (task) {
@@ -117,6 +122,7 @@ export function TaskEditor() {
       setCommentInput("");
       setConfirmDelete(false);
       setAiError("");
+      setJumpMiss(false);
       setEditingNotes(false);
     }
     // Re-sync local fields only when switching to a different task.
@@ -154,6 +160,11 @@ export function TaskEditor() {
     : [];
   const prLinks = taskLinks.filter((l) => asLinkKind(l.kind) === "pr");
   const prLink = inReview && prLinks.length > 0 ? prLinks[prLinks.length - 1] : null;
+  // Live presence only — the fallback (age of the last board write) names no
+  // session and so has nothing an Agent row could say beyond what the card does.
+  const presence = live[task.id];
+  const presenceAgent = presence ? agentIdentity(presence.agent_name) : null;
+  const presenceCwdBase = presence?.cwd ? presence.cwd.split("/").filter(Boolean).pop() : null;
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -218,6 +229,24 @@ export function TaskEditor() {
       }
     } else {
       void openUrl(link.url);
+    }
+  }
+
+  // Board → terminal. `false` from the command covers every "cannot" — headless
+  // session, dead pid, Automation permission denied — and answers with a quiet
+  // inline note, never an error dialog: an unreachable session is a fact about
+  // where it runs, not a failure of the click.
+  async function jumpToSession() {
+    if (!presence) return;
+    let ok = false;
+    try {
+      ok = await invoke<boolean>("focus_session", { sessionId: presence.session_id });
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      setJumpMiss(true);
+      window.setTimeout(() => setJumpMiss(false), 2500);
     }
   }
 
@@ -440,6 +469,57 @@ export function TaskEditor() {
 
             <span className="detail-prop-label">Created</span>
             <span className="detail-created">{createdLabel}</span>
+
+            {presence && presenceAgent && (
+              <>
+                <span className="detail-prop-label">Agent</span>
+                <span className="detail-agent">
+                  <span
+                    className="detail-agent-id"
+                    style={{ ["--agent-color" as string]: presenceAgent.color }}
+                  >
+                    <presenceAgent.Mark size={13} />
+                    {presenceAgent.label}
+                  </span>
+                  <span className={`detail-agent-state ${presence.state}`}>
+                    {presence.state}
+                  </span>
+                  {presence.branch && (
+                    <span
+                      className="detail-agent-fact"
+                      title={`Branch · ${presence.branch}`}
+                    >
+                      <IconGitBranch size={12} />
+                      {presence.branch}
+                    </span>
+                  )}
+                  {presenceCwdBase && (
+                    <span
+                      className="detail-agent-fact"
+                      title={`Working directory · ${presence.cwd}`}
+                    >
+                      <IconFolderOpen size={12} />
+                      {presenceCwdBase}
+                    </span>
+                  )}
+                  {(presence.state === "working" || presence.state === "blocked") && (
+                    <button
+                      className="detail-agent-jump"
+                      title="Jump to session — bring its terminal window to the front"
+                      aria-label="Jump to session"
+                      onClick={() => void jumpToSession()}
+                    >
+                      <IconTerminal size={13} />
+                    </button>
+                  )}
+                  {jumpMiss && (
+                    <span className="detail-agent-miss" role="status">
+                      Session not reachable
+                    </span>
+                  )}
+                </span>
+              </>
+            )}
           </div>
 
           {inReview && (

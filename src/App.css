@@ -3651,6 +3651,84 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+/* The agent presence row: who is on this card right now, in the props grid's
+   quiet voice. The state word speaks the board's status vocabulary (orange
+   in-progress, red blocked); the jump button is the row's only affordance —
+   the way back from the card to the terminal window the session runs in. */
+.detail-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.detail-agent-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.detail-agent-id svg {
+  color: var(--agent-color, var(--text-muted));
+}
+
+.detail-agent-state {
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.detail-agent-state.working {
+  color: var(--doing);
+}
+
+.detail-agent-state.blocked {
+  color: var(--blocked);
+}
+
+.detail-agent-state.quiet {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.detail-agent-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.detail-agent-fact svg {
+  flex-shrink: 0;
+}
+
+.detail-agent-jump {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: none;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.detail-agent-jump:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.detail-agent-miss {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .detail-notes {
   width: 100%;
   border: none;
