@@ -468,17 +468,33 @@ export function TaskEditor() {
                   </p>
                   <ul className="verify-list">
                     {verifySteps.map((sub) => (
-                      <li key={sub.id}>
+                      // The step text must stay selectable/copyable, and WebKit
+                      // refuses to drag-select text inside a <button> — so the
+                      // button is only the checkbox, and the text is a sibling.
+                      <li key={sub.id} className={`verify-item ${sub.done ? "done" : ""}`}>
                         <button
                           type="button"
-                          className={`verify-item ${sub.done ? "done" : ""}`}
+                          className="verify-box"
+                          aria-label={`${sub.done ? "Untick" : "Tick"} ${verifyStepLabel(sub)}`}
                           onClick={() => void toggleSubtask(sub.id)}
                         >
-                          <span className="verify-box">
-                            {sub.done && <IconCheck size={10} />}
-                          </span>
-                          <span className="verify-text">{verifyStepLabel(sub)}</span>
+                          {sub.done && <IconCheck size={10} />}
                         </button>
+                        <span
+                          className="verify-text"
+                          onClick={(e) => {
+                            // Clicking the label still toggles, but a click that
+                            // ends a drag-select over this text must not — only
+                            // a selection inside this step blocks the toggle.
+                            const sel = window.getSelection();
+                            if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) {
+                              return;
+                            }
+                            void toggleSubtask(sub.id);
+                          }}
+                        >
+                          {verifyStepLabel(sub)}
+                        </span>
                       </li>
                     ))}
                   </ul>

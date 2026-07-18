@@ -1494,6 +1494,7 @@ textarea:focus-visible,
   flex: none;
   width: 14px;
   height: 14px;
+  padding: 0;
   margin-top: 2px;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
@@ -4125,6 +4126,18 @@ textarea:focus-visible,
   flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+/* The band is read-only prose the user may need to copy (evidence lines,
+   verify commands), so its text opts back out of the app-wide
+   user-select: none. Editor only — on the board card the same verify list
+   sits under dnd-kit drag listeners, where selection would fight dragging. */
+.review-band-head,
+.review-band-evidence li,
+.review-band-sub,
+.review-band .verify-text {
+  user-select: text;
+  cursor: text;
 }
 
 .review-band-head {
