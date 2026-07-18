@@ -135,6 +135,10 @@ pub struct ClaimRow {
     agent_name: Option<String>,
     claimed_at: String,
     last_log: Option<String>,
+    /// The session's pid, durably cached from its beats (migration 017). Beats
+    /// are memory-only, so this is what answers "is the session alive?" after an
+    /// app restart — an idle session never beats again until the user touches it.
+    last_pid: Option<u32>,
 }
 
 /// What the card shows for one task.
@@ -157,6 +161,12 @@ pub struct PresenceEntry {
     branch: Option<String>,
     cwd: Option<String>,
     last_log: Option<String>,
+    /// Can the jump-to-session button reach this session? Aliveness, not busyness:
+    /// the session's pid is known (live beat, else the claim's durable copy) and a
+    /// claude process still owns it. Deliberately independent of `state` — the
+    /// button's whole point (TIL-99) is the session that already sits idle at its
+    /// prompt, which renders `quiet` yet is exactly one keystroke away.
+    alive: bool,
 }
 
 /// Resolve claims + beats into one entry per task.
@@ -179,6 +189,7 @@ pub fn resolve_presence(
     beats: &HashMap<String, Beat>,
     now: std::time::Instant,
     alive: &dyn Fn(u32) -> bool,
+    agent_proc: &dyn Fn(u32) -> bool,
 ) -> Vec<PresenceEntry> {
     fn rank(state: &str) -> u8 {
         match state {
@@ -203,6 +214,11 @@ pub fn resolve_presence(
                 }
             }
         };
+        // Aliveness for the jump button, on a separate rail from `state`: the live
+        // beat's pid, else the claim's durable copy (which is all that survives an
+        // app restart). `agent_proc` — not bare existence — because a persisted pid
+        // has no TTL, so pid reuse must be caught by asking *who* owns it now.
+        let candidate_pid = beat.and_then(|b| b.pid).or(claim.last_pid);
         let entry = PresenceEntry {
             task_id: claim.task_id,
             session_id: claim.session_id.clone(),
@@ -214,11 +230,18 @@ pub fn resolve_presence(
             branch: claim.branch.clone(),
             cwd: claim.cwd.clone(),
             last_log: claim.last_log.clone(),
+            alive: candidate_pid.is_some_and(agent_proc),
         };
         by_task
             .entry(claim.task_id)
             .and_modify(|existing| {
-                if rank(&entry.state) > rank(&existing.state) {
+                // Liveliest state wins the card; on a state tie, prefer the session
+                // the jump button can actually reach.
+                if rank(&entry.state) > rank(&existing.state)
+                    || (rank(&entry.state) == rank(&existing.state)
+                        && entry.alive
+                        && !existing.alive)
+                {
                     *existing = entry.clone();
                 }
             })
@@ -244,6 +267,21 @@ fn pid_alive(pid: u32) -> bool {
         sysinfo::ProcessRefreshKind::nothing(),
     );
     sys.process(pid).is_some()
+}
+
+/// Is this pid still a *claude* process — not merely a pid that exists?
+///
+/// The jump button's aliveness check. `pid_alive` answers existence, which is
+/// enough for state resolution (a beat is fresh, so reuse is a non-issue), but a
+/// pid persisted on a claim has no TTL: days later the OS may have handed that
+/// number to anything. Asking who owns it now turns "a process exists" back into
+/// "the session exists". Verified live (2026-07-19): every Claude Code session
+/// process reports a name containing "claude" (`claude bg-spare`,
+/// `…/.local/bin/claude`), via the same `ps` read the terminal walk uses —
+/// sysinfo is deliberately not used here, for the reason documented on
+/// `process_info`.
+fn agent_pid_alive(pid: u32) -> bool {
+    process_info(pid).is_some_and(|(_, name)| name.to_lowercase().contains("claude"))
 }
 
 /// Process names that mean "this ancestor is the terminal app hosting the session".
@@ -556,27 +594,42 @@ pub async fn focus_session(
     session_id: String,
     live: State<'_, AgentLive>,
 ) -> Result<bool, String> {
-    let pid = {
+    let beat_pid = {
         let beats = live.beats.lock().unwrap();
         beats.get(&session_id).and_then(|b| b.pid)
     };
-    let Some(pid) = pid else {
-        eprintln!("tildone: focus_session {session_id}: no live beat pid");
+    // The claim's cwd identifies the session's terminal surface exactly: full
+    // path for the AXDocument match, basename as the title-fallback hint. The
+    // claim's last_pid is the fallback when there is no live beat — the
+    // post-restart click, where the durable copy is all that survived.
+    let db = { live.db.lock().unwrap().clone() };
+    let (cwd, claim_pid) = db
+        .and_then(|db| {
+            let conn = db.lock().unwrap();
+            conn.query_row(
+                "SELECT cwd, last_pid FROM agent_claims WHERE session_id = ?1",
+                [&session_id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<u32>>(1)?,
+                    ))
+                },
+            )
+            .ok()
+        })
+        .unwrap_or((None, None));
+    let Some(pid) = beat_pid.or(claim_pid) else {
+        eprintln!("tildone: focus_session {session_id}: no pid on beat or claim");
         return Ok(false);
     };
-    // The claim's cwd identifies the session's terminal surface exactly: full
-    // path for the AXDocument match, basename as the title-fallback hint.
-    let db = { live.db.lock().unwrap().clone() };
-    let cwd = db.and_then(|db| {
-        let conn = db.lock().unwrap();
-        conn.query_row(
-            "SELECT cwd FROM agent_claims WHERE session_id = ?1",
-            [&session_id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten()
-    });
+    // Same guard as the button's `alive`: a persisted pid has no TTL, so make
+    // sure a claude process still owns it before raising anything — a reused
+    // pid must answer "not reachable", never lift a stranger's window.
+    if !agent_pid_alive(pid) {
+        eprintln!("tildone: focus_session {session_id}: pid {pid} is not a live claude process");
+        return Ok(false);
+    }
     let hint = cwd.as_deref().and_then(|cwd| {
         std::path::Path::new(cwd)
             .file_name()
@@ -624,6 +677,10 @@ struct TildoneAgent {
     on_change: Notify,
     /// Raise a native notification to the user. See `NotifyUser`.
     notify_user: NotifyUser,
+    /// The live beats map, shared with the sidecar routes. The MCP side reads it
+    /// at claim time to persist the session's pid alongside the claim — by then
+    /// the hook has almost always beaten, so the pid is sitting right here.
+    beats: Beats,
     /// Cancelled when the server stops. A parked `list_changes` selects on this,
     /// so stopping the server (or quitting the app) never has to wait out a
     /// 60-second long-poll.
@@ -852,6 +909,7 @@ impl TildoneAgent {
         db: Db,
         on_change: Notify,
         notify_user: NotifyUser,
+        beats: Beats,
         shutdown: CancellationToken,
     ) -> Self {
         // The macro-generated tool list is fixed context every connected session
@@ -871,6 +929,7 @@ impl TildoneAgent {
             db,
             on_change,
             notify_user,
+            beats,
             shutdown,
         }
     }
@@ -997,20 +1056,33 @@ impl TildoneAgent {
         cwd: Option<&str>,
         branch: Option<&str>,
         agent: Option<&str>,
+        last_pid: Option<u32>,
     ) {
         // A claim is a nicety layered on the write; the status change is the user's
         // actual intent. Never let a claim failure fail the move — hence no `?`.
+        //
+        // `last_pid` COALESCEs rather than overwrites: the hook usually beat before
+        // this write so the pid is at hand, but a claim that arrives without one
+        // (racing the first beat, or a re-claim after restart before any beat) must
+        // not null out a pid already persisted — the pid is the jump button's only
+        // thread back to the session.
         let _ = conn.execute(
-            "INSERT INTO agent_claims (session_id, task_id, cwd, branch, agent_name, claimed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO agent_claims (session_id, task_id, cwd, branch, agent_name, claimed_at, last_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(session_id) DO UPDATE SET
                task_id = excluded.task_id,
                cwd = excluded.cwd,
                branch = excluded.branch,
                agent_name = excluded.agent_name,
-               claimed_at = excluded.claimed_at",
-            rusqlite::params![session_id, task_id, cwd, branch, agent, now_iso()],
+               claimed_at = excluded.claimed_at,
+               last_pid = COALESCE(excluded.last_pid, agent_claims.last_pid)",
+            rusqlite::params![session_id, task_id, cwd, branch, agent, now_iso(), last_pid],
         );
+    }
+
+    /// The pid the session's hook last reported, if any beat has landed yet.
+    fn beat_pid(&self, session_id: &str) -> Option<u32> {
+        self.beats.lock().unwrap().get(session_id).and_then(|b| b.pid)
     }
 
     /// Completing a task releases every claim on it.
@@ -1561,6 +1633,7 @@ impl TildoneAgent {
                         claim.cwd.as_deref(),
                         claim.branch.as_deref(),
                         agent,
+                        self.beat_pid(session),
                     );
                 }
             }
@@ -2360,6 +2433,7 @@ impl TildoneAgent {
                     claim.cwd.as_deref(),
                     claim.branch.as_deref(),
                     agent,
+                    self.beat_pid(session),
                 );
             }
         }
@@ -3181,8 +3255,12 @@ pub struct HeartbeatBody {
 ///    Presence is polled instead, precisely so this can stay cheap.
 /// 2. **Never blocks.** It only takes a lock and inserts. A hook that waits on this
 ///    starves Claude's agentic loop.
-/// 3. **Never writes to disk.** Beats are volatile by design; the durable half is
-///    the claim.
+/// 3. **Never writes to disk per beat.** Beats are volatile by design; the durable
+///    half is the claim. The one exception is bounded to a session's *first* beat
+///    of this app run (or a pid change, which real sessions never have): the pid
+///    is copied onto the claim row then, so the jump button survives an app
+///    restart even for a session that sits idle and never beats again. Steady
+///    state — every subsequent beat — touches memory only.
 async fn heartbeat_handler(
     axum::extract::State(state): axum::extract::State<SidecarState>,
     headers: axum::http::HeaderMap,
@@ -3213,9 +3291,15 @@ async fn heartbeat_handler(
         return axum::http::StatusCode::BAD_REQUEST;
     }
     let now = std::time::Instant::now();
-    let entering_blocked = {
+    let (entering_blocked, pid_is_news) = {
         let mut beats = state.beats.lock().unwrap();
-        let blocked_since = next_blocked_since(beats.get(session), &body.state, now);
+        let prev = beats.get(session);
+        let blocked_since = next_blocked_since(prev, &body.state, now);
+        // Persist the pid only when this beat *taught us something*: the session's
+        // first beat of this app run, or a changed pid (which real sessions never
+        // have — it guards test doubles and the impossible). Everything else stays
+        // memory-only, which is the whole heartbeat discipline.
+        let pid_is_news = body.pid.is_some() && prev.and_then(|b| b.pid) != body.pid;
         beats.insert(
             session.to_string(),
             Beat {
@@ -3226,8 +3310,19 @@ async fn heartbeat_handler(
                 blocked_since,
             },
         );
-        blocked_since == Some(now)
+        (blocked_since == Some(now), pid_is_news)
     };
+    if pid_is_news {
+        if let Some(pid) = body.pid {
+            // No claim yet → 0 rows, silently; the claim path copies the pid from
+            // the live beat when it lands. No notify(): presence is polled.
+            let conn = state.db.lock().unwrap();
+            let _ = conn.execute(
+                "UPDATE agent_claims SET last_pid = ?1 WHERE session_id = ?2",
+                rusqlite::params![pid, session],
+            );
+        }
+    }
     if entering_blocked {
         spawn_blocked_watch(state, session.to_string(), now);
     }
@@ -3569,7 +3664,13 @@ pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
         }
     };
     let beats = live.beats.lock().unwrap().clone();
-    resolve_presence(&claims, &beats, std::time::Instant::now(), &pid_alive)
+    resolve_presence(
+        &claims,
+        &beats,
+        std::time::Instant::now(),
+        &pid_alive,
+        &agent_pid_alive,
+    )
 }
 
 /// Every claim, joined with the agent's latest word on that task.
@@ -3581,7 +3682,8 @@ fn read_claims(conn: &Connection) -> rusqlite::Result<Vec<ClaimRow>> {
         "SELECT c.session_id, c.task_id, c.cwd, c.branch, c.agent_name, c.claimed_at,
                 (SELECT a.label FROM task_activity a
                   WHERE a.task_id = c.task_id AND a.actor_kind = 'agent'
-                  ORDER BY a.id DESC LIMIT 1)
+                  ORDER BY a.id DESC LIMIT 1),
+                c.last_pid
            FROM agent_claims c",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -3593,6 +3695,7 @@ fn read_claims(conn: &Connection) -> rusqlite::Result<Vec<ClaimRow>> {
             agent_name: r.get(4)?,
             claimed_at: r.get(5)?,
             last_log: r.get(6)?,
+            last_pid: r.get(7)?,
         })
     })?;
     rows.collect()
@@ -3753,6 +3856,9 @@ pub async fn agent_server_start(
     // /git-event reloads the UI through the same signal as MCP writes.
     let sidecar_notify = notify_user.clone();
     let sidecar_on_change = on_change.clone();
+    // The MCP side shares the live beats map so a claim can copy the session's
+    // already-beaten pid onto its durable row (see record_claim).
+    let mcp_beats = live.beats.clone();
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
@@ -3760,6 +3866,7 @@ pub async fn agent_server_start(
                     db.clone(),
                     on_change.clone(),
                     notify_user.clone(),
+                    mcp_beats.clone(),
                     agent_ct.clone(),
                 ))
             },
@@ -4096,6 +4203,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/014_unseen_at.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/015_task_tags_changes.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/016_pr_status.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/017_claim_pid.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -4110,6 +4218,7 @@ mod tests {
             Arc::new(Mutex::new(migrated_conn())),
             Arc::new(|| {}),
             no_notify(),
+            Default::default(),
             CancellationToken::new(),
         )
     }
@@ -4117,7 +4226,13 @@ mod tests {
     fn test_agent_with_db() -> (TildoneAgent, Db) {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         (
-            TildoneAgent::new(db.clone(), Arc::new(|| {}), no_notify(), CancellationToken::new()),
+            TildoneAgent::new(
+                db.clone(),
+                Arc::new(|| {}),
+                no_notify(),
+                Default::default(),
+                CancellationToken::new(),
+            ),
             db,
         )
     }
@@ -4139,6 +4254,7 @@ mod tests {
             Arc::new(Mutex::new(migrated_conn())),
             Arc::new(|| {}),
             notify_user,
+            Default::default(),
             CancellationToken::new(),
         );
         (agent, sink)
@@ -4289,6 +4405,14 @@ mod tests {
             agent_name: Some("claude".into()),
             claimed_at: "2026-07-17T10:00:00.000Z".into(),
             last_log: None,
+            last_pid: None,
+        }
+    }
+
+    fn a_claim_with_pid(session: &str, task_id: i64, pid: u32) -> ClaimRow {
+        ClaimRow {
+            last_pid: Some(pid),
+            ..a_claim(session, task_id)
         }
     }
 
@@ -4306,10 +4430,14 @@ mod tests {
     const ALIVE: &dyn Fn(u32) -> bool = &|_| true;
     const DEAD: &dyn Fn(u32) -> bool = &|_| false;
 
+    /// Injected liveness answers *both* questions the same way in most tests:
+    /// existence (state) and claude-ownership (the button's `alive`). Tests that
+    /// need them to disagree — a pid that exists but is no longer claude's —
+    /// call `resolve_presence` directly with distinct fns.
     fn resolve_one(claims: &[ClaimRow], beats: &[(&str, Beat)], alive: &dyn Fn(u32) -> bool) -> Vec<PresenceEntry> {
         let map: HashMap<String, Beat> =
             beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
-        resolve_presence(claims, &map, std::time::Instant::now(), alive)
+        resolve_presence(claims, &map, std::time::Instant::now(), alive, alive)
     }
 
     #[test]
@@ -4920,6 +5048,194 @@ mod tests {
             ALIVE,
         );
         assert_eq!(out[0].state, "working");
+    }
+
+    // -----------------------------------------------------------------------
+    // Aliveness for the jump button (TIL-99): a rail separate from state. The
+    // user reaches for the button exactly when the session already sits idle at
+    // its prompt — quiet on the card, alive at the keyboard.
+
+    #[test]
+    fn an_idle_session_with_a_live_pid_is_quiet_but_alive() {
+        let out = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(42)))],
+            ALIVE,
+        );
+        assert_eq!(out[0].state, "quiet", "the meter must never fake activity");
+        assert!(out[0].alive, "idle at the prompt is exactly when the button matters");
+    }
+
+    #[test]
+    fn a_persisted_claim_pid_keeps_alive_after_beats_are_wiped() {
+        // The app-restart case: beats are memory-only and gone, the claim's
+        // durable pid copy is all that survived — and it is enough.
+        let out = resolve_one(&[a_claim_with_pid("s1", 7, 42)], &[], ALIVE);
+        assert_eq!(out[0].state, "quiet");
+        assert!(out[0].alive, "the durable pid must survive the blackout");
+    }
+
+    #[test]
+    fn no_pid_anywhere_means_not_alive() {
+        // A Codex-style claim: no hook, no beat, no pid — the button never shows.
+        let out = resolve_one(&[a_claim("s1", 7)], &[], ALIVE);
+        assert!(!out[0].alive);
+    }
+
+    #[test]
+    fn a_dead_pid_is_not_alive_from_either_source() {
+        let beat_side = resolve_one(
+            &[a_claim("s1", 7)],
+            &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(42)))],
+            DEAD,
+        );
+        assert!(!beat_side[0].alive, "a killed session's button must vanish");
+        let claim_side = resolve_one(&[a_claim_with_pid("s1", 7, 42)], &[], DEAD);
+        assert!(!claim_side[0].alive, "a stale persisted pid must not resurrect it");
+    }
+
+    #[test]
+    fn a_pid_reused_by_a_stranger_is_not_alive() {
+        // The two liveness questions disagree here: the pid *exists* (state
+        // resolution keeps trusting the fresh beat) but no claude process owns
+        // it — the reuse guard a TTL-less persisted pid needs.
+        let map: HashMap<String, Beat> = [(
+            "s1".to_string(),
+            a_beat("working", std::time::Duration::from_secs(1), Some(42)),
+        )]
+        .into();
+        let out = resolve_presence(
+            &[a_claim("s1", 7)],
+            &map,
+            std::time::Instant::now(),
+            ALIVE,
+            DEAD,
+        );
+        assert_eq!(out[0].state, "working");
+        assert!(!out[0].alive);
+    }
+
+    #[test]
+    fn on_a_state_tie_the_reachable_session_wins_the_card() {
+        // Two quiet sessions on one task: the card must hand the jump button the
+        // one that is still alive, regardless of claim order.
+        let out = resolve_one(
+            &[a_claim("gone", 7), a_claim_with_pid("here", 7, 42)],
+            &[],
+            ALIVE,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].session_id, "here");
+        assert!(out[0].alive);
+    }
+
+    fn claim_pid(db: &Db, session: &str) -> Option<u32> {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT last_pid FROM agent_claims WHERE session_id = ?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_claim_write_copies_the_pid_the_hook_already_beat() {
+        // By the time an agent claims, its hook has beaten: the pid is sitting in
+        // the live map, and the claim write must carry it onto the durable row.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        agent.beats.lock().unwrap().insert(
+            "sess-1".into(),
+            a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
+        );
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_pid(&db, "sess-1"), Some(4242));
+    }
+
+    #[test]
+    fn a_reclaim_without_a_beat_must_not_null_the_persisted_pid() {
+        // Re-claim after an app restart, before any new beat: the COALESCE keeps
+        // the only thread back to the session instead of clobbering it with NULL.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        agent.beats.lock().unwrap().insert(
+            "sess-1".into(),
+            a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
+        );
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        agent.beats.lock().unwrap().clear();
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_pid(&db, "sess-1"), Some(4242));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_first_beat_persists_its_pid_and_later_beats_stay_in_memory() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        assert_eq!(claim_pid(&db, "sess-1"), None, "no beat yet, nothing to persist");
+
+        let (state, _sink) = sidecar_for(&db, &[]);
+        let beat = |state: SidecarState, s: &'static str, pid: Option<u32>| async move {
+            heartbeat_handler(
+                axum::extract::State(state),
+                axum::http::HeaderMap::new(),
+                Some(axum::Json(HeartbeatBody {
+                    session_id: "sess-1".into(),
+                    state: s.into(),
+                    pid,
+                    agent_id: None,
+                })),
+            )
+            .await
+        };
+
+        // The session's first beat of this app run is the one that writes.
+        beat(state.clone(), "working", Some(777)).await;
+        assert_eq!(claim_pid(&db, "sess-1"), Some(777));
+
+        // Steady state must touch memory only: plant a sentinel on the row — a
+        // second same-pid beat that wrote anyway would overwrite it.
+        db.lock()
+            .unwrap()
+            .execute("UPDATE agent_claims SET last_pid = 1 WHERE session_id = 'sess-1'", [])
+            .unwrap();
+        beat(state.clone(), "idle", Some(777)).await;
+        assert_eq!(
+            claim_pid(&db, "sess-1"),
+            Some(1),
+            "a repeat pid is not news and must not write"
+        );
+
+        // A pid that genuinely changed is news again.
+        beat(state, "working", Some(778)).await;
+        assert_eq!(claim_pid(&db, "sess-1"), Some(778));
+    }
+
+    #[test]
+    fn focus_session_query_reads_the_persisted_pid() {
+        // The exact SELECT focus_session runs when beats are empty (the
+        // post-restart click): cwd and pid arrive together from the claim.
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        agent.beats.lock().unwrap().insert(
+            "sess-1".into(),
+            a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
+        );
+        work_on(&agent, id, "doing", Some("sess-1"), Some("/tmp/wt"), None);
+        let (cwd, pid) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT cwd, last_pid FROM agent_claims WHERE session_id = ?1",
+                ["sess-1"],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<u32>>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cwd.as_deref(), Some("/tmp/wt"));
+        assert_eq!(pid, Some(4242));
     }
 
     #[test]
@@ -7878,7 +8194,8 @@ mod tests {
     async fn shutdown_releases_a_parked_call() {
         let db: Db = Arc::new(Mutex::new(migrated_conn()));
         let token = CancellationToken::new();
-        let agent = TildoneAgent::new(db, Arc::new(|| {}), no_notify(), token.clone());
+        let agent =
+            TildoneAgent::new(db, Arc::new(|| {}), no_notify(), Default::default(), token.clone());
 
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;

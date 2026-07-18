@@ -37,6 +37,11 @@ export interface LivePresence {
   branch: string | null;
   cwd: string | null;
   last_log: string | null;
+  /** Aliveness, not busyness: the session's pid is known (live beat, or the
+   *  durable copy on its claim) and a claude process still owns it. Gates the
+   *  jump-to-session button — an idle session renders `quiet` yet is exactly
+   *  one keystroke away, which is when the user reaches for the button. */
+  alive: boolean;
 }
 
 /** The activity-derived fallback: who last wrote to this task, and when. */

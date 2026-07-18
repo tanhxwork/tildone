@@ -502,7 +502,11 @@ export function TaskEditor() {
                       {presenceCwdBase}
                     </span>
                   )}
-                  {(presence.state === "working" || presence.state === "blocked") && (
+                  {/* Aliveness, not busyness (TIL-99): the user reaches for this
+                      exactly when the session already sits idle at its prompt —
+                      state `quiet`, but the process is alive and one keystroke
+                      away. `alive` is the Rust-side pid check. */}
+                  {presence.alive && (
                     <button
                       className="detail-agent-jump"
                       title="Jump to session — bring its terminal window to the front"
