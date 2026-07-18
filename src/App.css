@@ -842,6 +842,15 @@ textarea:focus-visible,
   background: color-mix(in srgb, var(--review) 10%, transparent);
 }
 
+/* The open-loop state (TIL-84): done, but the PR is unmerged (draft or behind
+   main). Warn ink — a caution, not the alarm `blocked` owns and not the review
+   hue: it must read distinctly from both when done cards sit in one column. */
+.state-pill.needs-landing {
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
 .due-chip {
   font-size: 11px;
   color: var(--text-muted);

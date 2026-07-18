@@ -193,17 +193,23 @@ export const PRIORITY_COLORS: Record<number, string> = {
  * They are tags and not status values on purpose: status is a CHECK constraint,
  * and widening it needs a table rebuild that cannot run inside a plugin-sql
  * migration — see docs/decisions/2026-07-16-sqlite-migration-safety.md. The
- * three columns stay; these two carry the card instead.
+ * three columns stay; these three carry the card instead.
  *
- * Order is precedence: the first match wins, so blocked outranks needs-review.
- * Matched case-insensitively.
+ * `needs-landing` is the open-loop state: a task can be done yet still carry an
+ * unmerged PR (draft, or behind main). The agent sets it at CLOSE when the PR is
+ * not MERGED and clears it when the PR lands, so a done card never reads as
+ * shipped while a branch is still in flight (TIL-84).
+ *
+ * Order is precedence: the first match wins, so blocked outranks needs-review,
+ * which outranks needs-landing. Matched case-insensitively.
  */
-export const RESERVED_TAGS = ["blocked", "needs-review"] as const;
+export const RESERVED_TAGS = ["blocked", "needs-review", "needs-landing"] as const;
 export type ReservedTag = (typeof RESERVED_TAGS)[number];
 
 export const RESERVED_TAG_LABELS: Record<ReservedTag, string> = {
   blocked: "Blocked",
   "needs-review": "Needs review",
+  "needs-landing": "Needs landing",
 };
 
 export const COLOR_CHOICES = [

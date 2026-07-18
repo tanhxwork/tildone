@@ -27,6 +27,7 @@ import type { Project, Status, Tag, Task, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
+  RESERVED_TAG_LABELS,
   STATUSES,
   STATUS_LABELS,
   asLinkKind,
@@ -592,6 +593,13 @@ function CardContent({
           <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
         </span>
         <span className="done-meta">
+          {/* A collapsed done card is history — except when it still carries an
+              open loop. `needs-landing` (an unmerged PR) earns the one pill the
+              compact form otherwise omits, so a done card can't hide a branch
+              that never landed (TIL-84). */}
+          {state && (
+            <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
+          )}
           {showProject && project && (
             <span className="project-label" title={project.name}>
               <ProjectGlyph project={project} size={12} />
