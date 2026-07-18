@@ -316,27 +316,181 @@ fn applescript_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// The AppleScript that brings a terminal frontmost, with a best-effort raise of
-/// the window whose title mentions the session's working directory. The raise is
-/// inside `try` on purpose: no matching window (tabs, renamed titles) must still
-/// leave the app-level focus as the result — still useful, per the spec.
-fn focus_script(terminal_pid: u32, window_hint: Option<&str>) -> String {
-    let raise = window_hint
-        .map(|hint| {
-            format!(
-                "\n    try\n      perform action \"AXRaise\" of \
-                 (first window whose name contains \"{}\")\n    end try",
-                applescript_quote(hint)
-            )
-        })
-        .unwrap_or_default();
+/// Bring the terminal app frontmost — the floor every jump lands on even when
+/// the session's exact tab cannot be found.
+fn frontmost_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\" to set frontmost of \
+         (first process whose unix id is {terminal_pid}) to true"
+    )
+}
+
+/// One line per *visible* window: `<index>|||<AXDocument>`. Ghostty (and
+/// Terminal.app) report each surface's working directory as the window's
+/// AXDocument file:// URL — an exact, title-independent way to recognise the
+/// session's window. Hidden native tabs do not appear here; they are covered
+/// by the tab cycle below.
+fn visible_docs_script(terminal_pid: u32) -> String {
     format!(
         "tell application \"System Events\"\n  \
            tell (first process whose unix id is {terminal_pid})\n    \
-             set frontmost to true{raise}\n  \
+             set out to \"\"\n    set i to 1\n    \
+             repeat with w in windows\n      \
+               try\n        \
+                 set out to out & i & \"|||\" & (value of attribute \"AXDocument\" of w) & linefeed\n      \
+               end try\n      \
+               set i to i + 1\n    \
+             end repeat\n    \
+             return out\n  \
            end tell\n\
          end tell"
     )
+}
+
+fn raise_window_script(terminal_pid: u32, index: usize) -> String {
+    format!(
+        "tell application \"System Events\" to perform action \"AXRaise\" of \
+         window {index} of (first process whose unix id is {terminal_pid})"
+    )
+}
+
+fn front_doc_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\" to return value of attribute \"AXDocument\" of \
+         window 1 of (first process whose unix id is {terminal_pid})"
+    )
+}
+
+/// Advance one tab (⌘⇧] — the shared next-tab binding of Ghostty, Terminal.app
+/// and iTerm2) and report the now-front tab's AXDocument. The keystroke goes to
+/// the frontmost app, which `frontmost_script` has already made the terminal.
+fn next_tab_read_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\"\n  \
+           keystroke \"]\" using {{command down, shift down}}\n  \
+           delay 0.15\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             return value of attribute \"AXDocument\" of window 1\n  \
+           end tell\n\
+         end tell"
+    )
+}
+
+/// Last resort for terminals that report no AXDocument: raise by title
+/// substring, inside `try` so a miss still leaves app-level focus standing.
+fn raise_by_title_script(terminal_pid: u32, hint: &str) -> String {
+    format!(
+        "tell application \"System Events\"\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             try\n      \
+               perform action \"AXRaise\" of (first window whose name contains \"{}\")\n    \
+             end try\n  \
+           end tell\n\
+         end tell",
+        applescript_quote(hint)
+    )
+}
+
+/// The path of a `file://` URL as AXDocument reports it, percent-decoded.
+fn file_url_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    // Skip any host part ("file://localhost/…"); the path starts at the slash.
+    let path = &rest[rest.find('/')?..];
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Does this AXDocument URL name the session's working directory?
+fn same_dir(doc_url: &str, cwd: &str) -> bool {
+    file_url_path(doc_url)
+        .map(|p| p.trim_end_matches('/') == cwd.trim_end_matches('/'))
+        .unwrap_or(false)
+}
+
+/// Land the user on the session's terminal — the whole point of the button.
+///
+/// App-level focus first (the floor; `false` only when even that is denied).
+/// Then find the session's own surface by its working directory, which the
+/// claim knows exactly and AXDocument reports exactly — never by tab title,
+/// which Claude Code rewrites at will ("✳ claude worktree setup"):
+///
+/// 1. a *visible* window whose AXDocument is the claim's cwd → AXRaise it;
+/// 2. otherwise cycle the front window's native tabs (hidden tabs are invisible
+///    to AX), probing AXDocument each hop, until the cwd appears or the cycle
+///    wraps back to where it started — so a fruitless search restores the
+///    user's original tab instead of stranding them somewhere random;
+/// 3. a terminal with no AXDocument at all falls back to the old title-contains
+///    raise.
+///
+/// Cycling returning nothing is still `true`: the terminal is frontmost, which
+/// is the honest best effort the spec promises.
+fn focus_terminal_session(terminal_pid: u32, cwd: Option<&str>, hint: Option<&str>) -> bool {
+    if !run_osascript(&frontmost_script(terminal_pid)) {
+        return false;
+    }
+    let Some(cwd) = cwd else { return true };
+    if let Some(listing) = osascript_output(&visible_docs_script(terminal_pid)) {
+        for line in listing.lines() {
+            if let Some((idx, doc)) = line.split_once("|||") {
+                if same_dir(doc, cwd) {
+                    if let Ok(index) = idx.parse::<usize>() {
+                        if index != 1 {
+                            let _ = run_osascript(&raise_window_script(terminal_pid, index));
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    let Some(initial) = osascript_output(&front_doc_script(terminal_pid)) else {
+        if let Some(hint) = hint {
+            let _ = run_osascript(&raise_by_title_script(terminal_pid, hint));
+        }
+        return true;
+    };
+    if same_dir(&initial, cwd) {
+        return true;
+    }
+    for _ in 0..16 {
+        let Some(doc) = osascript_output(&next_tab_read_script(terminal_pid)) else {
+            break;
+        };
+        if same_dir(&doc, cwd) {
+            return true;
+        }
+        if doc == initial {
+            break;
+        }
+    }
+    true
+}
+
+/// Run one AppleScript and capture its answer; `None` on any failure. The
+/// probing steps need stdout (an AXDocument URL), not just success/failure.
+fn osascript_output(script: &str) -> Option<String> {
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Run one AppleScript; false on any failure, including the user denying the
@@ -381,10 +535,10 @@ pub async fn focus_session(
         eprintln!("tildone: focus_session {session_id}: no live beat pid");
         return Ok(false);
     };
-    // The window hint comes from the claim's cwd basename: worktree paths are what
-    // terminal tabs actually put in their titles.
+    // The claim's cwd identifies the session's terminal surface exactly: full
+    // path for the AXDocument match, basename as the title-fallback hint.
     let db = { live.db.lock().unwrap().clone() };
-    let hint = db.and_then(|db| {
+    let cwd = db.and_then(|db| {
         let conn = db.lock().unwrap();
         conn.query_row(
             "SELECT cwd FROM agent_claims WHERE session_id = ?1",
@@ -394,7 +548,7 @@ pub async fn focus_session(
         .ok()
         .flatten()
     });
-    let hint = hint.as_deref().and_then(|cwd| {
+    let hint = cwd.as_deref().and_then(|cwd| {
         std::path::Path::new(cwd)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -406,7 +560,7 @@ pub async fn focus_session(
             eprintln!("tildone: focus_session: no terminal ancestor above pid {pid}");
             return false;
         };
-        run_osascript(&focus_script(terminal_pid, hint.as_deref()))
+        focus_terminal_session(terminal_pid, cwd.as_deref(), hint.as_deref())
     })
     .await
     .unwrap_or(false);
@@ -4505,18 +4659,44 @@ mod tests {
     }
 
     #[test]
-    fn the_focus_script_raises_by_window_hint_only_when_there_is_one() {
-        let with = focus_script(42, Some("til94-jump-to-session"));
-        assert!(with.contains("unix id is 42"));
-        assert!(with.contains("AXRaise"));
-        assert!(with.contains("name contains \"til94-jump-to-session\""));
-        // The raise is best-effort: it must sit inside a try block so a missing
-        // window still leaves app-level focus as the result.
-        assert!(with.contains("try"));
+    fn the_focus_scripts_target_the_terminal_by_unix_id() {
+        for script in [
+            frontmost_script(42),
+            visible_docs_script(42),
+            raise_window_script(42, 3),
+            front_doc_script(42),
+            next_tab_read_script(42),
+            raise_by_title_script(42, "til94"),
+        ] {
+            assert!(script.contains("unix id is 42"), "script must name the pid: {script}");
+        }
+        assert!(raise_window_script(42, 3).contains("window 3"));
+        // The tab hop is the shared ⌘⇧] binding, and reads the doc after a beat.
+        let hop = next_tab_read_script(42);
+        assert!(hop.contains("keystroke \"]\""));
+        assert!(hop.contains("command down, shift down"));
+        assert!(hop.contains("AXDocument"));
+        // The title fallback is best-effort: inside try, quoted hint.
+        let title = raise_by_title_script(42, "til94-jump-to-session");
+        assert!(title.contains("try"));
+        assert!(title.contains("name contains \"til94-jump-to-session\""));
+    }
 
-        let without = focus_script(42, None);
-        assert!(without.contains("set frontmost to true"));
-        assert!(!without.contains("AXRaise"));
+    #[test]
+    fn ax_document_urls_resolve_to_directories() {
+        // AXDocument reports the surface's pwd as a file:// URL, trailing slash
+        // and percent-encoding included; the claim stores a plain path.
+        assert!(same_dir("file:///Users/x/projects/tildone/", "/Users/x/projects/tildone"));
+        assert!(same_dir("file://localhost/Users/x/til/", "/Users/x/til"));
+        assert!(same_dir("file:///Users/x/my%20repo/", "/Users/x/my repo"));
+        assert!(!same_dir("file:///Users/x/projects/tildone/", "/Users/x/projects"));
+        assert!(!same_dir("missing value", "/Users/x"));
+        assert!(!same_dir("https://example.com/", "/Users/x"));
+        assert_eq!(
+            file_url_path("file:///a%2Fb/c").as_deref(),
+            Some("/a/b/c"),
+            "percent-decoding happens after path extraction"
+        );
     }
 
     // -----------------------------------------------------------------------
