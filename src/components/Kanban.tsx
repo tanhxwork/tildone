@@ -464,7 +464,13 @@ function prChip(
       return {
         cls: "pr-merged",
         color: "var(--success)",
-        suffix: <IconCheck size={11} />,
+        // Wrapped so its green survives the review-door, whose svg rule tints the
+        // door's own kind-icon; the ↓N and draft badges are self-coloured spans.
+        suffix: (
+          <span className="pr-check">
+            <IconCheck size={11} />
+          </span>
+        ),
         title: "merged",
       };
     case "draft":
@@ -832,10 +838,13 @@ function CardProvenance({
             const isDoor = door && kind === "pr";
             const short = isDoor ? prDoorLabel(link) : cardLinkShort(link);
             const older = total > 1 ? ` · latest of ${total}` : "";
-            // The door keeps its own review styling; elsewhere a stamped PR chip
-            // takes its merge-status tint, class and trailing badge.
-            const pr = isDoor ? null : prChip(link);
-            const color = pr ? pr.color : LINK_KIND_COLORS[kind];
+            // A stamped PR shows its merge status everywhere. Outside the review
+            // section it becomes a full chip — tint, class and trailing badge.
+            // As the review-door it keeps its own frame, icon and label, and the
+            // status rides along as just the trailing badge (✓ / ↓N / draft), so
+            // a merged PR on a card in review reads as landed, not an open loop.
+            const pr = prChip(link);
+            const color = pr && !isDoor ? pr.color : LINK_KIND_COLORS[kind];
             const stateTitle = pr ? ` · ${pr.title}` : "";
             return (
               <button
