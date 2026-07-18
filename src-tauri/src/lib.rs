@@ -228,6 +228,7 @@ pub fn run() {
             agent::agent_server_status,
             agent::agent_server_endpoint,
             agent::agent_presence,
+            agent::focus_session,
             agent::agent_set_notify,
             hookinstall::hook_status,
             hookinstall::hook_install,

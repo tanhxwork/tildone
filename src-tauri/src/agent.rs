@@ -141,6 +141,9 @@ pub struct ClaimRow {
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub struct PresenceEntry {
     task_id: i64,
+    /// Which session won the liveliness contest for this task — the handle the
+    /// jump-to-session button passes back to `focus_session`.
+    session_id: String,
     agent_name: Option<String>,
     /// Already resolved to what the UI renders: "working" | "blocked" | "quiet".
     ///
@@ -202,6 +205,7 @@ pub fn resolve_presence(
         };
         let entry = PresenceEntry {
             task_id: claim.task_id,
+            session_id: claim.session_id.clone(),
             agent_name: claim.agent_name.clone(),
             state: state.to_string(),
             at: beat
@@ -240,6 +244,356 @@ fn pid_alive(pid: u32) -> bool {
         sysinfo::ProcessRefreshKind::nothing(),
     );
     sys.process(pid).is_some()
+}
+
+/// Process names that mean "this ancestor is the terminal app hosting the session".
+/// Substring, case-insensitive, against the process name the OS reports — which is
+/// the binary name (`ghostty`, `Terminal`, `iTerm2`, `wezterm-gui`, `kitty`,
+/// `alacritty`), not the bundle display name.
+const TERMINAL_PROCESS_NAMES: [&str; 6] =
+    ["ghostty", "terminal", "iterm", "wezterm", "kitty", "alacritty"];
+
+/// Walk a session's ancestor chain looking for the terminal process hosting it.
+///
+/// Pure, with the process table injected, so every branch is testable without
+/// spawning anything: `lookup(pid)` answers `(parent pid, process name)` or `None`
+/// for a process that no longer exists. Returns the terminal's pid, or `None` when
+/// the chain ends (launchd, a dead pid, a headless/background session) — which the
+/// caller must treat as "not reachable", never as an error.
+fn find_terminal_ancestor(
+    start: u32,
+    lookup: &dyn Fn(u32) -> Option<(Option<u32>, String)>,
+) -> Option<u32> {
+    let mut pid = start;
+    // A real chain is ~4 hops (claude → shell → login → terminal); 15 is a cycle
+    // guard, not a tuning knob.
+    for _ in 0..15 {
+        let (parent, name) = lookup(pid)?;
+        let lower = name.to_lowercase();
+        if TERMINAL_PROCESS_NAMES.iter().any(|t| lower.contains(t)) {
+            return Some(pid);
+        }
+        let next = parent?;
+        // pid 1 is launchd/init: past it there is no terminal. Equality guards a
+        // degenerate table from looping forever.
+        if next <= 1 || next == pid {
+            return None;
+        }
+        pid = next;
+    }
+    None
+}
+
+/// The real process table behind `find_terminal_ancestor`: parent pid + name via
+/// `ps`. Not sysinfo, deliberately: the chain crosses `/usr/bin/login`, which runs
+/// as root, and sysinfo answered existence for it but not parent/name (seen live —
+/// the walk died on its first hop). `ps` reads the whole table regardless of
+/// ownership, and a click-time walk of ~4 hops doesn't care about subprocess cost.
+fn process_info(pid: u32) -> Option<(Option<u32>, String)> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let mut parts = line.split_whitespace();
+    let ppid = parts.next()?.parse::<u32>().ok();
+    // comm is the full executable path on macOS; the terminal match wants the
+    // binary name ("/usr/bin/login" → "login").
+    let comm = parts.collect::<Vec<_>>().join(" ");
+    let name = comm.rsplit('/').next().unwrap_or("").to_string();
+    Some((ppid, name))
+}
+
+/// Escape a string for interpolation inside AppleScript double quotes.
+fn applescript_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Bring the terminal app frontmost — the floor every jump lands on even when
+/// the session's exact tab cannot be found.
+fn frontmost_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\" to set frontmost of \
+         (first process whose unix id is {terminal_pid}) to true"
+    )
+}
+
+/// One line per *visible* window: `<index>|||<AXDocument>`. Ghostty (and
+/// Terminal.app) report each surface's working directory as the window's
+/// AXDocument file:// URL — an exact, title-independent way to recognise the
+/// session's window. Hidden native tabs do not appear here; they are covered
+/// by the tab cycle below.
+fn visible_docs_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\"\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             set out to \"\"\n    set i to 1\n    \
+             repeat with w in windows\n      \
+               try\n        \
+                 set out to out & i & \"|||\" & (value of attribute \"AXDocument\" of w) & linefeed\n      \
+               end try\n      \
+               set i to i + 1\n    \
+             end repeat\n    \
+             return out\n  \
+           end tell\n\
+         end tell"
+    )
+}
+
+fn raise_window_script(terminal_pid: u32, index: usize) -> String {
+    format!(
+        "tell application \"System Events\" to perform action \"AXRaise\" of \
+         window {index} of (first process whose unix id is {terminal_pid})"
+    )
+}
+
+fn front_doc_script(terminal_pid: u32) -> String {
+    format!(
+        "tell application \"System Events\" to return value of attribute \"AXDocument\" of \
+         window 1 of (first process whose unix id is {terminal_pid})"
+    )
+}
+
+/// Advance one tab (⌘⇧] — the shared next-tab binding of Ghostty, Terminal.app
+/// and iTerm2) and report the now-front tab's AXDocument. The keystroke goes to
+/// the frontmost app, which `frontmost_script` has already made the terminal.
+fn next_tab_read_script(terminal_pid: u32) -> String {
+    tab_hop_read_script(terminal_pid, "]")
+}
+
+/// One tab backwards (⌘⇧[) — the return leg when a search must be unwound.
+fn prev_tab_read_script(terminal_pid: u32) -> String {
+    tab_hop_read_script(terminal_pid, "[")
+}
+
+fn tab_hop_read_script(terminal_pid: u32, key: &str) -> String {
+    format!(
+        "tell application \"System Events\"\n  \
+           keystroke \"{key}\" using {{command down, shift down}}\n  \
+           delay 0.15\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             return value of attribute \"AXDocument\" of window 1\n  \
+           end tell\n\
+         end tell"
+    )
+}
+
+/// Last resort for terminals that report no AXDocument: raise by title
+/// substring, inside `try` so a miss still leaves app-level focus standing.
+fn raise_by_title_script(terminal_pid: u32, hint: &str) -> String {
+    format!(
+        "tell application \"System Events\"\n  \
+           tell (first process whose unix id is {terminal_pid})\n    \
+             try\n      \
+               perform action \"AXRaise\" of (first window whose name contains \"{}\")\n    \
+             end try\n  \
+           end tell\n\
+         end tell",
+        applescript_quote(hint)
+    )
+}
+
+/// The path of a `file://` URL as AXDocument reports it, percent-decoded.
+fn file_url_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    // Skip any host part ("file://localhost/…"); the path starts at the slash.
+    let path = &rest[rest.find('/')?..];
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Hex-check the two bytes before slicing: hexdigits are ASCII, so the
+        // str slice below cannot land inside a multi-byte char (a raw unicode
+        // char right after a stray `%` would otherwise panic the slice).
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            if let Ok(b) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Does this AXDocument URL name the session's working directory?
+fn same_dir(doc_url: &str, cwd: &str) -> bool {
+    file_url_path(doc_url)
+        .map(|p| p.trim_end_matches('/') == cwd.trim_end_matches('/'))
+        .unwrap_or(false)
+}
+
+/// Land the user on the session's terminal — the whole point of the button.
+///
+/// App-level focus first (the floor; `false` only when even that is denied).
+/// Then find the session's own surface by its working directory, which the
+/// claim knows exactly and AXDocument reports exactly — never by tab title,
+/// which Claude Code rewrites at will ("✳ claude worktree setup"):
+///
+/// 1. a *visible* window whose AXDocument is the claim's cwd → AXRaise it;
+/// 2. otherwise cycle the front window's native tabs (hidden tabs are invisible
+///    to AX), probing AXDocument each hop, until the cwd appears or the cycle
+///    wraps back to where it started — so a fruitless search restores the
+///    user's original tab instead of stranding them somewhere random;
+/// 3. a terminal with no AXDocument at all falls back to the old title-contains
+///    raise.
+///
+/// Cycling returning nothing is still `true`: the terminal is frontmost, which
+/// is the honest best effort the spec promises.
+fn focus_terminal_session(terminal_pid: u32, cwd: Option<&str>, hint: Option<&str>) -> bool {
+    if !run_osascript(&frontmost_script(terminal_pid)) {
+        return false;
+    }
+    let Some(cwd) = cwd else { return true };
+    if let Some(listing) = osascript_output(&visible_docs_script(terminal_pid)) {
+        for line in listing.lines() {
+            if let Some((idx, doc)) = line.split_once("|||") {
+                if same_dir(doc, cwd) {
+                    if let Ok(index) = idx.parse::<usize>() {
+                        if index != 1 {
+                            let _ = run_osascript(&raise_window_script(terminal_pid, index));
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    let Some(initial) = osascript_output(&front_doc_script(terminal_pid)) else {
+        if let Some(hint) = hint {
+            let _ = run_osascript(&raise_by_title_script(terminal_pid, hint));
+        }
+        return true;
+    };
+    if same_dir(&initial, cwd) {
+        return true;
+    }
+    let mut hops = 0;
+    while hops < 16 {
+        let Some(doc) = osascript_output(&next_tab_read_script(terminal_pid)) else {
+            break;
+        };
+        hops += 1;
+        if same_dir(&doc, cwd) {
+            return true;
+        }
+        if doc == initial {
+            // Wrapped around: the user's original tab is front again.
+            return true;
+        }
+    }
+    // Cap exhausted without wrapping (a window with more tabs than the cap):
+    // unwind the hops so the search doesn't strand the user off their tab.
+    for _ in 0..hops {
+        if osascript_output(&prev_tab_read_script(terminal_pid))
+            .map(|doc| doc == initial)
+            .unwrap_or(true)
+        {
+            break;
+        }
+    }
+    true
+}
+
+/// Run one AppleScript and capture its answer; `None` on any failure. The
+/// probing steps need stdout (an AXDocument URL), not just success/failure.
+fn osascript_output(script: &str) -> Option<String> {
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Run one AppleScript; false on any failure, including the user denying the
+/// macOS Automation prompt (osascript exits non-zero — exactly the silent
+/// `false` the spec wants).
+fn run_osascript(script: &str) -> bool {
+    match std::process::Command::new("osascript").arg("-e").arg(script).output() {
+        Ok(o) if o.status.success() => true,
+        // stderr breadcrumb only: the UI answer stays a quiet false, but a
+        // permission denial (-1743) vs a script error must be tellable apart
+        // from the log when a jump silently does nothing.
+        Ok(o) => {
+            eprintln!(
+                "tildone: focus_session osascript failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("tildone: focus_session cannot run osascript: {e}");
+            false
+        }
+    }
+}
+
+/// Jump from a card to the terminal window its claimed session runs in.
+///
+/// `false` covers every "cannot" uniformly — no beat, no pid, headless session,
+/// Automation permission denied — because from the board's side they are all the
+/// same fact: this session has no reachable window. The UI answers with a quiet
+/// toast, never an error dialog.
+#[tauri::command]
+pub async fn focus_session(
+    session_id: String,
+    live: State<'_, AgentLive>,
+) -> Result<bool, String> {
+    let pid = {
+        let beats = live.beats.lock().unwrap();
+        beats.get(&session_id).and_then(|b| b.pid)
+    };
+    let Some(pid) = pid else {
+        eprintln!("tildone: focus_session {session_id}: no live beat pid");
+        return Ok(false);
+    };
+    // The claim's cwd identifies the session's terminal surface exactly: full
+    // path for the AXDocument match, basename as the title-fallback hint.
+    let db = { live.db.lock().unwrap().clone() };
+    let cwd = db.and_then(|db| {
+        let conn = db.lock().unwrap();
+        conn.query_row(
+            "SELECT cwd FROM agent_claims WHERE session_id = ?1",
+            [&session_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    });
+    let hint = cwd.as_deref().and_then(|cwd| {
+        std::path::Path::new(cwd)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    });
+    // osascript can block for as long as the Automation permission prompt sits
+    // unanswered — never on the main thread.
+    let focused = tauri::async_runtime::spawn_blocking(move || {
+        let Some(terminal_pid) = find_terminal_ancestor(pid, &process_info) else {
+            eprintln!("tildone: focus_session: no terminal ancestor above pid {pid}");
+            return false;
+        };
+        focus_terminal_session(terminal_pid, cwd.as_deref(), hint.as_deref())
+    })
+    .await
+    .unwrap_or(false);
+    Ok(focused)
 }
 
 /// Backstop for what the PID check cannot cover: PID reuse, or a beat with no pid.
@@ -4261,6 +4615,128 @@ mod tests {
         assert!(apply_git_event(&db.lock().unwrap(), &ev));
         let links = link_rows(&db, id);
         assert_eq!(links[0].1, link_label_from_url("https://github.com/o/r/pull/12"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Jump-to-session: the ancestor walk and the AppleScript it feeds. The walk
+    // is pure with the process table injected; only process_info touches the OS,
+    // and it gets one real-process test so the sysinfo refresh flags are proven
+    // to actually populate name and parent (a wrong-but-compiling flag set would
+    // make every jump silently "not reachable").
+
+    fn table<'a>(
+        rows: &'a [(u32, Option<u32>, &'a str)],
+    ) -> impl Fn(u32) -> Option<(Option<u32>, String)> + 'a {
+        move |pid| {
+            rows.iter()
+                .find(|(p, _, _)| *p == pid)
+                .map(|(_, parent, name)| (*parent, name.to_string()))
+        }
+    }
+
+    #[test]
+    fn the_walk_finds_the_terminal_up_a_real_shaped_chain() {
+        // claude → zsh → login → ghostty → launchd
+        let t = table(&[
+            (100, Some(50), "claude"),
+            (50, Some(40), "zsh"),
+            (40, Some(30), "login"),
+            (30, Some(1), "ghostty"),
+        ]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(30));
+    }
+
+    #[test]
+    fn a_chain_ending_at_launchd_with_no_terminal_is_not_reachable() {
+        // A headless/background session: the chain tops out without a terminal.
+        let t = table(&[(100, Some(50), "claude"), (50, Some(1), "node")]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn a_dead_pid_is_not_reachable() {
+        let t = table(&[]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn terminal_names_match_case_insensitively_and_by_substring() {
+        // The OS reports binary names: "iTerm2", "wezterm-gui". Both must hit.
+        let t = table(&[(100, Some(60), "claude"), (60, Some(1), "iTerm2")]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(60));
+        let t = table(&[(100, Some(60), "claude"), (60, Some(1), "wezterm-gui")]);
+        assert_eq!(find_terminal_ancestor(100, &t), Some(60));
+    }
+
+    #[test]
+    fn a_degenerate_self_parented_table_cannot_loop_forever() {
+        let t = table(&[(100, Some(100), "claude")]);
+        assert_eq!(find_terminal_ancestor(100, &t), None);
+    }
+
+    #[test]
+    fn process_info_reads_this_very_process() {
+        let (parent, name) = process_info(std::process::id())
+            .expect("this very process must be readable");
+        assert!(!name.is_empty(), "sysinfo must populate the process name");
+        assert!(parent.is_some(), "a test runner always has a parent process");
+    }
+
+    #[test]
+    fn applescript_quoting_survives_quotes_and_backslashes() {
+        assert_eq!(applescript_quote(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn the_focus_scripts_target_the_terminal_by_unix_id() {
+        for script in [
+            frontmost_script(42),
+            visible_docs_script(42),
+            raise_window_script(42, 3),
+            front_doc_script(42),
+            next_tab_read_script(42),
+            raise_by_title_script(42, "til94"),
+        ] {
+            assert!(script.contains("unix id is 42"), "script must name the pid: {script}");
+        }
+        assert!(raise_window_script(42, 3).contains("window 3"));
+        // The tab hop is the shared ⌘⇧] binding, and reads the doc after a beat.
+        let hop = next_tab_read_script(42);
+        assert!(hop.contains("keystroke \"]\""));
+        assert!(hop.contains("command down, shift down"));
+        assert!(hop.contains("AXDocument"));
+        // The title fallback is best-effort: inside try, quoted hint.
+        let title = raise_by_title_script(42, "til94-jump-to-session");
+        assert!(title.contains("try"));
+        assert!(title.contains("name contains \"til94-jump-to-session\""));
+    }
+
+    #[test]
+    fn ax_document_urls_resolve_to_directories() {
+        // AXDocument reports the surface's pwd as a file:// URL, trailing slash
+        // and percent-encoding included; the claim stores a plain path.
+        assert!(same_dir("file:///Users/x/projects/tildone/", "/Users/x/projects/tildone"));
+        assert!(same_dir("file://localhost/Users/x/til/", "/Users/x/til"));
+        assert!(same_dir("file:///Users/x/my%20repo/", "/Users/x/my repo"));
+        assert!(!same_dir("file:///Users/x/projects/tildone/", "/Users/x/projects"));
+        assert!(!same_dir("missing value", "/Users/x"));
+        assert!(!same_dir("https://example.com/", "/Users/x"));
+        assert_eq!(
+            file_url_path("file:///a%2Fb/c").as_deref(),
+            Some("/a/b/c"),
+            "percent-decoding happens after path extraction"
+        );
+        // A stray `%` right before a raw multi-byte char must pass through
+        // untouched, never panic on a mid-char slice (codex r2 finding).
+        assert_eq!(file_url_path("file:///a%é/b").as_deref(), Some("/a%é/b"));
+        assert_eq!(file_url_path("file:///a%zz/").as_deref(), Some("/a%zz/"));
+    }
+
+    #[test]
+    fn tab_hops_run_both_directions() {
+        assert!(next_tab_read_script(42).contains("keystroke \"]\""));
+        // The unwind leg, for a window with more tabs than the search cap.
+        assert!(prev_tab_read_script(42).contains("keystroke \"[\""));
     }
 
     // -----------------------------------------------------------------------

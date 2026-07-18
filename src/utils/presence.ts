@@ -28,6 +28,9 @@ export type PresenceState = "working" | "blocked" | "quiet";
 /** One entry from the Rust `agent_presence` command. Mirrors `PresenceEntry` in agent.rs. */
 export interface LivePresence {
   task_id: number;
+  /** The session behind this entry — what the editor's jump-to-session button
+   *  hands back to the `focus_session` command. */
+  session_id: string;
   agent_name: string | null;
   state: PresenceState;
   at: string;
