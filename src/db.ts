@@ -90,7 +90,7 @@ export async function fetchAll(): Promise<{
   }));
   const presence = await fetchAgentPresence();
   const linkRows = await d.select<TaskLink[]>(
-    "SELECT id, task_id, url, label, kind FROM task_links ORDER BY id",
+    "SELECT id, task_id, url, label, kind, pr_state, pr_behind FROM task_links ORDER BY id",
   );
   const linksByTask: Record<number, TaskLink[]> = {};
   for (const row of linkRows) {

@@ -4711,3 +4711,28 @@ textarea:focus-visible,
 .card-link-label {
   color: var(--text-muted);
 }
+
+/* PR chip merge status (TIL-84). The chip's icon tint (--link-color) is set inline
+   per state in Kanban's prChip, so only the label colour and the trailing badge
+   live here. `pr-ready` (open, up to date) keeps the plain look and needs no rule.
+   merged = success ink, behind = warn ink + a "↓N" count, draft = faint + tag. */
+.card-link.pr-merged .card-link-label {
+  color: var(--success);
+}
+.card-link.pr-behind .card-link-label {
+  color: var(--warn);
+}
+.card-link.pr-draft,
+.card-link.pr-draft .card-link-label {
+  color: var(--text-faint);
+}
+.pr-behind-count {
+  color: var(--warn);
+  font-weight: 700;
+  margin-left: 1px;
+  font-variant-numeric: tabular-nums;
+}
+.pr-draft-tag {
+  color: var(--text-faint);
+  font-weight: 600;
+}

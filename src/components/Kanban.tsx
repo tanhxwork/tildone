@@ -20,7 +20,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { format } from "date-fns";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Project, Status, Tag, Task, TaskLink } from "../types";
@@ -451,6 +451,43 @@ function prDoorLabel(link: TaskLink): string {
   return short ? `PR ${short}` : "PR";
 }
 
+/** The merge-status face of a PR chip (TIL-84): its tint, a modifier class, and a
+ *  trailing badge. null when the link is not a stamped PR, so the chip keeps its
+ *  plain purple open-PR look. `open` splits into ready (up to date) and behind. */
+function prChip(
+  link: TaskLink,
+): { cls: string; color: string; suffix: ReactNode; title: string } | null {
+  if (asLinkKind(link.kind) !== "pr" || !link.pr_state) return null;
+  const behind = link.pr_behind ?? 0;
+  switch (link.pr_state) {
+    case "merged":
+      return {
+        cls: "pr-merged",
+        color: "var(--success)",
+        suffix: <IconCheck size={11} />,
+        title: "merged",
+      };
+    case "draft":
+      return {
+        cls: "pr-draft",
+        color: "var(--text-faint)",
+        suffix: <span className="pr-draft-tag">draft</span>,
+        title: "draft",
+      };
+    case "open":
+      return behind > 0
+        ? {
+            cls: "pr-behind",
+            color: "var(--warn)",
+            suffix: <span className="pr-behind-count">↓{behind}</span>,
+            title: `${behind} behind main · rebase before merge`,
+          }
+        : { cls: "pr-ready", color: LINK_KIND_COLORS.pr, suffix: null, title: "up to date" };
+    default:
+      return null;
+  }
+}
+
 /** The board's verify surface: the counter opens this anchored popover so the
  *  steps can be read and ticked without opening the editor. A tick here is the
  *  same store write the editor makes. Every pointer event stops at the popover —
@@ -795,12 +832,19 @@ function CardProvenance({
             const isDoor = door && kind === "pr";
             const short = isDoor ? prDoorLabel(link) : cardLinkShort(link);
             const older = total > 1 ? ` · latest of ${total}` : "";
+            // The door keeps its own review styling; elsewhere a stamped PR chip
+            // takes its merge-status tint, class and trailing badge.
+            const pr = isDoor ? null : prChip(link);
+            const color = pr ? pr.color : LINK_KIND_COLORS[kind];
+            const stateTitle = pr ? ` · ${pr.title}` : "";
             return (
               <button
                 key={link.id}
-                className={isDoor ? "card-link review-door" : "card-link"}
-                style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
-                title={`${LINK_KIND_LABELS[kind]} · ${link.label}${older} · ${link.url}`}
+                className={
+                  isDoor ? "card-link review-door" : `card-link${pr ? ` ${pr.cls}` : ""}`
+                }
+                style={{ ["--link-color" as string]: color }}
+                title={`${LINK_KIND_LABELS[kind]} · ${link.label}${older}${stateTitle} · ${link.url}`}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -809,6 +853,7 @@ function CardProvenance({
               >
                 <LinkKindIcon kind={link.kind} size={13} />
                 {short && <span className="card-link-label">{short}</span>}
+                {pr?.suffix}
               </button>
             );
           })}

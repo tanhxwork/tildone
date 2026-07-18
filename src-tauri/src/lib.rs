@@ -133,6 +133,12 @@ pub fn run() {
             sql: include_str!("../migrations/015_task_tags_changes.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 16,
+            description: "add_pr_status",
+            sql: include_str!("../migrations/016_pr_status.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

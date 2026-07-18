@@ -336,6 +336,10 @@ const EVIDENCE_EXTENSIONS: &[&str] = &[
     "log",
 ];
 
+/// PR merge states the card's PR chip renders (TIL-84). Validated at the write
+/// boundary (set_pr_status), not by a CHECK — see migration 016.
+const PR_STATES: [&str; 3] = ["merged", "open", "draft"];
+
 /// Only http(s) links are clickable. The app opens a link with
 /// tauri-plugin-opener, which hands the string to the OS to open with whatever
 /// handles its scheme — so `file://`, `javascript:`, `mailto:` and custom app
@@ -1579,6 +1583,20 @@ struct AddLinkParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SetPrStatusParams {
+    #[schemars(description = "Task whose PR status to set")]
+    task_id: TaskRef,
+    #[schemars(
+        description = "Merge state of the PR: \"merged\", \"open\", or \"draft\". Compute with `gh pr view <n> --json state,isDraft` (state MERGED -> merged, isDraft -> draft, else open)."
+    )]
+    state: String,
+    #[schemars(
+        description = "How many commits the PR branch is behind main — open PRs only. Compute with `gh api repos/{owner}/{repo}/compare/main...<branch> --jq .behind_by`. A positive value renders the chip as 'behind, rebase before merge'. Omit or 0 when up to date."
+    )]
+    behind: Option<i64>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct AddCommentParams {
     #[schemars(description = "Task to comment on")]
     task_id: TaskRef,
@@ -1829,16 +1847,27 @@ impl TildoneAgent {
             .map_err(db_err)?;
         task["subtasks"] = json!(subtasks);
         let mut link_stmt = conn
-            .prepare("SELECT id, url, label, kind FROM task_links WHERE task_id = ?1 ORDER BY id")
+            .prepare(
+                "SELECT id, url, label, kind, pr_state, pr_behind FROM task_links WHERE task_id = ?1 ORDER BY id",
+            )
             .map_err(db_err)?;
         let links: Vec<Value> = link_stmt
             .query_map([id], |r| {
-                Ok(json!({
+                let mut link = json!({
                     "id": r.get::<_, i64>(0)?,
                     "url": r.get::<_, String>(1)?,
                     "label": r.get::<_, String>(2)?,
                     "kind": r.get::<_, String>(3)?,
-                }))
+                });
+                // pr_state / pr_behind only exist on PR links the agent has stamped;
+                // omit them when NULL to keep the "null fields are absent" contract.
+                if let Some(state) = r.get::<_, Option<String>>(4)? {
+                    link["pr_state"] = json!(state);
+                }
+                if let Some(behind) = r.get::<_, Option<i64>>(5)? {
+                    link["pr_behind"] = json!(behind);
+                }
+                Ok(link)
             })
             .map_err(db_err)?
             .collect::<Result<_, _>>()
@@ -2435,6 +2464,89 @@ impl TildoneAgent {
             "url": stored,
             "label": label,
             "kind": kind,
+        }))
+    }
+
+    #[tool(
+        description = "Set the merge status of a task's pull request — the state its PR chip shows on the card. `state` is \"merged\", \"open\", or \"draft\"; `behind` is how many commits an open PR is behind main. Updates the task's most recent PR link, so attach one first with add_link (kind=pr). Recompute and call this at CLOSE: a done card must never read as shipped while its PR is unmerged, and an open PR behind main needs a rebase before merge."
+    )]
+    fn set_pr_status(
+        &self,
+        Parameters(p): Parameters<SetPrStatusParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.set_pr_status_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn set_pr_status_as(
+        &self,
+        SetPrStatusParams {
+            task_id: task_ref,
+            state,
+            behind,
+        }: SetPrStatusParams,
+        agent: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let state = state.trim().to_ascii_lowercase();
+        if !PR_STATES.contains(&state.as_str()) {
+            return Ok(err("state must be one of: merged, open, draft."));
+        }
+        // "behind" is meaningful only for an open PR: a merged or draft PR is never
+        // shown as behind, so drop the count (and treat 0/negative as up-to-date).
+        let behind = if state == "open" {
+            behind.filter(|&n| n > 0)
+        } else {
+            None
+        };
+
+        let conn = self.db.lock().unwrap();
+        let Some(task_id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
+        match Self::task_trashed(&conn, task_id).map_err(db_err)? {
+            None => return Ok(err(format!("No task with reference {task_ref}."))),
+            Some(true) => {
+                return Ok(err(format!(
+                    "Task {task_ref} is in the trash; it can only be restored from the app."
+                )))
+            }
+            Some(false) => {}
+        }
+        // The most recent PR link — the one the card renders (latestLinkPerKind).
+        let link = conn
+            .query_row(
+                "SELECT id, label FROM task_links WHERE task_id = ?1 AND kind = 'pr' ORDER BY id DESC LIMIT 1",
+                [task_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let Some((link_id, label)) = link else {
+            return Ok(err(format!(
+                "Task {task_ref} has no PR link. Attach one with add_link (kind=pr) first."
+            )));
+        };
+        conn.execute(
+            "UPDATE task_links SET pr_state = ?1, pr_behind = ?2 WHERE id = ?3",
+            rusqlite::params![state, behind, link_id],
+        )
+        .map_err(db_err)?;
+        let summary = match behind {
+            Some(n) => format!("PR status: open, {n} behind main"),
+            None => format!("PR status: {state}"),
+        };
+        Self::record_activity(&conn, task_id, &format!("{summary} ({label})"), agent);
+        drop(conn);
+        self.notify();
+        ok_json(&json!({
+            "id": link_id,
+            "task_id": task_id,
+            "pr_state": state,
+            "pr_behind": behind,
         }))
     }
 
@@ -3254,6 +3366,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/013_agent_claims.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/014_unseen_at.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/015_task_tags_changes.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/016_pr_status.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -3895,6 +4008,78 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["url"], "https://github.com/tanhxwork/tildone/pull/12");
         assert_eq!(links[0]["kind"], "pr");
+    }
+
+    #[test]
+    fn set_pr_status_stamps_the_latest_pr_link_and_get_task_returns_it() {
+        let agent = test_agent();
+        let id = a_task(&agent, "ship the chip");
+        attach(
+            &agent,
+            id,
+            "https://github.com/tanhxwork/tildone/pull/63",
+            Some("PR #63"),
+            Some("pr"),
+        );
+
+        // open + behind is the "rebase before merge" state; the count rides through.
+        let (is_err, r) = extract(
+            &agent
+                .set_pr_status_as(
+                    SetPrStatusParams { task_id: id.into(), state: "open".into(), behind: Some(3) },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "set_pr_status errored: {r}");
+        let (_, task) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        let link = &task["links"].as_array().unwrap()[0];
+        assert_eq!(link["pr_state"], "open");
+        assert_eq!(link["pr_behind"].as_i64(), Some(3));
+
+        // merged drops the behind count — a merged PR is never shown as behind.
+        agent
+            .set_pr_status_as(
+                SetPrStatusParams { task_id: id.into(), state: "merged".into(), behind: Some(9) },
+                None,
+            )
+            .unwrap();
+        let (_, task) =
+            extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        let link = &task["links"].as_array().unwrap()[0];
+        assert_eq!(link["pr_state"], "merged");
+        assert!(
+            link.get("pr_behind").is_none(),
+            "a merged PR carries no behind count: {link}"
+        );
+    }
+
+    #[test]
+    fn set_pr_status_needs_a_pr_link_and_a_valid_state() {
+        let agent = test_agent();
+        let id = a_task(&agent, "no pr yet");
+        // No PR link -> refused (nothing to stamp).
+        let (is_err, _) = extract(
+            &agent
+                .set_pr_status_as(
+                    SetPrStatusParams { task_id: id.into(), state: "open".into(), behind: None },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "set_pr_status must refuse a task with no PR link");
+        // Even with a PR link, an unknown state is refused.
+        attach(&agent, id, "https://github.com/tanhxwork/tildone/pull/1", None, Some("pr"));
+        let (is_err, _) = extract(
+            &agent
+                .set_pr_status_as(
+                    SetPrStatusParams { task_id: id.into(), state: "landed".into(), behind: None },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "unknown state must be refused");
     }
 
     /// The whole security surface of the feature: an MCP tool that opens arbitrary

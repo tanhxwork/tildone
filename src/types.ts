@@ -108,7 +108,16 @@ export interface TaskLink {
   url: string;
   label: string;
   kind: string; // pr | branch | commit | worktree | other
+  // PR-only merge status the chip renders (migration 016, written by set_pr_status).
+  // Absent on non-PR links and on PR links the agent hasn't stamped yet — the chip
+  // then falls back to its plain open-PR form.
+  pr_state?: PrState | null; // merged | open | draft
+  pr_behind?: number | null; // commits behind main, open PRs only
 }
+
+/** The merge status a PR chip can show (TIL-84). "open" splits at render into
+ *  ready (behind 0) and behind (behind > 0). */
+export type PrState = "merged" | "open" | "draft";
 
 export interface Comment {
   id: number;
