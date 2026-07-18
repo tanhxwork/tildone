@@ -34,6 +34,7 @@ import {
 import { agentIdentity } from "../agents";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
+import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { reservedState } from "./TaskRow";
 
@@ -494,13 +495,20 @@ export function TaskEditor() {
                   {taskLinks.map((link) => {
                     const kind = asLinkKind(link.kind);
                     const isDoor = link === prLink;
+                    // A stamped PR carries its merge badge here too — as the
+                    // review-door (badge only) or a plain chip (full tint) —
+                    // matching the card strip (TIL-88).
+                    const pr = prChip(link);
+                    const color = pr && !isDoor ? pr.color : LINK_KIND_COLORS[kind];
                     return (
                       <button
                         key={link.id}
                         type="button"
-                        className={isDoor ? "card-link review-door" : "card-link"}
-                        style={{ ["--link-color" as string]: LINK_KIND_COLORS[kind] }}
-                        title={`${LINK_KIND_LABELS[kind]} · ${link.label} · ${link.url}`}
+                        className={
+                          isDoor ? "card-link review-door" : `card-link${pr ? ` ${pr.cls}` : ""}`
+                        }
+                        style={{ ["--link-color" as string]: color }}
+                        title={`${LINK_KIND_LABELS[kind]} · ${link.label}${pr ? ` · ${pr.title}` : ""} · ${link.url}`}
                         onClick={() => void openLink(link)}
                       >
                         {kind === "file" ? (
@@ -509,6 +517,7 @@ export function TaskEditor() {
                           <LinkKindIcon kind={link.kind} size={13} />
                         )}
                         <span className="card-link-label">{link.label}</span>
+                        {pr?.suffix}
                       </button>
                     );
                   })}
