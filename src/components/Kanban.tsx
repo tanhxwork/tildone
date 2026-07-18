@@ -20,7 +20,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { format } from "date-fns";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Project, Status, Tag, Task, TaskLink } from "../types";
@@ -41,6 +41,7 @@ import { taskRefLabel } from "../utils/ref";
 import type { Subtask } from "../types";
 import { CompletionFlourish, UnseenMark } from "./Brand";
 import { IconAlert, IconCheck, IconChecklist, IconMessage, LinkKindIcon } from "./Icons";
+import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
 import { AgentPresence } from "../agents";
@@ -451,49 +452,6 @@ function prDoorLabel(link: TaskLink): string {
   return short ? `PR ${short}` : "PR";
 }
 
-/** The merge-status face of a PR chip (TIL-84): its tint, a modifier class, and a
- *  trailing badge. null when the link is not a stamped PR, so the chip keeps its
- *  plain purple open-PR look. `open` splits into ready (up to date) and behind. */
-function prChip(
-  link: TaskLink,
-): { cls: string; color: string; suffix: ReactNode; title: string } | null {
-  if (asLinkKind(link.kind) !== "pr" || !link.pr_state) return null;
-  const behind = link.pr_behind ?? 0;
-  switch (link.pr_state) {
-    case "merged":
-      return {
-        cls: "pr-merged",
-        color: "var(--success)",
-        // Wrapped so its green survives the review-door, whose svg rule tints the
-        // door's own kind-icon; the ↓N and draft badges are self-coloured spans.
-        suffix: (
-          <span className="pr-check">
-            <IconCheck size={11} />
-          </span>
-        ),
-        title: "merged",
-      };
-    case "draft":
-      return {
-        cls: "pr-draft",
-        color: "var(--text-faint)",
-        suffix: <span className="pr-draft-tag">draft</span>,
-        title: "draft",
-      };
-    case "open":
-      return behind > 0
-        ? {
-            cls: "pr-behind",
-            color: "var(--warn)",
-            suffix: <span className="pr-behind-count">↓{behind}</span>,
-            title: `${behind} behind main · rebase before merge`,
-          }
-        : { cls: "pr-ready", color: LINK_KIND_COLORS.pr, suffix: null, title: "up to date" };
-    default:
-      return null;
-  }
-}
-
 /** The board's verify surface: the counter opens this anchored popover so the
  *  steps can be read and ticked without opening the editor. A tick here is the
  *  same store write the editor makes. Every pointer event stops at the popover —
@@ -526,6 +484,9 @@ function VerifyPopover({
     };
   }, [onClose]);
   const done = steps.filter((s) => s.done).length;
+  // Same review-door as the card strip, so a stamped PR carries its merge badge
+  // here too (TIL-88).
+  const pr = prLink ? prChip(prLink) : null;
   return (
     <div
       ref={ref}
@@ -557,11 +518,12 @@ function VerifyPopover({
         <button
           type="button"
           className="card-link review-door"
-          title={`${LINK_KIND_LABELS.pr} · ${prLink.label} · ${prLink.url}`}
+          title={`${LINK_KIND_LABELS.pr} · ${prLink.label}${pr ? ` · ${pr.title}` : ""} · ${prLink.url}`}
           onClick={() => void openUrl(prLink.url)}
         >
           <LinkKindIcon kind="pr" size={13} />
           {prDoorLabel(prLink)}
+          {pr?.suffix}
         </button>
       )}
     </div>
