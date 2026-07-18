@@ -365,9 +365,18 @@ fn front_doc_script(terminal_pid: u32) -> String {
 /// and iTerm2) and report the now-front tab's AXDocument. The keystroke goes to
 /// the frontmost app, which `frontmost_script` has already made the terminal.
 fn next_tab_read_script(terminal_pid: u32) -> String {
+    tab_hop_read_script(terminal_pid, "]")
+}
+
+/// One tab backwards (⌘⇧[) — the return leg when a search must be unwound.
+fn prev_tab_read_script(terminal_pid: u32) -> String {
+    tab_hop_read_script(terminal_pid, "[")
+}
+
+fn tab_hop_read_script(terminal_pid: u32, key: &str) -> String {
     format!(
         "tell application \"System Events\"\n  \
-           keystroke \"]\" using {{command down, shift down}}\n  \
+           keystroke \"{key}\" using {{command down, shift down}}\n  \
            delay 0.15\n  \
            tell (first process whose unix id is {terminal_pid})\n    \
              return value of attribute \"AXDocument\" of window 1\n  \
@@ -400,7 +409,14 @@ fn file_url_path(url: &str) -> Option<String> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
+        // Hex-check the two bytes before slicing: hexdigits are ASCII, so the
+        // str slice below cannot land inside a multi-byte char (a raw unicode
+        // char right after a stray `%` would otherwise panic the slice).
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
             if let Ok(b) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
                 out.push(b);
                 i += 3;
@@ -465,14 +481,27 @@ fn focus_terminal_session(terminal_pid: u32, cwd: Option<&str>, hint: Option<&st
     if same_dir(&initial, cwd) {
         return true;
     }
-    for _ in 0..16 {
+    let mut hops = 0;
+    while hops < 16 {
         let Some(doc) = osascript_output(&next_tab_read_script(terminal_pid)) else {
             break;
         };
+        hops += 1;
         if same_dir(&doc, cwd) {
             return true;
         }
         if doc == initial {
+            // Wrapped around: the user's original tab is front again.
+            return true;
+        }
+    }
+    // Cap exhausted without wrapping (a window with more tabs than the cap):
+    // unwind the hops so the search doesn't strand the user off their tab.
+    for _ in 0..hops {
+        if osascript_output(&prev_tab_read_script(terminal_pid))
+            .map(|doc| doc == initial)
+            .unwrap_or(true)
+        {
             break;
         }
     }
@@ -4697,6 +4726,17 @@ mod tests {
             Some("/a/b/c"),
             "percent-decoding happens after path extraction"
         );
+        // A stray `%` right before a raw multi-byte char must pass through
+        // untouched, never panic on a mid-char slice (codex r2 finding).
+        assert_eq!(file_url_path("file:///a%é/b").as_deref(), Some("/a%é/b"));
+        assert_eq!(file_url_path("file:///a%zz/").as_deref(), Some("/a%zz/"));
+    }
+
+    #[test]
+    fn tab_hops_run_both_directions() {
+        assert!(next_tab_read_script(42).contains("keystroke \"]\""));
+        // The unwind leg, for a window with more tabs than the search cap.
+        assert!(prev_tab_read_script(42).contains("keystroke \"[\""));
     }
 
     // -----------------------------------------------------------------------
