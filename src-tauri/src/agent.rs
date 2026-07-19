@@ -648,9 +648,10 @@ pub async fn focus_session(
         eprintln!("tildone: focus_session {session_id}: no pid on beat or claim");
         return Ok(false);
     };
-    // Same guard as the button's `alive`: a persisted pid has no TTL, so make
-    // sure a claude process still owns it before raising anything — a reused
-    // pid must answer "not reachable", never lift a stranger's window.
+    // Ownership half of the button's `reachable` gate (the terminal walk below
+    // is the other half): a persisted pid has no TTL, so make sure a claude
+    // process still owns it before raising anything — a reused pid must answer
+    // "not reachable", never lift a stranger's window.
     if !agent_pid_alive(pid) {
         eprintln!("tildone: focus_session {session_id}: pid {pid} is not a live claude process");
         return Ok(false);
