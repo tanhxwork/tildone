@@ -21,6 +21,8 @@ import { SessionPane } from "./components/SessionPane";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
+import { QuitWarning } from "./components/QuitWarning";
+import { initHostStore } from "./hostStore";
 import { paneHasFocus } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
@@ -157,10 +159,14 @@ function App() {
     const presenceTimer = setInterval(() => {
       void useStore.getState().loadPresence();
     }, 10_000);
+    // Hosted sessions are event-driven, not polled: Rust emits `host-changed`
+    // on every start / exit / kill and the store re-pulls the list.
+    const disposeHost = initHostStore();
     return () => {
       void unlisten.then((fn) => fn());
       void unlistenOpenTask.then((fn) => fn());
       clearInterval(presenceTimer);
+      disposeHost();
     };
   }, []);
 
@@ -252,6 +258,7 @@ function App() {
       {settingsOpen && <SettingsDialog />}
       {tagManagerOpen && <TagManager />}
       <CommandPalette />
+      <QuitWarning />
       {showFirstRun && <FirstRun onDone={() => setFirstRunDone(true)} />}
     </div>
   );

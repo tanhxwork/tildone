@@ -41,7 +41,15 @@ import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
 import type { Subtask } from "../types";
 import { CompletionFlourish, UnseenMark } from "./Brand";
-import { IconAlert, IconCheck, IconChecklist, IconMessage, LinkKindIcon } from "./Icons";
+import {
+  IconAlert,
+  IconCheck,
+  IconChecklist,
+  IconMessage,
+  IconTerminal,
+  LinkKindIcon,
+} from "./Icons";
+import { hostedForTask, useHostStore } from "../hostStore";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
@@ -761,11 +769,15 @@ function CardProvenance({
 }) {
   const live = useStore((s) => s.live);
   const fallback = useStore((s) => s.presence);
+  const hostSessions = useHostStore((s) => s.sessions);
   const entry = cardPresence(task.id, live, fallback);
+  // The board-hosted session on this card, if any — aliveness as owned-process
+  // fact (spec 2026-07-19-hosted-agent-sessions), independent of heartbeats.
+  const hosted = hostedForTask(hostSessions, task.id);
   // File evidence lives in the task detail's Evidence section, never as a card
   // chip — the card carries only the git-workflow "state of play".
   const chipLinks = links.filter((l) => asLinkKind(l.kind) !== "file");
-  if (!project && chipLinks.length === 0 && !entry) return null;
+  if (!project && chipLinks.length === 0 && !entry && !hosted) return null;
   // The agent's worktree, from its claim. Suppressed when the task already carries a
   // hand-attached worktree link, which is a real URL and therefore strictly more
   // useful than a bare name.
@@ -843,6 +855,18 @@ function CardProvenance({
               </button>
             );
           })}
+        </span>
+      )}
+      {hosted && (
+        // Not a button: the way in is the editor's Session row (and the jump
+        // routing); the card chip only *states* that this task has its own
+        // terminal here, live or exited.
+        <span
+          className={`card-hosted${hosted.exited ? " exited" : ""}`}
+          title={`Hosted session · ${hosted.adapter_name} · ${hosted.exited ? "exited" : "running"}`}
+        >
+          <IconTerminal size={12} />
+          {hosted.exited ? "exited" : hosted.adapter_name}
         </span>
       )}
       <AgentPresence taskId={task.id} />

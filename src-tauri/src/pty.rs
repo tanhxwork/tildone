@@ -17,26 +17,76 @@ use std::sync::{Mutex, OnceLock};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tauri::Emitter;
 
-/// Where the running `claude attach` lives between commands.
+/// The single visible pane's slot — which session the terminal is showing.
 #[derive(Default)]
-pub struct PtyLive(Mutex<Option<Pane>>);
+pub struct PtyLive(Mutex<Option<PaneSlot>>);
 
-struct Pane {
-    /// Keystrokes go here — the master end's writer.
-    writer: Box<dyn std::io::Write + Send>,
-    /// Kept for resize (rows × cols ioctl → SIGWINCH in the child).
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// Which pty_open this pane came from. Reader threads tag their events
-    /// with it so a late chunk from a closed pane can be ignored by the UI.
-    generation: u64,
+/// Two kinds of session can be on the pane (spec
+/// 2026-07-19-hosted-agent-sessions); they differ in exactly one place —
+/// what closing means:
+///
+/// - `Foreign`: a `claude attach` client against the daemon's session. This
+///   process is disposable; close kills it and the session lives on in the
+///   daemon.
+/// - `Hosted`: a session from `host.rs`'s table — the CLI process *is* the
+///   session and the app owns it. Close only detaches; the reader keeps
+///   buffering and the session keeps running until an explicit `host_kill`.
+enum PaneBackend {
+    Foreign {
+        /// Keystrokes go here — the master end's writer.
+        writer: Box<dyn std::io::Write + Send>,
+        /// Kept for resize (rows × cols ioctl → SIGWINCH in the child).
+        master: Box<dyn portable_pty::MasterPty + Send>,
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+    },
+    Hosted { session_id: u64 },
 }
 
-impl Pane {
-    fn shut_down(mut self) {
-        // Kill the attach *client* only. The session itself lives in the
-        // daemon and is deliberately untouched.
-        let _ = self.child.kill();
+struct PaneSlot {
+    /// Which open this pane came from. Reader threads tag their events with
+    /// it so a late chunk from a closed pane can be ignored by the UI.
+    generation: u64,
+    backend: PaneBackend,
+}
+
+impl PaneSlot {
+    fn release(self) {
+        match self.backend {
+            // Kill the attach *client* only. The session itself lives in the
+            // daemon and is deliberately untouched.
+            PaneBackend::Foreign { mut child, .. } => {
+                let _ = child.kill();
+            }
+            // Detach only — the hosted session keeps running headless.
+            PaneBackend::Hosted { session_id } => {
+                crate::host::detach(session_id, self.generation);
+            }
+        }
+    }
+}
+
+/// Fresh pane generation. Shared with `host.rs` so hosted and foreign panes
+/// draw from one sequence — a generation names a pane instance, whatever is
+/// behind it.
+pub(crate) fn next_generation() -> u64 {
+    static GENERATION: OnceLock<Mutex<u64>> = OnceLock::new();
+    let counter = GENERATION.get_or_init(|| Mutex::new(0));
+    let mut n = counter.lock().unwrap();
+    *n += 1;
+    *n
+}
+
+/// Put a hosted session on the pane, evicting whatever was there. `host.rs`
+/// calls this after wiring the attach — the slot itself lives in Tauri state,
+/// which only command context can reach.
+pub(crate) fn claim_pane_for_hosted(live: &PtyLive, generation: u64, session_id: u64) {
+    let previous = live
+        .0
+        .lock()
+        .unwrap()
+        .replace(PaneSlot { generation, backend: PaneBackend::Hosted { session_id } });
+    if let Some(previous) = previous {
+        previous.release();
     }
 }
 
@@ -142,13 +192,7 @@ pub async fn pty_open(
     cols: u16,
     rows: u16,
 ) -> Result<u64, String> {
-    static GENERATION: OnceLock<Mutex<u64>> = OnceLock::new();
-    let generation = {
-        let counter = GENERATION.get_or_init(|| Mutex::new(0));
-        let mut n = counter.lock().unwrap();
-        *n += 1;
-        *n
-    };
+    let generation = next_generation();
 
     // The blocking work — binary lookup (may run a login shell), openpty,
     // spawn — happens off the async command body, like `attach_target`.
@@ -187,10 +231,13 @@ pub async fn pty_open(
 
     let previous = {
         let mut slot = live.0.lock().unwrap();
-        slot.replace(Pane { writer, master, child, generation })
+        slot.replace(PaneSlot {
+            generation,
+            backend: PaneBackend::Foreign { writer, master, child },
+        })
     };
     if let Some(previous) = previous {
-        previous.shut_down();
+        previous.release();
     }
 
     // The reader: asleep in read() until the kernel has bytes, forwarding
@@ -226,14 +273,20 @@ pub fn pty_write(
     generation: u64,
     data: String,
 ) -> Result<(), String> {
-    if let Some(pane) = live.0.lock().unwrap().as_mut() {
+    let mut slot = live.0.lock().unwrap();
+    if let Some(pane) = slot.as_mut() {
         if pane.generation != generation {
             return Ok(());
         }
-        pane.writer
-            .write_all(data.as_bytes())
-            .and_then(|()| pane.writer.flush())
-            .map_err(|e| format!("write failed: {e}"))?;
+        match &mut pane.backend {
+            PaneBackend::Foreign { writer, .. } => writer
+                .write_all(data.as_bytes())
+                .and_then(|()| writer.flush())
+                .map_err(|e| format!("write failed: {e}"))?,
+            PaneBackend::Hosted { session_id } => {
+                crate::host::write_bytes(*session_id, data.as_bytes())?
+            }
+        }
     }
     Ok(())
 }
@@ -248,19 +301,24 @@ pub fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    if let Some(pane) = live.0.lock().unwrap().as_ref() {
+    let slot = live.0.lock().unwrap();
+    if let Some(pane) = slot.as_ref() {
         if pane.generation != generation {
             return Ok(());
         }
-        pane.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .map_err(|e| format!("resize failed: {e}"))?;
+        match &pane.backend {
+            PaneBackend::Foreign { master, .. } => master
+                .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| format!("resize failed: {e}"))?,
+            PaneBackend::Hosted { session_id } => crate::host::resize(*session_id, cols, rows)?,
+        }
     }
     Ok(())
 }
 
 /// Detach: close *this caller's* pane, never the session (see
-/// `Pane::shut_down`) — and never a newer pane that has since taken the
+/// `PaneSlot::release` — a foreign attach client dies, a hosted session
+/// keeps running headless) — and never a newer pane that has since taken the
 /// slot. The generation guard is what lets a disposed pane instance undo an
 /// accidental takeover without ever being able to kill its successor.
 #[tauri::command]
@@ -274,7 +332,7 @@ pub fn pty_close(live: tauri::State<'_, PtyLive>, generation: u64) -> Result<(),
         }
     };
     if let Some(pane) = pane {
-        pane.shut_down();
+        pane.release();
     }
     Ok(())
 }

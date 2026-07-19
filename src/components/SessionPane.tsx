@@ -1,13 +1,18 @@
-// The embedded attach pane (spec 2026-07-19-embedded-attach-pane): a real
-// terminal, slid over the board, running `claude attach <id>` against the
-// card's background session. Close = detach; the session keeps running in
-// Claude's daemon.
+// The embedded session pane: a real terminal slid over the board, showing
+// one of two kinds of session (specs 2026-07-19-embedded-attach-pane and
+// 2026-07-19-hosted-agent-sessions):
 //
-// Lifecycle: mount xterm → pty_open (returns a generation) → stream
-// `pty-data` events tagged with that generation into the terminal; keys go
-// back via pty_write; ResizeObserver → fit → pty_resize so the TUI reflows.
-// Generations exist because a chunk from a pane closed a moment ago can
-// still be in flight — stale generations are dropped, not drawn.
+//   attach — `claude attach <id>` against the card's background session.
+//            Close kills the attach client; the session lives in the daemon.
+//   hosted — a board-started CLI whose PTY the app owns (host.rs). Close
+//            only detaches; the session keeps running here, buffered, and a
+//            re-jump replays the buffer.
+//
+// Lifecycle: mount xterm → pty_open / host_attach (returns a generation) →
+// stream `pty-data` events tagged with that generation into the terminal;
+// keys go back via pty_write; ResizeObserver → fit → pty_resize so the TUI
+// reflows. Generations exist because a chunk from a pane closed a moment ago
+// can still be in flight — stale generations are dropped, not drawn.
 
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -99,7 +104,13 @@ export function SessionPane() {
       unlistens.push(un1);
       const un2 = await listen<PtyEvent>("pty-exit", (e) => {
         if (disposed || e.payload.generation !== generation) return;
-        term.write("\r\n\x1b[2m[session detached — the session itself keeps running]\x1b[0m\r\n");
+        // For an attach pane this means the attach client died (session lives
+        // on in the daemon); for a hosted pane the CLI itself exited.
+        term.write(
+          target.kind === "hosted"
+            ? "\r\n\x1b[2m[session exited]\x1b[0m\r\n"
+            : "\r\n\x1b[2m[session detached — the session itself keeps running]\x1b[0m\r\n",
+        );
       });
       if (disposed) {
         un2();
@@ -109,11 +120,24 @@ export function SessionPane() {
 
       let opened: number;
       try {
-        opened = await invoke<number>("pty_open", {
-          shortId: target.shortId,
-          cols: term.cols,
-          rows: term.rows,
-        });
+        if (target.kind === "hosted") {
+          // The replay rides in the return value, not an event — the pane
+          // only knows its generation once this resolves, so an event would
+          // race the listener above and the replayed screen could be lost.
+          const attach = await invoke<{ generation: number; replay: number[]; exited: boolean }>(
+            "host_attach",
+            { sessionId: target.hostId, cols: term.cols, rows: term.rows },
+          );
+          opened = attach.generation;
+          if (attach.replay.length > 0) term.write(new Uint8Array(attach.replay));
+          if (attach.exited) term.write("\r\n\x1b[2m[session exited]\x1b[0m\r\n");
+        } else {
+          opened = await invoke<number>("pty_open", {
+            shortId: target.shortId,
+            cols: term.cols,
+            rows: term.rows,
+          });
+        }
       } catch (err) {
         if (!disposed) term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r\n`);
         return;
@@ -233,7 +257,9 @@ export function SessionPane() {
       <header className="session-pane-head">
         <IconTerminal size={13} />
         {target.taskRef && <span className="session-pane-ref">{target.taskRef}</span>}
-        <span className="session-pane-name">{target.name ?? target.shortId}</span>
+        <span className="session-pane-name">
+          {target.name ?? (target.kind === "attach" ? target.shortId : "session")}
+        </span>
         <button
           type="button"
           className="icon-btn"
@@ -255,7 +281,11 @@ export function SessionPane() {
       </header>
       <div className="session-pane-body" style={{ background: TERM_BG }} ref={bodyRef} />
       <footer className="session-pane-foot">
-        <span>attached · session keeps running on close</span>
+        <span>
+          {target.kind === "hosted"
+            ? "hosted · session keeps running on close"
+            : "attached · session keeps running on close"}
+        </span>
         <span>⌘W detach</span>
       </footer>
     </aside>
