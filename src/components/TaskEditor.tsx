@@ -502,7 +502,14 @@ export function TaskEditor() {
                       {presenceCwdBase}
                     </span>
                   )}
-                  {(presence.state === "working" || presence.state === "blocked") && (
+                  {/* Reachability, not busyness (TIL-99): the user reaches for
+                      this exactly when the session already sits idle at its
+                      prompt — state `quiet`, but the process is alive and one
+                      keystroke away. `reachable` is the Rust-side check: live
+                      claude pid AND a terminal window to raise — a headless
+                      background session never shows a button that could only
+                      answer "not reachable". */}
+                  {presence.reachable && (
                     <button
                       className="detail-agent-jump"
                       title="Jump to session — bring its terminal window to the front"

@@ -139,6 +139,12 @@ pub fn run() {
             sql: include_str!("../migrations/016_pr_status.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 17,
+            description: "add_claim_pid",
+            sql: include_str!("../migrations/017_claim_pid.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

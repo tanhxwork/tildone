@@ -1,0 +1,12 @@
+-- The session's OS pid, durably cached on its claim.
+--
+-- Beats are in-memory by design (see agent.rs::Beats), so an app restart wipes
+-- every pid — and with it the jump-to-session button, which needs nothing but
+-- "pid known + process alive". An idle session never beats again until the user
+-- interacts with it, so without this column the post-restart blackout lasts
+-- forever for exactly the sessions the button exists to find.
+--
+-- One writer per fact still holds: the pid originates in the hook's beat; this
+-- column is that fact's durable cache, written only from the beat/claim paths
+-- (once per session — a session's pid never changes).
+ALTER TABLE agent_claims ADD COLUMN last_pid INTEGER;
