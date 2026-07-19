@@ -36,6 +36,7 @@ import {
   LinkKindIcon,
 } from "./Icons";
 import { agentIdentity } from "../agents";
+import { useArtifactStore } from "../artifactStore";
 import { hostedForTask, useHostStore, type HostSession } from "../hostStore";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
@@ -187,6 +188,8 @@ export function TaskEditor() {
   // 2026-07-19-hosted-agent-sessions). Independent of `presence`: aliveness
   // here is owned-process fact, not a heartbeat.
   const hosted = hostedForTask(hostSessions, task.id);
+  // Artifact digest (F1): durable-trace facts for this task, if any exist.
+  const artifacts = useArtifactStore((s) => s.facts[task.id]);
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -724,6 +727,41 @@ export function TaskEditor() {
               </>
             )}
           </div>
+
+          {artifacts && (artifacts.last_message || artifacts.commit_subjects.length > 0) && (
+            // The artifact digest (F1): what the session last said and what
+            // landed on the branch — read off durable traces, so it still
+            // answers after the session is gone. A lens over the filesystem,
+            // not a store; no seen/unseen bookkeeping by design.
+            <div className="detail-artifacts">
+              <div className="detail-artifacts-head">
+                While you were away
+                {artifacts.last_active && (
+                  <span className="detail-artifacts-when">
+                    last activity {timeAgo(artifacts.last_active)}
+                  </span>
+                )}
+              </div>
+              {artifacts.last_message && (
+                <p className="detail-artifacts-msg">{artifacts.last_message}</p>
+              )}
+              {artifacts.commit_subjects.length > 0 && (
+                <ul className="detail-artifacts-commits">
+                  {artifacts.commit_subjects.map((s, i) => (
+                    <li key={i}>
+                      <IconGitBranch size={11} />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                  {artifacts.commits_ahead > artifacts.commit_subjects.length && (
+                    <li className="detail-artifacts-more">
+                      +{artifacts.commits_ahead - artifacts.commit_subjects.length} more ahead
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
 
           {inReview && (
             // The review brief, leading the editor while the tag is on: what the

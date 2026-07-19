@@ -22,6 +22,7 @@ import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
 import { QuitWarning } from "./components/QuitWarning";
+import { initArtifactStore } from "./artifactStore";
 import { initHostStore } from "./hostStore";
 import { paneHasFocus } from "./paneStore";
 import { useSettings } from "./settings";
@@ -162,11 +163,15 @@ function App() {
     // Hosted sessions are event-driven, not polled: Rust emits `host-changed`
     // on every start / exit / kill and the store re-pulls the list.
     const disposeHost = initHostStore();
+    // Artifact facts are the same shape: Rust watches the filesystem and
+    // emits `artifacts-changed`; the store re-pulls.
+    const disposeArtifacts = initArtifactStore();
     return () => {
       void unlisten.then((fn) => fn());
       void unlistenOpenTask.then((fn) => fn());
       clearInterval(presenceTimer);
       disposeHost();
+      disposeArtifacts();
     };
   }, []);
 

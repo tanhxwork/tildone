@@ -35,8 +35,9 @@ import {
   isVerifyStep,
   verifyStepLabel,
 } from "../types";
-import { todayStr } from "../utils/dates";
+import { timeAgo, todayStr } from "../utils/dates";
 import { cardPresence } from "../utils/presence";
+import { useArtifactStore } from "../artifactStore";
 import { latestLinkPerKind } from "../utils/links";
 import { taskRefLabel } from "../utils/ref";
 import type { Subtask } from "../types";
@@ -774,10 +775,13 @@ function CardProvenance({
   // The board-hosted session on this card, if any — aliveness as owned-process
   // fact (spec 2026-07-19-hosted-agent-sessions), independent of heartbeats.
   const hosted = hostedForTask(hostSessions, task.id);
+  // Artifact facts (F1): durable-trace truths — transcript activity, commits
+  // ahead — that survive the session which produced them.
+  const facts = useArtifactStore((s) => s.facts[task.id]);
   // File evidence lives in the task detail's Evidence section, never as a card
   // chip — the card carries only the git-workflow "state of play".
   const chipLinks = links.filter((l) => asLinkKind(l.kind) !== "file");
-  if (!project && chipLinks.length === 0 && !entry && !hosted) return null;
+  if (!project && chipLinks.length === 0 && !entry && !hosted && !facts) return null;
   // The agent's worktree, from its claim. Suppressed when the task already carries a
   // hand-attached worktree link, which is a real URL and therefore strictly more
   // useful than a bare name.
@@ -887,6 +891,23 @@ function CardProvenance({
       // both and this is the one that keeps all three signals.
       <span className="card-log" title={entry.last_log}>
         {entry.last_log}
+      </span>
+    )}
+    {facts && (facts.last_active || facts.commits_ahead > 0) && (
+      // The artifact trail (F1): stable truths read off the filesystem, so a
+      // card can still answer "when did anything last happen" after every
+      // process and heartbeat is gone. Quiet by design — pure meta.
+      <span
+        className="card-artifacts"
+        title="Artifact trail — transcript activity and commits, survives the session"
+      >
+        {[
+          facts.last_active ? timeAgo(facts.last_active) : null,
+          facts.turns > 0 ? `${facts.turns} turns` : null,
+          facts.commits_ahead > 0 ? `${facts.commits_ahead}↑` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
       </span>
     )}
     </>
