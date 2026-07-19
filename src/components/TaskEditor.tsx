@@ -606,11 +606,17 @@ export function TaskEditor() {
                             ? "Dismiss this exited session"
                             : "Stop the session — it cannot be resumed"
                         }
-                        onClick={() =>
-                          hosted.exited || confirmKill
-                            ? void killHostedSession(hosted)
-                            : setConfirmKill(true)
-                        }
+                        onClick={() => {
+                          if (hosted.exited || confirmKill) {
+                            void killHostedSession(hosted);
+                            return;
+                          }
+                          // Armed state disarms itself — an armed "stop"
+                          // forgotten minutes ago must not kill on a later
+                          // stray click (codex verify note, 2026-07-19).
+                          setConfirmKill(true);
+                          window.setTimeout(() => setConfirmKill(false), 3000);
+                        }}
                       >
                         {hosted.exited ? "dismiss" : confirmKill ? "stop for sure?" : "stop"}
                       </button>

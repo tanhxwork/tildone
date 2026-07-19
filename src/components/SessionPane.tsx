@@ -92,8 +92,27 @@ export function SessionPane() {
 
     const run = async () => {
       if (disposed) return;
+      // Events that land while `generation` is still null — i.e. between the
+      // Rust side flipping `attached` and our invoke() resolving — are held
+      // here and drained once the generation is known. Dropping them instead
+      // loses real output: for hosted attaches the SIGWINCH repaint fires in
+      // exactly that window (codex verify finding, 2026-07-19), leaving a
+      // stale frame that is in neither the replay snapshot nor the live
+      // stream.
+      let pending: PtyEvent[] = [];
+      const exitNote = () =>
+        term.write(
+          target.kind === "hosted"
+            ? "\r\n\x1b[2m[session exited]\x1b[0m\r\n"
+            : "\r\n\x1b[2m[session detached — the session itself keeps running]\x1b[0m\r\n",
+        );
       const un1 = await listen<PtyEvent>("pty-data", (e) => {
-        if (disposed || e.payload.generation !== generation || !e.payload.data) return;
+        if (disposed || !e.payload.data) return;
+        if (generation === null) {
+          pending.push(e.payload);
+          return;
+        }
+        if (e.payload.generation !== generation) return;
         term.write(new Uint8Array(e.payload.data));
       });
       if (disposed) {
@@ -103,14 +122,15 @@ export function SessionPane() {
       }
       unlistens.push(un1);
       const un2 = await listen<PtyEvent>("pty-exit", (e) => {
-        if (disposed || e.payload.generation !== generation) return;
+        if (disposed) return;
+        if (generation === null) {
+          pending.push(e.payload);
+          return;
+        }
+        if (e.payload.generation !== generation) return;
         // For an attach pane this means the attach client died (session lives
         // on in the daemon); for a hosted pane the CLI itself exited.
-        term.write(
-          target.kind === "hosted"
-            ? "\r\n\x1b[2m[session exited]\x1b[0m\r\n"
-            : "\r\n\x1b[2m[session detached — the session itself keeps running]\x1b[0m\r\n",
-        );
+        exitNote();
       });
       if (disposed) {
         un2();
@@ -150,6 +170,16 @@ export function SessionPane() {
         return;
       }
       generation = opened;
+      // Drain the held events: everything our generation emitted before the
+      // invoke resolved, in arrival order, after the replay it follows. An
+      // exit event carries no data. Stale generations are dropped here, same
+      // as live.
+      for (const p of pending) {
+        if (p.generation !== opened) continue;
+        if (p.data) term.write(new Uint8Array(p.data));
+        else exitNote();
+      }
+      pending = [];
 
       // Input and resize wire up only once the pane is genuinely ours.
       dataSub = term.onData((data) => {
