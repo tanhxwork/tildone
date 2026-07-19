@@ -1,5 +1,6 @@
 mod agent;
 mod ai;
+mod artifacts;
 mod hookinstall;
 mod host;
 mod icons;
@@ -199,6 +200,7 @@ pub fn run() {
                     app.exit(0);
                 }
             });
+            artifacts::init(app.handle());
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -251,6 +253,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_close,
+            artifacts::artifact_facts,
             host::host_adapters,
             host::host_list,
             host::host_start,

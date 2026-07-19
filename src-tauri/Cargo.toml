@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 portable-pty = "0.9"
+# Artifact watching (F1): FSEvents on transcripts and git refs.
+notify = "8"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"

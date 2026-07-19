@@ -749,8 +749,14 @@ fn now_iso() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
+    iso_from_epoch_millis(now.as_millis() as u64)
+}
+
+/// The same ISO rendering for an arbitrary instant — artifact watching stamps
+/// file mtimes with it so board timestamps stay one format everywhere.
+pub(crate) fn iso_from_epoch_millis(epoch_millis: u64) -> String {
+    let secs = epoch_millis / 1000;
+    let millis = epoch_millis % 1000;
     let days = secs / 86400;
     let (y, m, d) = civil_from_days(days as i64);
     let rem = secs % 86400;
@@ -3822,7 +3828,7 @@ fn requested_port() -> u16 {
     port
 }
 
-fn open_db(app: &AppHandle) -> Result<Connection, String> {
+pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     // Same resolution as tauri-plugin-sql: "sqlite:tildone.db" lives in the
     // app config dir.
     let dir = app
