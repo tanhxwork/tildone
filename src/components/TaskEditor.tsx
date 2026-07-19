@@ -3,6 +3,7 @@ import { format, parseISO } from "date-fns";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
+import { usePaneStore } from "../paneStore";
 import { useStore } from "../store";
 import type { Status, TaskLink } from "../types";
 import {
@@ -232,15 +233,36 @@ export function TaskEditor() {
     }
   }
 
-  // Board → terminal. `false` from the command covers every "cannot" — headless
-  // session, dead pid, Automation permission denied — and answers with a quiet
-  // inline note, never an error dialog: an unreachable session is a fact about
-  // where it runs, not a failure of the click.
+  // Board → session, routed by where the session lives (spec
+  // 2026-07-19-embedded-attach-pane): a terminal-hosted session gets its
+  // window raised; a background session gets the embedded attach pane. Every
+  // "cannot" — headless raise, unknown session, Automation denied — answers
+  // with the same quiet inline note, never an error dialog: an unreachable
+  // session is a fact about where it runs, not a failure of the click.
   async function jumpToSession() {
-    if (!presence) return;
+    if (!presence || !task) return;
     let ok = false;
     try {
-      ok = await invoke<boolean>("focus_session", { sessionId: presence.session_id });
+      if (presence.reachable) {
+        ok = await invoke<boolean>("focus_session", { sessionId: presence.session_id });
+      } else if (presence.attachable) {
+        const shortId = await invoke<string | null>("attach_target", {
+          sessionId: presence.session_id,
+        });
+        if (shortId) {
+          usePaneStore.getState().openPane({
+            sessionId: presence.session_id,
+            shortId,
+            taskRef: task.ref,
+            taskId: task.id,
+            name: presence.agent_name,
+          });
+          // The pane needs the board strip beside it — the modal editor
+          // would cover both.
+          openEditor(null);
+          ok = true;
+        }
+      }
     } catch {
       ok = false;
     }
@@ -509,10 +531,14 @@ export function TaskEditor() {
                       claude pid AND a terminal window to raise — a headless
                       background session never shows a button that could only
                       answer "not reachable". */}
-                  {presence.reachable && (
+                  {(presence.reachable || presence.attachable) && (
                     <button
                       className="detail-agent-jump"
-                      title="Jump to session — bring its terminal window to the front"
+                      title={
+                        presence.reachable
+                          ? "Jump to session — bring its terminal window to the front"
+                          : "Jump to session — open it in a terminal pane"
+                      }
                       aria-label="Jump to session"
                       onClick={() => void jumpToSession()}
                     >

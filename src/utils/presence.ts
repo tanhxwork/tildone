@@ -44,6 +44,11 @@ export interface LivePresence {
    *  session renders `quiet` yet is exactly one keystroke away, which is when
    *  the user reaches for the button. */
   reachable: boolean;
+  /** The attach half of the jump: a claude process owns the pid but no
+   *  terminal window exists — a background session, whose landing is the
+   *  embedded pane (`claude attach`), not a raise. Mutually exclusive with
+   *  `reachable`; the jump button shows when either is true. */
+  attachable: boolean;
 }
 
 /** The activity-derived fallback: who last wrote to this task, and when. */
