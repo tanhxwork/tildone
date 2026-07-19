@@ -2098,7 +2098,7 @@ impl ClaimInfo {
     /// a non-live session) and stays silently claim-less.
     fn unmatchable_error(&self) -> Option<String> {
         let session = self.session()?;
-        (!is_heartbeat_uuid(session)).then(|| {
+        (!crate::artifacts::is_uuid(session)).then(|| {
             format!(
                 "session_id \"{session}\" can never match a heartbeat, so this claim would rot \
                  silently (card stuck at quiet, no jump-to-terminal). Claims must carry the \
@@ -2108,17 +2108,6 @@ impl ClaimInfo {
             )
         })
     }
-}
-
-/// True when `s` is a canonical UUID — the only session-id shape the heartbeat
-/// hook ever reports, hence the only shape a claim may key on.
-fn is_heartbeat_uuid(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 36
-        && b.iter().enumerate().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => *c == b'-',
-            _ => c.is_ascii_hexdigit(),
-        })
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -5533,14 +5522,12 @@ mod tests {
     // write fails loudly instead of the claim rotting silently.
 
     #[test]
-    fn heartbeat_uuid_shapes() {
-        assert!(is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ac6"));
-        assert!(is_heartbeat_uuid("64A00C19-A772-4FF7-8C75-7FE0C78B7AC6"), "case-insensitive");
-        assert!(!is_heartbeat_uuid("session_01AKPaNuSBMkf9nGJMryuwNh"));
-        assert!(!is_heartbeat_uuid("cse_01XYZ"));
-        assert!(!is_heartbeat_uuid("64a00c19a7724ff78c757fe0c78b7ac6"), "no dashes");
-        assert!(!is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ag6"), "g is not hex");
-        assert!(!is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ac"), "too short");
+    fn bridge_ids_are_not_heartbeat_uuids() {
+        // General shape cases live beside is_uuid in artifacts.rs; these are the
+        // claim-guard's own observed mistakes.
+        assert!(crate::artifacts::is_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ac6"));
+        assert!(!crate::artifacts::is_uuid("session_01AKPaNuSBMkf9nGJMryuwNh"));
+        assert!(!crate::artifacts::is_uuid("cse_01XYZ"));
     }
 
     #[test]

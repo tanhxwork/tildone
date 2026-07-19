@@ -391,7 +391,7 @@ fn bind_targets(home: &str) -> Vec<BindTarget> {
 /// (`claude --resume <id>` / `codex resume <id>`) — a filename is untrusted
 /// input, and a validated UUID can't smuggle a flag (codex verify
 /// hardening, 2026-07-19).
-fn is_uuid(s: &str) -> bool {
+pub(crate) fn is_uuid(s: &str) -> bool {
     s.len() == 36
         && s.chars().enumerate().all(|(i, c)| {
             if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
