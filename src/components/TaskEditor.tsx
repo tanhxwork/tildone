@@ -37,7 +37,13 @@ import {
 } from "./Icons";
 import { agentIdentity } from "../agents";
 import { useArtifactStore } from "../artifactStore";
-import { hostedForTask, useHostStore, type HostSession } from "../hostStore";
+import {
+  hostedForTask,
+  resumableForTask,
+  useHostStore,
+  type HostSession,
+  type Resumable,
+} from "../hostStore";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
@@ -188,6 +194,10 @@ export function TaskEditor() {
   // 2026-07-19-hosted-agent-sessions). Independent of `presence`: aliveness
   // here is owned-process fact, not a heartbeat.
   const hosted = hostedForTask(hostSessions, task.id);
+  // F3: a dead-but-resumable session from a previous run. Only offered when
+  // no current session exists — a live one always wins the row.
+  const hostResumables = useHostStore((s) => s.resumables);
+  const resumable = hosted ? null : resumableForTask(hostResumables, task.id);
   // Artifact digest (F1): durable-trace facts for this task, if any exist.
   const artifacts = useArtifactStore((s) => s.facts[task.id]);
 
@@ -344,6 +354,36 @@ export function TaskEditor() {
         adapter_name: hostAdapters.find((a) => a.id === adapterId)?.name ?? adapterId,
         exited: false,
         waiting: false,
+        bound: false,
+      });
+    } catch (e) {
+      setSessionError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  // F3: bring a previous run's session back on a fresh PTY via the adapter's
+  // resume argv. The row is consumed server-side; host-changed refreshes the
+  // store with the real new session.
+  async function resumeHostedSession(r: Resumable) {
+    setStarting(true);
+    setSessionError("");
+    try {
+      const id = await invoke<number>("host_resume", {
+        rowId: r.row_id,
+        cols: 80,
+        rows: 24,
+      });
+      openHostedPane({
+        id,
+        task_id: r.task_id,
+        task_ref: r.task_ref,
+        adapter_id: r.adapter_id,
+        adapter_name: r.adapter_name,
+        exited: false,
+        waiting: false,
+        bound: false,
       });
     } catch (e) {
       setSessionError(String(e));
@@ -648,6 +688,18 @@ export function TaskEditor() {
                         {hosted.exited ? "dismiss" : confirmKill ? "stop for sure?" : "stop"}
                       </button>
                     </>
+                  ) : resumable ? (
+                    // F3: a session from the previous app run, offered back —
+                    // manual, per card, never automatic.
+                    <button
+                      className="session-start-btn"
+                      disabled={starting}
+                      title={`Resume the ${resumable.adapter_name} session from the last run — continues its conversation`}
+                      onClick={() => void resumeHostedSession(resumable)}
+                    >
+                      <IconTerminal size={12} />
+                      Resume {resumable.adapter_name}
+                    </button>
                   ) : (
                     hostAdapters.map((a) => (
                       <button

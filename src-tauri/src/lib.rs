@@ -148,6 +148,12 @@ pub fn run() {
             sql: include_str!("../migrations/017_claim_pid.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 18,
+            description: "hosted_sessions_and_pr_checks",
+            sql: include_str!("../migrations/018_hosted_sessions.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -201,6 +207,9 @@ pub fn run() {
                 }
             });
             artifacts::init(app.handle());
+            // Restart survival (F3): load what the previous run left behind
+            // before any UI asks for resumables.
+            host::boot(app.handle());
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -259,6 +268,8 @@ pub fn run() {
             host::host_start,
             host::host_attach,
             host::host_kill,
+            host::host_resumables,
+            host::host_resume,
             host::host_confirm_quit,
             hookinstall::hook_status,
             hookinstall::hook_install,

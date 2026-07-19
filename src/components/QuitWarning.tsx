@@ -39,7 +39,8 @@ export function QuitWarning() {
           <h2>Agent sessions still running</h2>
         </div>
         <p className="quit-warning-text">
-          These sessions run inside Tildone and end when it quits:
+          These sessions run inside Tildone and end when it quits. Sessions
+          marked resumable can be brought back from their card next launch:
         </p>
         <ul className="quit-warning-list">
           {liveSessions.map((s) => (
@@ -47,6 +48,7 @@ export function QuitWarning() {
               <IconTerminal size={13} />
               <span className="quit-warning-name">{s.adapter_name}</span>
               {s.task_ref && <span className="quit-warning-ref">{s.task_ref}</span>}
+              {s.bound && <span className="quit-warning-resumable">resumable</span>}
             </li>
           ))}
         </ul>

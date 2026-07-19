@@ -50,7 +50,7 @@ import {
   IconTerminal,
   LinkKindIcon,
 } from "./Icons";
-import { hostedForTask, useHostStore } from "../hostStore";
+import { hostedForTask, resumableForTask, useHostStore } from "../hostStore";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
@@ -775,13 +775,18 @@ function CardProvenance({
   // The board-hosted session on this card, if any — aliveness as owned-process
   // fact (spec 2026-07-19-hosted-agent-sessions), independent of heartbeats.
   const hosted = hostedForTask(hostSessions, task.id);
+  // F3: a previous run's session, offered back — visible only while nothing
+  // current occupies the slot.
+  const hostResumables = useHostStore((s) => s.resumables);
+  const resumable = hosted ? null : resumableForTask(hostResumables, task.id);
   // Artifact facts (F1): durable-trace truths — transcript activity, commits
   // ahead — that survive the session which produced them.
   const facts = useArtifactStore((s) => s.facts[task.id]);
   // File evidence lives in the task detail's Evidence section, never as a card
   // chip — the card carries only the git-workflow "state of play".
   const chipLinks = links.filter((l) => asLinkKind(l.kind) !== "file");
-  if (!project && chipLinks.length === 0 && !entry && !hosted && !facts) return null;
+  if (!project && chipLinks.length === 0 && !entry && !hosted && !resumable && !facts)
+    return null;
   // The agent's worktree, from its claim. Suppressed when the task already carries a
   // hand-attached worktree link, which is a real URL and therefore strictly more
   // useful than a bare name.
@@ -881,6 +886,17 @@ function CardProvenance({
             : hosted.waiting
               ? "waiting ❯"
               : hosted.adapter_name}
+        </span>
+      )}
+      {resumable && (
+        // F3: dead with the last app run, but its conversation can continue —
+        // the way in is the editor's Resume button.
+        <span
+          className="card-hosted exited"
+          title={`Hosted session from the last run · ${resumable.adapter_name} · resume from the task editor`}
+        >
+          <IconTerminal size={12} />
+          resumable
         </span>
       )}
       <AgentPresence taskId={task.id} />

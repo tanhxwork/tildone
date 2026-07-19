@@ -23,6 +23,18 @@ export interface HostSession {
   /** Waiting-detect (F2): the session looks idle at a prompt. A heuristic
    *  read off the owned PTY's grid — the UI must present it as one. */
   waiting: boolean;
+  /** The CLI's session id is captured and the adapter can resume (F3) — what
+   *  lets the quit dialog promise "resumable next launch". */
+  bound: boolean;
+}
+
+/** A dead-but-resumable session from a previous app run (F3). */
+export interface Resumable {
+  row_id: number;
+  task_id: number;
+  task_ref: string | null;
+  adapter_id: string;
+  adapter_name: string;
 }
 
 export interface HostAdapter {
@@ -35,6 +47,7 @@ export interface HostAdapter {
 interface HostState {
   sessions: HostSession[];
   adapters: HostAdapter[];
+  resumables: Resumable[];
   refresh: () => Promise<void>;
   refreshAdapters: () => Promise<void>;
 }
@@ -42,9 +55,13 @@ interface HostState {
 export const useHostStore = create<HostState>((set) => ({
   sessions: [],
   adapters: [],
+  resumables: [],
   refresh: async () => {
     try {
-      set({ sessions: await invoke<HostSession[]>("host_list") });
+      set({
+        sessions: await invoke<HostSession[]>("host_list"),
+        resumables: await invoke<Resumable[]>("host_resumables"),
+      });
     } catch {
       /* commands unavailable (e.g. web preview) — the board works without */
     }
@@ -65,6 +82,11 @@ export function hostedForTask(sessions: HostSession[], taskId: number): HostSess
     sessions.find((s) => s.task_id === taskId) ??
     null
   );
+}
+
+/** The task's resumable session from a previous run, if any (F3). */
+export function resumableForTask(resumables: Resumable[], taskId: number): Resumable | null {
+  return resumables.find((r) => r.task_id === taskId) ?? null;
 }
 
 /** One-time wiring, called from App: initial pull + the change subscription. */

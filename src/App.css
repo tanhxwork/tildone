@@ -5160,3 +5160,14 @@ textarea:focus-visible,
 .detail-artifacts-more {
   color: var(--text-faint);
 }
+
+/* --- Restart survival (F3) ------------------------------------------------ */
+.quit-warning-resumable {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 1.5;
+}

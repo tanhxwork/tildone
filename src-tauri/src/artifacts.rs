@@ -347,12 +347,152 @@ fn watch_dirs(targets: &[Target]) -> Vec<PathBuf> {
     dirs
 }
 
+// ---------------------------------------------------------------------------
+// CLI-session binding (F3): hosted sessions reveal their own session id
+// through the artifacts they create — a fresh transcript in the cwd's slug
+// dir (claude), a fresh rollout file (codex). artifacts.rs owns the watchers,
+// host.rs owns the sessions; this is the seam between them.
+
+struct BindTarget {
+    session_id: u64,
+    task_id: i64,
+    adapter_id: &'static str,
+    /// claude: the cwd's transcript slug dir (exact-parent match).
+    /// codex: `$HOME/.codex/sessions` (prefix match, watched recursively).
+    dir: PathBuf,
+    /// ISO — only artifacts stamped at or after the spawn may bind.
+    started_at: String,
+}
+
+fn bind_targets(home: &str) -> Vec<BindTarget> {
+    crate::host::unbound_hosted()
+        .into_iter()
+        .map(|u| {
+            let dir = match u.adapter_id {
+                "codex" => PathBuf::from(format!("{home}/.codex/sessions")),
+                _ => PathBuf::from(format!(
+                    "{home}/.claude/projects/{}",
+                    transcript_slug(&u.cwd)
+                )),
+            };
+            BindTarget {
+                session_id: u.session_id,
+                task_id: u.task_id,
+                adapter_id: u.adapter_id,
+                dir,
+                started_at: u.started_at,
+            }
+        })
+        .collect()
+}
+
+/// The UUID at the end of a codex rollout filename
+/// (`rollout-2026-06-12T16-23-07-<uuid>.jsonl`), if it looks like one.
+fn rollout_uuid(file_name: &str) -> Option<String> {
+    let stem = file_name.strip_suffix(".jsonl")?;
+    if !file_name.starts_with("rollout-") || stem.len() < 36 {
+        return None;
+    }
+    let uuid = &stem[stem.len() - 36..];
+    let dashes_at = [8, 13, 18, 23];
+    let plausible = uuid.chars().enumerate().all(|(i, c)| {
+        if dashes_at.contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
+    });
+    plausible.then(|| uuid.to_string())
+}
+
+fn mtime_iso(path: &Path) -> Option<String> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    let millis = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    Some(crate::agent::iso_from_epoch_millis(millis))
+}
+
+/// A filesystem event landed — does it reveal an unbound session's id?
+/// Returns true when something bound (the caller rebuilds the watch set).
+fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> bool {
+    let Some(name) = event_path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    for b in binds {
+        let (matched, uuid) = match b.adapter_id {
+            "codex" => {
+                if !event_path.starts_with(&b.dir) {
+                    continue;
+                }
+                match rollout_uuid(name) {
+                    Some(u) => (true, u),
+                    None => continue,
+                }
+            }
+            _ => {
+                // claude: `<slug-dir>/<uuid>.jsonl`, exact parent.
+                if event_path.parent() != Some(b.dir.as_path()) {
+                    continue;
+                }
+                let Some(stem) = name.strip_suffix(".jsonl") else { continue };
+                if stem.len() != 36 {
+                    continue;
+                }
+                (true, stem.to_string())
+            }
+        };
+        if !matched {
+            continue;
+        }
+        // Only artifacts younger than the spawn: an old transcript sitting in
+        // the same dir (another session, same cwd) must not bind. ISO strings
+        // compare lexicographically.
+        match mtime_iso(event_path) {
+            Some(m) if m >= b.started_at => {
+                crate::host::bind_cli_session(app, b.session_id, &uuid);
+                return true;
+            }
+            _ => continue,
+        }
+    }
+    false
+}
+
+/// Bind fallback for claude sessions that claim their task over MCP before
+/// (or instead of) the transcript watcher firing: the claim carries the
+/// session id directly. Returns true when something bound.
+fn try_bind_from_claims(app: &tauri::AppHandle, binds: &[BindTarget]) -> bool {
+    let claude_targets: Vec<&BindTarget> =
+        binds.iter().filter(|b| b.adapter_id == "claude").collect();
+    if claude_targets.is_empty() {
+        return false;
+    }
+    let Ok(conn) = crate::agent::open_db(app) else { return false };
+    let mut bound = false;
+    for b in claude_targets {
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM agent_claims \
+                 WHERE task_id = ?1 AND claimed_at >= ?2 \
+                 ORDER BY claimed_at ASC LIMIT 1",
+                rusqlite::params![b.task_id, b.started_at],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(sid) = found {
+            crate::host::bind_cli_session(app, b.session_id, &sid);
+            bound = true;
+        }
+    }
+    bound
+}
+
 pub fn init(app: &tauri::AppHandle) {
     let dirty = Arc::new(AtomicBool::new(true));
     // Claims change → the watch set changes. The agent server emits this on
     // every board write; over-triggering is fine, enumeration is one query.
     let flag = Arc::clone(&dirty);
     app.listen("agent-db-changed", move |_| {
+        flag.store(true, Ordering::Relaxed);
+    });
+    // Hosted sessions starting/stopping change the bind targets too.
+    let flag = Arc::clone(&dirty);
+    app.listen("host-changed", move |_| {
         flag.store(true, Ordering::Relaxed);
     });
 
@@ -364,6 +504,7 @@ pub fn init(app: &tauri::AppHandle) {
         // iterations; each re-enumeration overwrites it before reading.
         let mut _watcher: Option<notify::RecommendedWatcher> = None;
         let mut targets: Vec<Target> = Vec::new();
+        let mut binds: Vec<BindTarget> = Vec::new();
         // task_id → deadline for its pending recompute (burst debounce).
         let mut pending: HashMap<i64, Instant> = HashMap::new();
         let mut last_enumerate = Instant::now();
@@ -374,12 +515,30 @@ pub fn init(app: &tauri::AppHandle) {
             {
                 last_enumerate = Instant::now();
                 targets = enumerate(&app, &home);
+                binds = bind_targets(&home);
+                // Claims can carry a bind directly (agent adopted the card
+                // before its transcript file surfaced).
+                if try_bind_from_claims(&app, &binds) {
+                    binds = bind_targets(&home);
+                }
                 // Rebuild the watcher wholesale: unwatching piecemeal earns
                 // nothing at this scale and drop-and-recreate cannot leak.
                 _watcher = notify::recommended_watcher(tx.clone()).ok();
                 if let Some(w) = _watcher.as_mut() {
                     for dir in watch_dirs(&targets) {
                         let _ = w.watch(&dir, RecursiveMode::NonRecursive);
+                    }
+                    for b in &binds {
+                        // codex nests rollouts in Y/M/D dirs — recursive; the
+                        // claude slug dir is flat.
+                        let mode = if b.adapter_id == "codex" {
+                            RecursiveMode::Recursive
+                        } else {
+                            RecursiveMode::NonRecursive
+                        };
+                        if b.dir.is_dir() {
+                            let _ = w.watch(&b.dir, mode);
+                        }
                     }
                 }
                 let ids: Vec<i64> = targets
@@ -414,6 +573,11 @@ pub fn init(app: &tauri::AppHandle) {
                 Ok(Ok(event)) => {
                     let deadline = Instant::now() + DEBOUNCE;
                     for path in &event.paths {
+                        if try_bind(&app, &binds, path) {
+                            // Bound: the target list changed; re-enumerate on
+                            // the next spin rather than mutating in place.
+                            dirty.store(true, Ordering::Relaxed);
+                        }
                         for id in affected_tasks(&targets, path) {
                             pending.entry(id).or_insert(deadline);
                         }
@@ -495,6 +659,23 @@ mod tests {
     fn turn_count_sees_only_assistant_records() {
         assert_eq!(count_turns(FIXTURE.as_bytes()), 1);
         assert_eq!(count_turns(b""), 0);
+    }
+
+    #[test]
+    fn rollout_uuid_parses_the_trailing_uuid() {
+        // Real filename shape from ~/.codex/sessions on this machine.
+        assert_eq!(
+            rollout_uuid("rollout-2026-06-12T16-23-07-019ebaed-7e23-7e53-8fd5-08fafab4e104.jsonl")
+                .as_deref(),
+            Some("019ebaed-7e23-7e53-8fd5-08fafab4e104")
+        );
+        assert_eq!(rollout_uuid("rollout-bad.jsonl"), None);
+        assert_eq!(
+            rollout_uuid("other-019ebaed-7e23-7e53-8fd5-08fafab4e104.jsonl"),
+            None,
+            "non-rollout files must not bind"
+        );
+        assert_eq!(rollout_uuid("rollout-2026.txt"), None);
     }
 
     #[test]
