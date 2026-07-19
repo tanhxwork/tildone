@@ -678,7 +678,9 @@ mod tests {
         assert!(is_uuid("019ebaed-7e23-7e53-8fd5-08fafab4e104"));
         assert!(!is_uuid("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"));
         assert!(!is_uuid("------------------------------------"));
-        assert!(!is_uuid("--dangerously-skip-permissions-0000"));
+        // Exactly 36 chars, flag-shaped: rejected by content (position 0
+        // must be hex), not by the length gate.
+        assert!(!is_uuid("-0123456-789a-bcde-f012-3456789abcde"));
         assert!(!is_uuid("019ebaed7e237e538fd508fafab4e104"));
     }
 
