@@ -2,6 +2,7 @@ mod agent;
 mod ai;
 mod hookinstall;
 mod icons;
+mod pty;
 
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -151,6 +152,7 @@ pub fn run() {
         .manage(ai::EngineProcess::default())
         .manage(agent::AgentServer::default())
         .manage(agent::AgentLive::default())
+        .manage(pty::PtyLive::default())
         .manage(agent::TrayHandle::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -236,6 +238,11 @@ pub fn run() {
             agent::agent_presence,
             agent::focus_session,
             agent::agent_set_notify,
+            pty::attach_target,
+            pty::pty_open,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_close,
             hookinstall::hook_status,
             hookinstall::hook_install,
             hookinstall::hook_uninstall,

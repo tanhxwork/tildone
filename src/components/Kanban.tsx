@@ -21,6 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { format } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { paneHasFocus, usePaneStore } from "../paneStore";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
 import type { Project, Status, Tag, Task, TaskLink } from "../types";
@@ -474,6 +475,8 @@ function VerifyPopover({
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
+      // Esc inside the session pane is the TUI's cancel key, not ours.
+      if (paneHasFocus()) return;
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("pointerdown", onDown);
@@ -555,6 +558,7 @@ function CardContent({
   const projects = useStore((s) => s.projects);
   const selection = useStore((s) => s.selection);
   const commentCount = useStore((s) => s.commentCounts[task.id] ?? 0);
+  const paneTaskId = usePaneStore((s) => s.target?.taskId ?? null);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const cardLinks = links[task.id] ?? [];
   const state = reservedState(task, tags);
@@ -622,6 +626,9 @@ function CardContent({
   // done vocabulary as the compact card, just not collapsed.
   return (
     <div
+      // The session pane centers this card in the board strip by this id and
+      // rings it while its session is attached (spec 2026-07-19).
+      data-task-id={task.id}
       className={[
         "board-card",
         task.status === "done" ? "done" : "",
@@ -629,6 +636,7 @@ function CardContent({
         state ? `state-${state}` : "",
         // Yields the top-right corner to the mark, so it never lands on the title.
         showMark ? "unseen" : "",
+        paneTaskId === task.id ? "pane-src" : "",
       ]
         .filter(Boolean)
         .join(" ")}

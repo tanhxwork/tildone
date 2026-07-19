@@ -17,9 +17,11 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TableView } from "./components/TableView";
 import { TagManager } from "./components/TagManager";
+import { SessionPane } from "./components/SessionPane";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
+import { paneHasFocus } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { isPageSelection } from "./types";
@@ -164,6 +166,9 @@ function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Keys inside the session pane belong to the attached TUI, not the
+      // board — Esc there is Claude's cancel, not "close the palette".
+      if (paneHasFocus()) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === "k") {
         e.preventDefault();
@@ -242,6 +247,7 @@ function App() {
         <div className="content">{content}</div>
       </main>
       {editingTaskId !== null && <TaskEditor />}
+      <SessionPane />
       {aiSettingsOpen && <AISettings />}
       {settingsOpen && <SettingsDialog />}
       {tagManagerOpen && <TagManager />}

@@ -169,6 +169,13 @@ pub struct PresenceEntry {
     /// `state` — the button's whole point is the session that already sits idle
     /// at its prompt, which renders `quiet` yet is exactly one keystroke away.
     reachable: bool,
+    /// The attach half of the jump (spec 2026-07-19-embedded-attach-pane): a
+    /// claude process owns the pid but no terminal ancestor exists — the
+    /// signature of a background session, whose landing is the embedded pane
+    /// (`claude attach`), not a window raise. Mutually exclusive with
+    /// `reachable` by construction: same aliveness check, opposite ancestor
+    /// answer. The button shows when either is true.
+    attachable: bool,
 }
 
 /// Resolve claims + beats into one entry per task.
@@ -192,6 +199,7 @@ pub fn resolve_presence(
     now: std::time::Instant,
     alive: &dyn Fn(u32) -> bool,
     reachable: &dyn Fn(u32) -> bool,
+    attachable: &dyn Fn(u32) -> bool,
 ) -> Vec<PresenceEntry> {
     fn rank(state: &str) -> u8 {
         match state {
@@ -235,16 +243,19 @@ pub fn resolve_presence(
             cwd: claim.cwd.clone(),
             last_log: claim.last_log.clone(),
             reachable: candidate_pid.is_some_and(reachable),
+            attachable: candidate_pid.is_some_and(attachable),
         };
         by_task
             .entry(claim.task_id)
             .and_modify(|existing| {
                 // Liveliest state wins the card; on a state tie, prefer the session
-                // the jump button can actually reach.
+                // the jump button can actually land on — a raiseable window first,
+                // else an attachable background session.
+                let jumps = |e: &PresenceEntry| e.reachable || e.attachable;
                 if rank(&entry.state) > rank(&existing.state)
                     || (rank(&entry.state) == rank(&existing.state)
-                        && entry.reachable
-                        && !existing.reachable)
+                        && jumps(&entry)
+                        && !jumps(existing))
                 {
                     *existing = entry.clone();
                 }
@@ -307,6 +318,22 @@ fn session_reachable_with(
 
 fn session_reachable(pid: u32) -> bool {
     session_reachable_with(pid, &process_info)
+}
+
+/// The complement rail: a claude-owned pid with *no* terminal ancestor — a
+/// background session, whose jump is the embedded attach pane. Same aliveness
+/// guard as `session_reachable_with`, opposite ancestor answer, so the two
+/// can never both be true for one pid.
+fn session_attachable_with(
+    pid: u32,
+    lookup: &dyn Fn(u32) -> Option<(Option<u32>, String)>,
+) -> bool {
+    lookup(pid).is_some_and(|(_, name)| name.to_lowercase().contains("claude"))
+        && find_terminal_ancestor(pid, lookup).is_none()
+}
+
+fn session_attachable(pid: u32) -> bool {
+    session_attachable_with(pid, &process_info)
 }
 
 /// Process names that mean "this ancestor is the terminal app hosting the session".
@@ -3696,6 +3723,7 @@ pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
         std::time::Instant::now(),
         &pid_alive,
         &session_reachable,
+        &session_attachable,
     )
 }
 
@@ -4463,7 +4491,69 @@ mod tests {
     fn resolve_one(claims: &[ClaimRow], beats: &[(&str, Beat)], alive: &dyn Fn(u32) -> bool) -> Vec<PresenceEntry> {
         let map: HashMap<String, Beat> =
             beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
-        resolve_presence(claims, &map, std::time::Instant::now(), alive, alive)
+        // Attachable is the complement of reachable in production; tests that
+        // don't care pass DEAD so a `reachable` entry isn't also `attachable`.
+        resolve_presence(claims, &map, std::time::Instant::now(), alive, alive, DEAD)
+    }
+
+    #[test]
+    fn a_headless_claude_session_is_attachable_not_reachable() {
+        // The background-session signature: claude owns the pid, but the
+        // ancestor chain tops out at launchd. The button must offer the pane.
+        let map: HashMap<String, Beat> = [(
+            "s1".to_string(),
+            a_beat("working", std::time::Duration::from_secs(1), Some(42)),
+        )]
+        .into();
+        let out = resolve_presence(
+            &[a_claim("s1", 7)],
+            &map,
+            std::time::Instant::now(),
+            ALIVE,
+            DEAD,  // no terminal ancestor → not reachable
+            ALIVE, // claude-owned, windowless → attachable
+        );
+        assert!(!out[0].reachable);
+        assert!(out[0].attachable, "a live background session must offer the attach pane");
+    }
+
+    #[test]
+    fn on_a_state_tie_an_attachable_session_beats_a_dead_end() {
+        // Two quiet sessions on one card: neither has a window, but one is a
+        // live background session. The card must surface the one the jump can
+        // land on.
+        let map: HashMap<String, Beat> = HashMap::new();
+        let claims = [a_claim_with_pid("gone", 7, 1), a_claim_with_pid("bg", 7, 2)];
+        let attachable: &dyn Fn(u32) -> bool = &|pid| pid == 2;
+        let out = resolve_presence(
+            &claims,
+            &map,
+            std::time::Instant::now(),
+            ALIVE,
+            DEAD,
+            attachable,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].session_id, "bg");
+        assert!(out[0].attachable);
+    }
+
+    #[test]
+    fn session_attachable_is_the_ancestorless_complement_of_reachable() {
+        // One table, both rails: a claude pid inside a terminal is reachable
+        // and not attachable; a claude pid under launchd is the reverse.
+        let hosted = table(&[(100, Some(60), "claude"), (60, Some(1), "ghostty")]);
+        assert!(session_reachable_with(100, &hosted));
+        assert!(!session_attachable_with(100, &hosted));
+
+        let headless = table(&[(100, Some(1), "claude")]);
+        assert!(!session_reachable_with(100, &headless));
+        assert!(session_attachable_with(100, &headless));
+
+        // A pid the OS reused for a stranger offers neither rail.
+        let stranger = table(&[(100, Some(1), "Spotify")]);
+        assert!(!session_reachable_with(100, &stranger));
+        assert!(!session_attachable_with(100, &stranger));
     }
 
     #[test]
@@ -5175,9 +5265,11 @@ mod tests {
             std::time::Instant::now(),
             ALIVE,
             DEAD,
+            DEAD,
         );
         assert_eq!(out[0].state, "working");
         assert!(!out[0].reachable);
+        assert!(!out[0].attachable, "a stranger's pid must not offer attach either");
     }
 
     #[test]
