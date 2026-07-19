@@ -1,4 +1,4 @@
-import { useMemo, useState, type ClipboardEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
 import { format } from "date-fns";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
@@ -21,6 +21,12 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
   // land on. Chips render in the preview row beside the parsed text tokens.
   const [pending, setPending] = useState<PendingImage[]>([]);
   const [skippedOversize, setSkippedOversize] = useState(false);
+  // Revoke outstanding chip object-URLs if the component unmounts (view switch)
+  // with pastes still pending. Ref, not dep-driven cleanup: a cleanup keyed on
+  // `pending` would revoke URLs the chips still render.
+  const pendingRef = useRef<PendingImage[]>([]);
+  pendingRef.current = pending;
+  useEffect(() => () => releasePending(pendingRef.current), []);
 
   const parsed = useMemo(
     () => parseQuickAdd(title, { projects, tags }),
@@ -40,7 +46,9 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       (item) => item.kind === "file" && item.type.startsWith("image/"),
     );
     if (!hasImage) return; // plain text pastes stay the input's business
-    e.preventDefault();
+    // A mixed clipboard (image + text) keeps its text half: the default paste
+    // inserts the text into the title while the image still becomes a chip.
+    if (!data.types.includes("text/plain")) e.preventDefault();
     // imagesFromDataTransfer grabs the files synchronously before its first await,
     // so the clipboard data is safe to read past this handler's return.
     void imagesFromDataTransfer(data).then(({ images, skipped }) => {
@@ -83,8 +91,11 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
     if (pending.length > 0) {
       const toAttach = pending;
       setPending([]);
-      await attachImages(id, toAttach);
-      releasePending(toAttach);
+      try {
+        await attachImages(id, toAttach);
+      } finally {
+        releasePending(toAttach);
+      }
     }
     setSkippedOversize(false);
     setTitle("");

@@ -466,12 +466,19 @@ export function TaskEditor() {
       (item) => item.kind === "file" && item.type.startsWith("image/"),
     );
     if (!hasImage) return;
-    e.preventDefault();
+    // Pasting a mixed clipboard (image + text) into the title or notes keeps
+    // its text half: default paste inserts the text, the image still attaches.
+    const editable =
+      e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+    if (!(editable && data.types.includes("text/plain"))) e.preventDefault();
     const taskId = task.id;
     void imagesFromDataTransfer(data).then(async ({ images: pasted }) => {
       if (pasted.length === 0) return;
-      await attachImages(taskId, pasted);
-      releasePending(pasted);
+      try {
+        await attachImages(taskId, pasted);
+      } finally {
+        releasePending(pasted);
+      }
     });
   }
 
@@ -482,8 +489,11 @@ export function TaskEditor() {
     try {
       const { images: pasted } = await imagesFromClipboardRead();
       if (pasted.length === 0) return;
-      await attachImages(task.id, pasted);
-      releasePending(pasted);
+      try {
+        await attachImages(task.id, pasted);
+      } finally {
+        releasePending(pasted);
+      }
     } catch {
       // No clipboard access: ⌘V (onEditorPaste) remains the way in.
     }
