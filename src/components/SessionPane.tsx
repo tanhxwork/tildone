@@ -160,6 +160,13 @@ export function SessionPane() {
         }
       } catch (err) {
         if (!disposed) term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r\n`);
+        // Release the listeners now, not at unmount: after a failed open
+        // `generation` stays null forever, and leaving them registered would
+        // buffer every future event app-wide into `pending` for as long as
+        // this failed pane stays up (codex verify finding). splice so the
+        // unmount cleanup can't double-release.
+        unlistens.splice(0).forEach((un) => un());
+        pending = [];
         return;
       }
       if (disposed) {

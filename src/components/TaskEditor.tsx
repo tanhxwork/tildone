@@ -113,6 +113,10 @@ export function TaskEditor() {
   const [aiError, setAiError] = useState("");
   const [jumpMiss, setJumpMiss] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
+  // The disarm timer for "stop for sure?" — held so a task switch or rearm
+  // clears it; TaskEditor is one persistent instance across tasks, and an
+  // orphaned timer would disarm the NEXT task's fresh confirm early.
+  const killDisarmRef = useRef<number | null>(null);
   const [starting, setStarting] = useState(false);
   const [sessionError, setSessionError] = useState("");
   const hostSessions = useHostStore((s) => s.sessions);
@@ -131,6 +135,10 @@ export function TaskEditor() {
       setAiError("");
       setJumpMiss(false);
       setConfirmKill(false);
+      if (killDisarmRef.current) {
+        window.clearTimeout(killDisarmRef.current);
+        killDisarmRef.current = null;
+      }
       setStarting(false);
       setSessionError("");
       setEditingNotes(false);
@@ -615,7 +623,13 @@ export function TaskEditor() {
                           // forgotten minutes ago must not kill on a later
                           // stray click (codex verify note, 2026-07-19).
                           setConfirmKill(true);
-                          window.setTimeout(() => setConfirmKill(false), 3000);
+                          if (killDisarmRef.current) {
+                            window.clearTimeout(killDisarmRef.current);
+                          }
+                          killDisarmRef.current = window.setTimeout(() => {
+                            killDisarmRef.current = null;
+                            setConfirmKill(false);
+                          }, 3000);
                         }}
                       >
                         {hosted.exited ? "dismiss" : confirmKill ? "stop for sure?" : "stop"}
