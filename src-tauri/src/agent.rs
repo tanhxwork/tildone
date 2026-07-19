@@ -4074,7 +4074,7 @@ pub fn deep_link_task_ref(url: &str) -> Option<String> {
 /// bounce off a tray-hidden window. Failures (denied permission, anything) stay
 /// silent no-ops: the notification is a courtesy, never part of the write's contract.
 #[cfg(target_os = "macos")]
-fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Option<&str>) {
+pub(crate) fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Option<&str>) {
     // Identity first, with the plugin's exact dev/prod logic: no bundle of our own
     // in dev, so borrow Terminal's. set_application is call-once per process; a
     // second call (ours or the plugin's first-hide hint) erroring is fine.
@@ -4112,7 +4112,7 @@ fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Op
 /// Non-macOS: the plugin path, unchanged. No desktop click reporting exists here;
 /// the ref already rides in the body so the banner stays quotable.
 #[cfg(not(target_os = "macos"))]
-fn send_user_notification(app: &AppHandle, title: &str, body: &str, _task_ref: Option<&str>) {
+pub(crate) fn send_user_notification(app: &AppHandle, title: &str, body: &str, _task_ref: Option<&str>) {
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder().title(title).body(body).show();
 }

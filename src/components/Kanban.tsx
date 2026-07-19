@@ -866,11 +866,21 @@ function CardProvenance({
         // routing); the card chip only *states* that this task has its own
         // terminal here, live or exited.
         <span
-          className={`card-hosted${hosted.exited ? " exited" : ""}`}
-          title={`Hosted session · ${hosted.adapter_name} · ${hosted.exited ? "exited" : "running"}`}
+          className={`card-hosted${hosted.exited ? " exited" : ""}${
+            !hosted.exited && hosted.waiting ? " waiting" : ""
+          }`}
+          title={
+            !hosted.exited && hosted.waiting
+              ? `Hosted session · ${hosted.adapter_name} · looks idle at a prompt (heuristic)`
+              : `Hosted session · ${hosted.adapter_name} · ${hosted.exited ? "exited" : "running"}`
+          }
         >
           <IconTerminal size={12} />
-          {hosted.exited ? "exited" : hosted.adapter_name}
+          {hosted.exited
+            ? "exited"
+            : hosted.waiting
+              ? "waiting ❯"
+              : hosted.adapter_name}
         </span>
       )}
       <AgentPresence taskId={task.id} />

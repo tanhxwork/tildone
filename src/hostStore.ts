@@ -20,6 +20,9 @@ export interface HostSession {
   /** The CLI exited (on its own or killed) but hasn't been dismissed — a
    *  crash must be visible on the board, not a silent vanish. */
   exited: boolean;
+  /** Waiting-detect (F2): the session looks idle at a prompt. A heuristic
+   *  read off the owned PTY's grid — the UI must present it as one. */
+  waiting: boolean;
 }
 
 export interface HostAdapter {

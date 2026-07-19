@@ -12,7 +12,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tauri::Emitter;
@@ -146,6 +147,18 @@ struct Shared {
     /// The pane generation currently rendering this session, if any.
     attached: Option<u64>,
     exited: bool,
+    /// The session's virtual screen (spec anycli-workspace-v2, F2): the same
+    /// bytes the ring buffer keeps, parsed into a grid the waiting classifier
+    /// can inspect. Pixels for the pane, state for the board.
+    screen: vt100::Parser,
+    /// When the last output byte arrived — waiting-detect classifies only
+    /// after the stream quiesces, never mid-repaint.
+    last_byte: Option<Instant>,
+    /// The classifier's current verdict. Inference, not fact: any new output
+    /// clears it instantly.
+    waiting: bool,
+    /// One notification per waiting episode; new bytes re-arm.
+    notified: bool,
 }
 
 struct HostedSession {
@@ -208,8 +221,120 @@ pub(crate) fn resize(session_id: u64, cols: u16, rows: u16) -> Result<(), String
         s.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("resize failed: {e}"))?;
+        s.shared.lock().unwrap().screen.set_size(rows, cols);
     }
     Ok(())
+}
+
+// -- waiting-detect (F2) ------------------------------------------------------
+
+/// How long the stream must be silent before the grid is worth classifying.
+const QUIESCE: Duration = Duration::from_millis(500);
+
+/// Layer-2 inference (spec anycli-workspace-v2, F2): inspect the grid's tail
+/// once output quiesces. `Some(true)` = waiting at a prompt, `Some(false)` =
+/// visibly working, `None` = unrecognized — never guess. Markers pinned from
+/// real captured screens (claude v2.1.215, codex v0.144.4 — see tests);
+/// update the fixtures when a CLI redesigns its TUI.
+///
+/// claude dropped "esc to interrupt" in v2.1.215; its working tell is the
+/// live token counter ("(3s · ↓12 tokens)"). The interrupt hint stays as a
+/// second marker for older/newer versions. Prompt chars: claude '❯',
+/// codex '›' — both also front their permission/trust dialogs, which are
+/// exactly "waiting for the user" and classify correctly for free.
+fn screen_waiting(adapter_id: &str, tail: &str) -> Option<bool> {
+    match adapter_id {
+        "claude" => {
+            if tail.contains("esc to interrupt")
+                || (tail.contains("· ↓") && tail.contains("tokens"))
+            {
+                return Some(false);
+            }
+            tail.contains('❯').then_some(true)
+        }
+        "codex" => {
+            if tail.contains("esc to interrupt") {
+                return Some(false);
+            }
+            tail.contains('›').then_some(true)
+        }
+        _ => None,
+    }
+}
+
+/// The classifier's viewport: the grid's last rows carry the status line and
+/// input box; everything above is content and would only add false matches.
+fn screen_tail(contents: &str) -> String {
+    let rows: Vec<&str> = contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let start = rows.len().saturating_sub(8);
+    rows[start..].join("\n").to_lowercase()
+}
+
+fn app_handle_slot() -> &'static OnceLock<tauri::AppHandle> {
+    static SLOT: OnceLock<tauri::AppHandle> = OnceLock::new();
+    &SLOT
+}
+
+/// One global quiesce ticker for all hosted sessions, started with the first
+/// one. 2 Hz over a handful of small grids is noise; per-session timers are
+/// bookkeeping with no payoff.
+fn ensure_ticker(app: &tauri::AppHandle) {
+    let _ = app_handle_slot().set(app.clone());
+    static TICKER: Once = Once::new();
+    TICKER.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(QUIESCE);
+            let Some(app) = app_handle_slot().get() else { continue };
+            // Snapshot under the table lock, classify outside it — the
+            // classifier allocates the grid text and must not block writes.
+            let snapshot: Vec<(&'static str, Option<String>, Arc<Mutex<Shared>>)> = sessions()
+                .lock()
+                .unwrap()
+                .values()
+                .map(|s| (s.adapter_id, s.task_ref.clone(), Arc::clone(&s.shared)))
+                .collect();
+            for (adapter_id, task_ref, shared) in snapshot {
+                let notify = {
+                    let mut shared = shared.lock().unwrap();
+                    if shared.exited || shared.waiting {
+                        continue;
+                    }
+                    let Some(last) = shared.last_byte else { continue };
+                    if last.elapsed() < QUIESCE {
+                        continue;
+                    }
+                    let tail = screen_tail(&shared.screen.screen().contents());
+                    if screen_waiting(adapter_id, &tail) != Some(true) {
+                        continue;
+                    }
+                    shared.waiting = true;
+                    let notify = shared.attached.is_none() && !shared.notified;
+                    if notify {
+                        shared.notified = true;
+                    }
+                    notify
+                };
+                let _ = app.emit("host-changed", ());
+                if notify {
+                    let adapter_name =
+                        adapter(adapter_id).map(|a| a.name).unwrap_or(adapter_id);
+                    crate::agent::send_user_notification(
+                        app,
+                        "Waiting for input",
+                        &format!(
+                            "{} on {} looks idle at a prompt",
+                            adapter_name,
+                            task_ref.as_deref().unwrap_or("its task")
+                        ),
+                        task_ref.as_deref(),
+                    );
+                }
+            }
+        });
+    });
 }
 
 // -- commands ---------------------------------------------------------------
@@ -244,6 +369,9 @@ pub struct HostInfo {
     pub adapter_id: &'static str,
     pub adapter_name: &'static str,
     pub exited: bool,
+    /// Waiting-detect's verdict (F2): the session looks idle at a prompt.
+    /// Heuristic — the UI must say so, never claim it as fact.
+    pub waiting: bool,
 }
 
 #[tauri::command]
@@ -252,13 +380,17 @@ pub fn host_list() -> Vec<HostInfo> {
         .lock()
         .unwrap()
         .iter()
-        .map(|(id, s)| HostInfo {
-            id: *id,
-            task_id: s.task_id,
-            task_ref: s.task_ref.clone(),
-            adapter_id: s.adapter_id,
-            adapter_name: adapter(s.adapter_id).map(|a| a.name).unwrap_or(s.adapter_id),
-            exited: s.shared.lock().unwrap().exited,
+        .map(|(id, s)| {
+            let shared = s.shared.lock().unwrap();
+            HostInfo {
+                id: *id,
+                task_id: s.task_id,
+                task_ref: s.task_ref.clone(),
+                adapter_id: s.adapter_id,
+                adapter_name: adapter(s.adapter_id).map(|a| a.name).unwrap_or(s.adapter_id),
+                exited: shared.exited,
+                waiting: shared.waiting && !shared.exited,
+            }
         })
         .collect()
 }
@@ -302,6 +434,7 @@ pub async fn host_start(
     rows: u16,
 ) -> Result<u64, String> {
     let adapter = adapter(&adapter_id).ok_or_else(|| format!("unknown adapter {adapter_id}"))?;
+    ensure_ticker(&app);
 
     let spawn_app = app.clone();
     let session_id = tauri::async_runtime::spawn_blocking(move || {
@@ -345,7 +478,15 @@ pub async fn host_start(
             .map_err(|e| format!("writer failed: {e}"))?;
 
         let session_id = next_session_id();
-        let shared = Arc::new(Mutex::new(Shared { buf: Vec::new(), attached: None, exited: false }));
+        let shared = Arc::new(Mutex::new(Shared {
+            buf: Vec::new(),
+            attached: None,
+            exited: false,
+            screen: vt100::Parser::new(rows, cols, 0),
+            last_byte: None,
+            waiting: false,
+            notified: false,
+        }));
         sessions().lock().unwrap().insert(
             session_id,
             HostedSession {
@@ -370,17 +511,32 @@ pub async fn host_start(
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let mut shared = shared.lock().unwrap();
-                        shared.buf.extend_from_slice(&chunk[..n]);
-                        if shared.buf.len() > RING_CAP {
-                            let excess = shared.buf.len() - RING_CAP;
-                            shared.buf.drain(..excess);
-                        }
-                        if let Some(generation) = shared.attached {
-                            let _ = reader_app.emit(
-                                "pty-data",
-                                PtyEvent { generation, data: Some(chunk[..n].to_vec()) },
-                            );
+                        // Output arriving refutes "waiting" instantly — the
+                        // verdict clears here, in the same critical section
+                        // that feeds the grid, so classifier and buffer can
+                        // never disagree about which bytes they saw.
+                        let waiting_cleared = {
+                            let mut shared = shared.lock().unwrap();
+                            shared.buf.extend_from_slice(&chunk[..n]);
+                            if shared.buf.len() > RING_CAP {
+                                let excess = shared.buf.len() - RING_CAP;
+                                shared.buf.drain(..excess);
+                            }
+                            shared.screen.process(&chunk[..n]);
+                            shared.last_byte = Some(Instant::now());
+                            let cleared = shared.waiting;
+                            shared.waiting = false;
+                            shared.notified = false;
+                            if let Some(generation) = shared.attached {
+                                let _ = reader_app.emit(
+                                    "pty-data",
+                                    PtyEvent { generation, data: Some(chunk[..n].to_vec()) },
+                                );
+                            }
+                            cleared
+                        };
+                        if waiting_cleared {
+                            let _ = reader_app.emit("host-changed", ());
                         }
                     }
                 }
@@ -447,6 +603,7 @@ pub fn host_attach(
     let (replay, exited) = {
         let mut shared = s.shared.lock().unwrap();
         shared.attached = (!shared.exited).then_some(generation);
+        shared.screen.set_size(rows, cols);
         (shared.buf.clone(), shared.exited)
     };
     let _ = s.master.resize(PtySize { rows: rows + 1, cols, pixel_width: 0, pixel_height: 0 });
@@ -556,6 +713,53 @@ mod tests {
         // Its argv contract is unverified (TUI-only --help); a guessed prompt
         // arg could be misread as a directory. Bare launch is the decision.
         assert!(!adapter("opencode").unwrap().prompt_arg);
+    }
+
+    // Waiting-detect fixtures: rows lifted from real PTY captures on this
+    // machine, 2026-07-19 (claude v2.1.215, codex v0.144.4). Lowercased as
+    // `screen_tail` delivers them.
+    const CLAUDE_WORKING: &str =
+        "✻ dilly-dallying… (1s · ↓1 tokens)\n❯ \n⏵⏵ auto mode on (shift+tab to cycle)";
+    const CLAUDE_IDLE: &str =
+        "● high · /effort\n❯ try \"edit <filepath> to...\"\n⏵⏵ auto mode on (shift+tab to cycle)";
+    const CLAUDE_TRUST: &str =
+        "❯ 1. yes, i trust this folder\n2. no, exit\nenter to confirm · esc to cancel";
+    const CODEX_WORKING: &str =
+        "• starting mcp servers (1/4): codex_apps, node_repl, tildone (0s • esc to interrupt)\n› find and fix a bug in @filename";
+    const CODEX_IDLE: &str =
+        "› find and fix a bug in @filename\ngpt-5.6-sol high · ~/.claude/jobs/scratch";
+
+    #[test]
+    fn claude_classifier_reads_the_token_counter_not_the_old_hint() {
+        // v2.1.215 dropped "esc to interrupt"; the live counter is the tell.
+        assert_eq!(screen_waiting("claude", CLAUDE_WORKING), Some(false));
+        assert_eq!(screen_waiting("claude", CLAUDE_IDLE), Some(true));
+        // A trust/permission dialog IS waiting for the user.
+        assert_eq!(screen_waiting("claude", CLAUDE_TRUST), Some(true));
+        // Older CLIs that still print the hint stay classified as working.
+        assert_eq!(screen_waiting("claude", "✽ thinking… esc to interrupt\n❯"), Some(false));
+    }
+
+    #[test]
+    fn codex_classifier_keys_on_interrupt_hint_then_prompt_char() {
+        assert_eq!(screen_waiting("codex", CODEX_WORKING), Some(false));
+        assert_eq!(screen_waiting("codex", CODEX_IDLE), Some(true));
+    }
+
+    #[test]
+    fn unrecognized_screens_and_adapters_answer_none() {
+        assert_eq!(screen_waiting("claude", "compiling tildone v0.1.0"), None);
+        assert_eq!(screen_waiting("codex", ""), None);
+        assert_eq!(screen_waiting("opencode", CODEX_IDLE), None);
+    }
+
+    #[test]
+    fn screen_tail_keeps_the_last_rows_and_lowercases() {
+        let grid = "Row1\n\n  \nRow2\nRow3\nRow4\nRow5\nRow6\nRow7\nRow8\nRow9\nPROMPT ❯";
+        let tail = screen_tail(grid);
+        assert!(!tail.contains("row1"), "row beyond the 8-row window leaked in");
+        assert!(tail.contains("row3"));
+        assert!(tail.ends_with("prompt ❯"));
     }
 
     #[test]

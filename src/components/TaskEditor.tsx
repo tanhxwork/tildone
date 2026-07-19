@@ -343,6 +343,7 @@ export function TaskEditor() {
         adapter_id: adapterId,
         adapter_name: hostAdapters.find((a) => a.id === adapterId)?.name ?? adapterId,
         exited: false,
+        waiting: false,
       });
     } catch (e) {
       setSessionError(String(e));
@@ -593,11 +594,20 @@ export function TaskEditor() {
                 <span className="detail-session">
                   {hosted ? (
                     <>
-                      <span className={`hosted-chip${hosted.exited ? " exited" : ""}`}>
+                      <span
+                        className={`hosted-chip${hosted.exited ? " exited" : ""}${
+                          !hosted.exited && hosted.waiting ? " waiting" : ""
+                        }`}
+                        title={
+                          !hosted.exited && hosted.waiting
+                            ? "Looks idle at a prompt — a heuristic read of its screen"
+                            : undefined
+                        }
+                      >
                         <IconTerminal size={12} />
                         {hosted.adapter_name}
                         <span className="hosted-chip-state">
-                          {hosted.exited ? "exited" : "live"}
+                          {hosted.exited ? "exited" : hosted.waiting ? "waiting ❯" : "live"}
                         </span>
                       </span>
                       {!hosted.exited && (
