@@ -161,12 +161,14 @@ pub struct PresenceEntry {
     branch: Option<String>,
     cwd: Option<String>,
     last_log: Option<String>,
-    /// Can the jump-to-session button reach this session? Aliveness, not busyness:
-    /// the session's pid is known (live beat, else the claim's durable copy) and a
-    /// claude process still owns it. Deliberately independent of `state` — the
-    /// button's whole point (TIL-99) is the session that already sits idle at its
-    /// prompt, which renders `quiet` yet is exactly one keystroke away.
-    alive: bool,
+    /// Can the jump-to-session button reach this session? Reachability, not
+    /// busyness: the session's pid is known (live beat, else the claim's durable
+    /// copy), a claude process still owns it, *and* a terminal ancestor exists to
+    /// raise — a background session is alive yet windowless, and a button shown
+    /// for it can only disappoint (TIL-99 amendment). Deliberately independent of
+    /// `state` — the button's whole point is the session that already sits idle
+    /// at its prompt, which renders `quiet` yet is exactly one keystroke away.
+    reachable: bool,
 }
 
 /// Resolve claims + beats into one entry per task.
@@ -189,7 +191,7 @@ pub fn resolve_presence(
     beats: &HashMap<String, Beat>,
     now: std::time::Instant,
     alive: &dyn Fn(u32) -> bool,
-    agent_proc: &dyn Fn(u32) -> bool,
+    reachable: &dyn Fn(u32) -> bool,
 ) -> Vec<PresenceEntry> {
     fn rank(state: &str) -> u8 {
         match state {
@@ -214,10 +216,12 @@ pub fn resolve_presence(
                 }
             }
         };
-        // Aliveness for the jump button, on a separate rail from `state`: the live
-        // beat's pid, else the claim's durable copy (which is all that survives an
-        // app restart). `agent_proc` — not bare existence — because a persisted pid
-        // has no TTL, so pid reuse must be caught by asking *who* owns it now.
+        // Reachability for the jump button, on a separate rail from `state`: the
+        // live beat's pid, else the claim's durable copy (which is all that
+        // survives an app restart). The injected predicate — not bare existence —
+        // because a persisted pid has no TTL (reuse must be caught by asking *who*
+        // owns it now) and because alive alone is not enough: a headless session
+        // has no window for the button to raise.
         let candidate_pid = beat.and_then(|b| b.pid).or(claim.last_pid);
         let entry = PresenceEntry {
             task_id: claim.task_id,
@@ -230,7 +234,7 @@ pub fn resolve_presence(
             branch: claim.branch.clone(),
             cwd: claim.cwd.clone(),
             last_log: claim.last_log.clone(),
-            alive: candidate_pid.is_some_and(agent_proc),
+            reachable: candidate_pid.is_some_and(reachable),
         };
         by_task
             .entry(claim.task_id)
@@ -239,8 +243,8 @@ pub fn resolve_presence(
                 // the jump button can actually reach.
                 if rank(&entry.state) > rank(&existing.state)
                     || (rank(&entry.state) == rank(&existing.state)
-                        && entry.alive
-                        && !existing.alive)
+                        && entry.reachable
+                        && !existing.reachable)
                 {
                     *existing = entry.clone();
                 }
@@ -282,6 +286,27 @@ fn pid_alive(pid: u32) -> bool {
 /// `process_info`.
 fn agent_pid_alive(pid: u32) -> bool {
     process_info(pid).is_some_and(|(_, name)| name.to_lowercase().contains("claude"))
+}
+
+/// Can the jump button actually raise this session's window?
+///
+/// Alive is necessary but not sufficient (TIL-99 field trial, 2026-07-19): a
+/// background session's claude process is fully alive yet hosted by no terminal —
+/// its ancestor chain tops out at launchd — so a button gated on aliveness alone
+/// showed everywhere and every click answered "Session not reachable". Reachable
+/// means a claude process still owns the pid *and* the same ancestor walk
+/// `focus_session` performs finds a terminal to raise: the button appears exactly
+/// where the click can succeed.
+fn session_reachable_with(
+    pid: u32,
+    lookup: &dyn Fn(u32) -> Option<(Option<u32>, String)>,
+) -> bool {
+    lookup(pid).is_some_and(|(_, name)| name.to_lowercase().contains("claude"))
+        && find_terminal_ancestor(pid, lookup).is_some()
+}
+
+fn session_reachable(pid: u32) -> bool {
+    session_reachable_with(pid, &process_info)
 }
 
 /// Process names that mean "this ancestor is the terminal app hosting the session".
@@ -3669,7 +3694,7 @@ pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
         &beats,
         std::time::Instant::now(),
         &pid_alive,
-        &agent_pid_alive,
+        &session_reachable,
     )
 }
 
@@ -4431,9 +4456,9 @@ mod tests {
     const DEAD: &dyn Fn(u32) -> bool = &|_| false;
 
     /// Injected liveness answers *both* questions the same way in most tests:
-    /// existence (state) and claude-ownership (the button's `alive`). Tests that
-    /// need them to disagree — a pid that exists but is no longer claude's —
-    /// call `resolve_presence` directly with distinct fns.
+    /// existence (state) and reachability (the button's rail). Tests that need
+    /// them to disagree — a pid that exists but is no longer claude's, or is
+    /// alive yet windowless — call `resolve_presence` directly with distinct fns.
     fn resolve_one(claims: &[ClaimRow], beats: &[(&str, Beat)], alive: &dyn Fn(u32) -> bool) -> Vec<PresenceEntry> {
         let map: HashMap<String, Beat> =
             beats.iter().map(|(s, b)| ((*s).to_string(), b.clone())).collect();
@@ -4821,6 +4846,45 @@ mod tests {
         assert_eq!(find_terminal_ancestor(100, &t), None);
     }
 
+    // The reachability predicate the button's rail injects (TIL-99 amendment).
+    // Field-trial fact behind it: every visible button pointed at a background
+    // session — alive, but with no window anywhere in its ancestry — so every
+    // click answered "Session not reachable". Alive is necessary, not sufficient.
+
+    #[test]
+    fn a_live_bg_session_is_alive_but_not_reachable() {
+        // The exact shape from the field report: claude bg-spare → bg-pty-host →
+        // launchd. A real live claude process, and nothing to raise.
+        let t = table(&[
+            (100, Some(50), "claude bg-spare"),
+            (50, Some(1), "claude bg-pty-host"),
+        ]);
+        assert!(
+            !session_reachable_with(100, &t),
+            "a headless session's button is a promise the jump cannot keep"
+        );
+    }
+
+    #[test]
+    fn a_terminal_hosted_claude_is_reachable() {
+        let t = table(&[
+            (100, Some(50), "claude"),
+            (50, Some(40), "zsh"),
+            (40, Some(30), "login"),
+            (30, Some(1), "ghostty"),
+        ]);
+        assert!(session_reachable_with(100, &t));
+    }
+
+    #[test]
+    fn a_stranger_pid_inside_a_terminal_is_not_reachable() {
+        // Pid reuse: the number now belongs to vim in a ghostty. A terminal
+        // ancestor exists, but the process is no claude — the walk must not
+        // outrank the ownership check.
+        let t = table(&[(100, Some(50), "vim"), (50, Some(1), "ghostty")]);
+        assert!(!session_reachable_with(100, &t));
+    }
+
     #[test]
     fn process_info_reads_this_very_process() {
         let (parent, name) = process_info(std::process::id())
@@ -5051,51 +5115,51 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Aliveness for the jump button (TIL-99): a rail separate from state. The
+    // Reachability for the jump button (TIL-99): a rail separate from state. The
     // user reaches for the button exactly when the session already sits idle at
-    // its prompt — quiet on the card, alive at the keyboard.
+    // its prompt — quiet on the card, reachable at the keyboard.
 
     #[test]
-    fn an_idle_session_with_a_live_pid_is_quiet_but_alive() {
+    fn an_idle_session_with_a_live_pid_is_quiet_but_reachable() {
         let out = resolve_one(
             &[a_claim("s1", 7)],
             &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(42)))],
             ALIVE,
         );
         assert_eq!(out[0].state, "quiet", "the meter must never fake activity");
-        assert!(out[0].alive, "idle at the prompt is exactly when the button matters");
+        assert!(out[0].reachable, "idle at the prompt is exactly when the button matters");
     }
 
     #[test]
-    fn a_persisted_claim_pid_keeps_alive_after_beats_are_wiped() {
+    fn a_persisted_claim_pid_keeps_reachable_after_beats_are_wiped() {
         // The app-restart case: beats are memory-only and gone, the claim's
         // durable pid copy is all that survived — and it is enough.
         let out = resolve_one(&[a_claim_with_pid("s1", 7, 42)], &[], ALIVE);
         assert_eq!(out[0].state, "quiet");
-        assert!(out[0].alive, "the durable pid must survive the blackout");
+        assert!(out[0].reachable, "the durable pid must survive the blackout");
     }
 
     #[test]
-    fn no_pid_anywhere_means_not_alive() {
+    fn no_pid_anywhere_means_not_reachable() {
         // A Codex-style claim: no hook, no beat, no pid — the button never shows.
         let out = resolve_one(&[a_claim("s1", 7)], &[], ALIVE);
-        assert!(!out[0].alive);
+        assert!(!out[0].reachable);
     }
 
     #[test]
-    fn a_dead_pid_is_not_alive_from_either_source() {
+    fn a_dead_pid_is_not_reachable_from_either_source() {
         let beat_side = resolve_one(
             &[a_claim("s1", 7)],
             &[("s1", a_beat("idle", std::time::Duration::from_secs(1), Some(42)))],
             DEAD,
         );
-        assert!(!beat_side[0].alive, "a killed session's button must vanish");
+        assert!(!beat_side[0].reachable, "a killed session's button must vanish");
         let claim_side = resolve_one(&[a_claim_with_pid("s1", 7, 42)], &[], DEAD);
-        assert!(!claim_side[0].alive, "a stale persisted pid must not resurrect it");
+        assert!(!claim_side[0].reachable, "a stale persisted pid must not resurrect it");
     }
 
     #[test]
-    fn a_pid_reused_by_a_stranger_is_not_alive() {
+    fn a_pid_reused_by_a_stranger_is_not_reachable() {
         // The two liveness questions disagree here: the pid *exists* (state
         // resolution keeps trusting the fresh beat) but no claude process owns
         // it — the reuse guard a TTL-less persisted pid needs.
@@ -5112,13 +5176,13 @@ mod tests {
             DEAD,
         );
         assert_eq!(out[0].state, "working");
-        assert!(!out[0].alive);
+        assert!(!out[0].reachable);
     }
 
     #[test]
     fn on_a_state_tie_the_reachable_session_wins_the_card() {
         // Two quiet sessions on one task: the card must hand the jump button the
-        // one that is still alive, regardless of claim order.
+        // one that is still reachable, regardless of claim order.
         let out = resolve_one(
             &[a_claim("gone", 7), a_claim_with_pid("here", 7, 42)],
             &[],
@@ -5126,7 +5190,7 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].session_id, "here");
-        assert!(out[0].alive);
+        assert!(out[0].reachable);
     }
 
     fn claim_pid(db: &Db, session: &str) -> Option<u32> {
