@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Comment, Project, Status, Subtask, Tag, Task, TaskLink } from "./types";
+import type { ActivityEntry, Comment, Project, Status, Subtask, Tag, Task, TaskImage, TaskLink } from "./types";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
 
 /**
@@ -59,6 +59,7 @@ export async function fetchAll(): Promise<{
   subtasks: Subtask[];
   presence: Record<number, { name: string | null; at: string }>;
   links: Record<number, TaskLink[]>;
+  images: Record<number, TaskImage[]>;
   commentCounts: Record<number, number>;
 }> {
   const d = await getDb();
@@ -96,6 +97,13 @@ export async function fetchAll(): Promise<{
   for (const row of linkRows) {
     (linksByTask[row.task_id] ??= []).push(row);
   }
+  const imageRows = await d.select<TaskImage[]>(
+    "SELECT id, task_id, path, filename, bytes, width, height, created_at FROM task_images ORDER BY id",
+  );
+  const imagesByTask: Record<number, TaskImage[]> = {};
+  for (const row of imageRows) {
+    (imagesByTask[row.task_id] ??= []).push(row);
+  }
   // Card badge needs a count, not the bodies — the thread loads only when a task
   // opens (fetchComments). A comment insert/delete fires the change feed, so this
   // count refreshes on the same reload every agent write already triggers.
@@ -104,7 +112,34 @@ export async function fetchAll(): Promise<{
   );
   const commentCounts: Record<number, number> = {};
   for (const row of countRows) commentCounts[row.task_id] = row.n;
-  return { projects, tasks, tags, subtasks, presence, links: linksByTask, commentCounts };
+  return {
+    projects,
+    tasks,
+    tags,
+    subtasks,
+    presence,
+    links: linksByTask,
+    images: imagesByTask,
+    commentCounts,
+  };
+}
+
+export async function insertImage(
+  taskId: number,
+  file: { path: string; filename: string; bytes: number; width: number; height: number },
+): Promise<TaskImage> {
+  const d = await getDb();
+  const created_at = new Date().toISOString();
+  const result = await d.execute(
+    "INSERT INTO task_images (task_id, path, filename, bytes, width, height, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [taskId, file.path, file.filename, file.bytes, file.width, file.height, created_at],
+  );
+  return { id: result.lastInsertId ?? 0, task_id: taskId, ...file, created_at };
+}
+
+export async function deleteImage(id: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM task_images WHERE id = $1", [id]);
 }
 
 // Mirror image of agent.rs add_comment: a comment written through the app is always

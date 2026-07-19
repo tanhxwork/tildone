@@ -12,6 +12,7 @@ import type {
   Subtask,
   Tag,
   Task,
+  TaskImage,
   TaskLink,
   ViewMode,
 } from "./types";
@@ -21,6 +22,11 @@ import { computeDragUpdates } from "./reorder";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
 import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
+import {
+  removeImageFile,
+  saveImageFile,
+  type PendingImage,
+} from "./utils/images";
 
 export interface ImportedTask {
   title: string;
@@ -59,6 +65,8 @@ interface Store {
   subtasks: Subtask[];
   /** Repo links per task: links[task_id] = [{id, url, label, kind}]. */
   links: Record<number, TaskLink[]>;
+  /** Image attachments per task: images[task_id] = [{id, path, filename, …}]. */
+  images: Record<number, TaskImage[]>;
   /** Activity log for the task currently open in the details view. */
   activity: ActivityEntry[];
   /** When the open task's tags last changed — the review band's "flagged" time.
@@ -137,13 +145,15 @@ interface Store {
   /** Discover every project's icon; called after each full data load. */
   loadProjectIcons: () => Promise<void>;
 
+  /** Create a task; resolves to the new task's id so post-creation attachments
+   *  (pasted images) have something to land on. */
   addTask: (input: {
     title: string;
     project_id: number | null;
     due_date: string | null;
     priority?: number;
     tag_ids?: number[];
-  }) => Promise<void>;
+  }) => Promise<number>;
   patchTask: (
     id: number,
     patch: Partial<Omit<Task, "id" | "tag_ids" | "created_at">>,
@@ -167,6 +177,9 @@ interface Store {
   removeSubtask: (id: number) => Promise<void>;
   addLink: (taskId: number, url: string, label?: string, kind?: LinkKind) => Promise<void>;
   removeLink: (taskId: number, linkId: number) => Promise<void>;
+  /** Save pending clipboard images to disk and attach them to the task. */
+  attachImages: (taskId: number, pending: PendingImage[]) => Promise<void>;
+  removeImage: (image: TaskImage) => Promise<void>;
   loadActivity: (taskId: number) => Promise<void>;
   addComment: (taskId: number, body: string) => Promise<void>;
   loadComments: (taskId: number) => Promise<void>;
@@ -293,6 +306,7 @@ export const useStore = create<Store>()((set, get) => ({
   tags: [],
   subtasks: [],
   links: {},
+  images: {},
   activity: [],
   reviewFlaggedAt: null,
   comments: [],
@@ -568,6 +582,7 @@ export const useStore = create<Store>()((set, get) => ({
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
+    return id;
   },
 
   patchTask: async (id, patch) => {
@@ -814,6 +829,36 @@ export const useStore = create<Store>()((set, get) => ({
         [taskId]: (s.links[taskId] ?? []).filter((x) => x.id !== linkId),
       },
     }));
+  },
+
+  attachImages: async (taskId, pending) => {
+    if (pending.length === 0) return;
+    const saved: TaskImage[] = [];
+    for (const image of pending) {
+      const file = await saveImageFile(taskId, image);
+      saved.push(await db.insertImage(taskId, file));
+    }
+    set((s) => ({
+      images: { ...s.images, [taskId]: [...(s.images[taskId] ?? []), ...saved] },
+    }));
+    void recordActivity(
+      taskId,
+      saved.length === 1 ? "Image attached" : `${saved.length} images attached`,
+    );
+  },
+
+  removeImage: async (image) => {
+    await db.deleteImage(image.id);
+    // The row is the source of truth; a file that outlives a failed remove is
+    // orphaned disk, not a broken card, so the delete is best-effort.
+    void removeImageFile(image).catch(() => {});
+    set((s) => ({
+      images: {
+        ...s.images,
+        [image.task_id]: (s.images[image.task_id] ?? []).filter((x) => x.id !== image.id),
+      },
+    }));
+    void recordActivity(image.task_id, "Image removed");
   },
 
   loadActivity: async (taskId) => {

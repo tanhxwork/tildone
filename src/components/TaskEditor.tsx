@@ -17,7 +17,17 @@ import {
   verifyStepLabel,
 } from "../types";
 import { relativeDueLabel, timeAgo } from "../utils/dates";
+import {
+  formatImageBytes,
+  imageAbsPath,
+  imageSrc,
+  imagesFromClipboardRead,
+  imagesFromDataTransfer,
+  releasePending,
+  useImageBase,
+} from "../utils/images";
 import { isFileEvidence, isHttpUrl, isRevealOnlyEvidence } from "../utils/links";
+import { useLightbox } from "../lightbox";
 import {
   FileEvidenceIcon,
   IconAlert,
@@ -96,6 +106,9 @@ export function TaskEditor() {
     links,
     addLink,
     removeLink,
+    images,
+    attachImages,
+    removeImage,
     comments,
     addComment,
     live,
@@ -128,6 +141,8 @@ export function TaskEditor() {
   const [sessionError, setSessionError] = useState("");
   const hostSessions = useHostStore((s) => s.sessions);
   const hostAdapters = useHostStore((s) => s.adapters);
+  const lightboxOpen = useLightbox((s) => s.open);
+  useImageBase();
 
   useEffect(() => {
     if (task) {
@@ -175,6 +190,7 @@ export function TaskEditor() {
   const taskTags = tags.filter((t) => task.tag_ids.includes(t.id));
   const availableTags = tags.filter((t) => !task.tag_ids.includes(t.id));
   const taskLinks = links[task.id] ?? [];
+  const taskImages = images[task.id] ?? [];
   // The band quotes what the agent asserted: its most recent log_progress lines
   // (structural rows and user rows filtered out), oldest first.
   const evidence = inReview
@@ -440,6 +456,49 @@ export function TaskEditor() {
 
   const createdLabel = format(parseISO(task.created_at), "MMMM d, yyyy");
 
+  /** ⌘V anywhere in the open card attaches clipboard images to this task. Text
+   *  pastes fall through untouched — only image items are intercepted, so the
+   *  notes/title/tag inputs keep their normal paste behavior. */
+  function onEditorPaste(e: React.ClipboardEvent<HTMLDivElement>) {
+    const data = e.clipboardData;
+    if (!data || !task) return;
+    const hasImage = Array.from(data.items).some(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    );
+    if (!hasImage) return;
+    // Pasting a mixed clipboard (image + text) into the title or notes keeps
+    // its text half: default paste inserts the text, the image still attaches.
+    const editable =
+      e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+    if (!(editable && data.types.includes("text/plain"))) e.preventDefault();
+    const taskId = task.id;
+    void imagesFromDataTransfer(data).then(async ({ images: pasted }) => {
+      if (pasted.length === 0) return;
+      try {
+        await attachImages(taskId, pasted);
+      } finally {
+        releasePending(pasted);
+      }
+    });
+  }
+
+  /** The Images row's add tile. clipboard.read may be unavailable or denied in
+   *  the webview — then the tile stays a ⌘V signpost and the click is a no-op. */
+  async function pasteImageFromClipboard() {
+    if (!task) return;
+    try {
+      const { images: pasted } = await imagesFromClipboardRead();
+      if (pasted.length === 0) return;
+      try {
+        await attachImages(task.id, pasted);
+      } finally {
+        releasePending(pasted);
+      }
+    } catch {
+      // No clipboard access: ⌘V (onEditorPaste) remains the way in.
+    }
+  }
+
   function toggleExpanded() {
     setExpanded((prev) => {
       persistExpanded(!prev);
@@ -454,6 +513,7 @@ export function TaskEditor() {
         role="dialog"
         aria-label="Task details"
         onClick={(e) => e.stopPropagation()}
+        onPaste={onEditorPaste}
       >
         <div className="detail-topbar">
           <span className="detail-breadcrumb">
@@ -618,6 +678,55 @@ export function TaskEditor() {
                   <option key={tag.id} value={tag.name} />
                 ))}
               </datalist>
+            </span>
+
+            <span className="detail-prop-label">Images</span>
+            <span className="detail-images">
+              {taskImages.map((img, i) => {
+                const src = imageSrc(img);
+                return (
+                  <span key={img.id} className="detail-image">
+                    <button
+                      type="button"
+                      className="detail-image-thumb"
+                      title={`${img.filename} · ${formatImageBytes(img.bytes)}`}
+                      onClick={() => lightboxOpen(taskImages, i)}
+                    >
+                      {src && <img src={src} alt={img.filename} loading="lazy" />}
+                    </button>
+                    <span className="detail-image-actions">
+                      <button
+                        type="button"
+                        aria-label={`Reveal ${img.filename} in Finder`}
+                        title="Reveal in Finder"
+                        onClick={() => {
+                          const abs = imageAbsPath(img);
+                          if (abs) void revealItemInDir(abs);
+                        }}
+                      >
+                        <IconFolderOpen size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${img.filename}`}
+                        title="Remove image"
+                        onClick={() => void removeImage(img)}
+                      >
+                        <IconX size={12} />
+                      </button>
+                    </span>
+                  </span>
+                );
+              })}
+              <button
+                type="button"
+                className="detail-image-add"
+                title="⌘V pastes a clipboard image onto this task"
+                onClick={() => void pasteImageFromClipboard()}
+              >
+                <IconPlus size={13} />
+                Paste image
+              </button>
             </span>
 
             <span className="detail-prop-label">Created</span>

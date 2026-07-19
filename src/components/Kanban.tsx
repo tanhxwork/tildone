@@ -24,7 +24,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { paneHasFocus, usePaneStore } from "../paneStore";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
-import type { Project, Status, Tag, Task, TaskLink } from "../types";
+import { useLightbox } from "../lightbox";
+import type { Project, Status, Tag, Task, TaskImage, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -36,6 +37,7 @@ import {
   verifyStepLabel,
 } from "../types";
 import { timeAgo, todayStr } from "../utils/dates";
+import { imageSrc, useImageBase } from "../utils/images";
 import { cardPresence } from "../utils/presence";
 import { useArtifactStore } from "../artifactStore";
 import { latestLinkPerKind } from "../utils/links";
@@ -571,12 +573,14 @@ function CardContent({
   const subtasks = useStore((s) => s.subtasks);
   const tags = useStore((s) => s.tags);
   const links = useStore((s) => s.links);
+  const images = useStore((s) => s.images);
   const projects = useStore((s) => s.projects);
   const selection = useStore((s) => s.selection);
   const commentCount = useStore((s) => s.commentCounts[task.id] ?? 0);
   const paneTaskId = usePaneStore((s) => s.target?.taskId ?? null);
   const mine = subtasks.filter((s) => s.task_id === task.id);
   const cardLinks = links[task.id] ?? [];
+  const cardImages = images[task.id] ?? [];
   const state = reservedState(task, tags);
   // Verify steps ("verify: …" subtasks) leave the build checklist only while the
   // task is actually in review — the tag coming off mid-flight folds them back
@@ -666,6 +670,7 @@ function CardContent({
       <span className="card-title">
         <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
       </span>
+      {cardImages.length > 0 && <CardThumbs images={cardImages} />}
       {(build.length > 0 || verifySteps.length > 0) && (
         <span
           className="card-progress"
@@ -744,6 +749,55 @@ function CardContent({
         <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />
       )}
     </div>
+  );
+}
+
+/**
+ * The card's screenshot strip: up to three small thumbnails under the title,
+ * "+N" past that — never a Notion-style cover, so image cards keep the same
+ * visual weight as text cards. A thumb opens the lightbox directly, without
+ * opening the task (mirrors card-link's stopPropagation pair).
+ */
+function CardThumbs({ images }: { images: TaskImage[] }) {
+  const open = useLightbox((s) => s.open);
+  useImageBase();
+  const shown = images.slice(0, 3);
+  const extra = images.length - shown.length;
+  return (
+    <span className="card-thumbs">
+      {shown.map((img, i) => {
+        const src = imageSrc(img);
+        return (
+          <button
+            key={img.id}
+            type="button"
+            className="card-thumb"
+            title={img.filename}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              open(images, i);
+            }}
+          >
+            {src && <img src={src} alt={img.filename} loading="lazy" />}
+          </button>
+        );
+      })}
+      {extra > 0 && (
+        <button
+          type="button"
+          className="card-thumb card-thumb-more"
+          title={`${images.length} images`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            open(images, shown.length);
+          }}
+        >
+          +{extra}
+        </button>
+      )}
+    </span>
   );
 }
 

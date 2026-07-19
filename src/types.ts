@@ -122,6 +122,20 @@ export interface TaskLink {
  *  ready (behind 0) and behind (behind > 0). */
 export type PrState = "merged" | "open" | "draft";
 
+/** A screenshot pasted onto a task. The bytes live as a file under
+ *  <app-data>/attachments/<task_id>/; `path` is relative to app-data so rows
+ *  survive the app-data dir moving (dev vs release identifier). */
+export interface TaskImage {
+  id: number;
+  task_id: number;
+  path: string;
+  filename: string;
+  bytes: number;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+}
+
 export interface Comment {
   id: number;
   task_id: number;

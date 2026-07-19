@@ -21,6 +21,18 @@
     "fs:default",
     "fs:allow-write-text-file",
     "fs:allow-read-text-file",
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$APPDATA/attachments" }, { "path": "$APPDATA/attachments/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "$APPDATA/attachments/**" }]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [{ "path": "$APPDATA/attachments/**" }]
+    },
     "notification:default",
     "deep-link:default"
   ]

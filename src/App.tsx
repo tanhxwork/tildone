@@ -7,6 +7,7 @@ import { AISettings } from "./components/AISettings";
 import { TildoneMark } from "./components/Brand";
 import { CalendarView } from "./components/CalendarView";
 import { CommandPalette } from "./components/CommandPalette";
+import { Lightbox } from "./components/Lightbox";
 import { CompletedView } from "./components/CompletedView";
 import { FirstRun, firstRunDismissed } from "./components/FirstRun";
 import { Header } from "./components/Header";
@@ -279,6 +280,7 @@ function App() {
       {settingsOpen && <SettingsDialog />}
       {tagManagerOpen && <TagManager />}
       <CommandPalette />
+      <Lightbox />
       <QuitWarning />
       {showFirstRun && <FirstRun onDone={() => setFirstRunDone(true)} />}
     </div>
