@@ -163,8 +163,8 @@ cursor. Loop on it.
 
 | Tool | Arguments | Notes |
 |---|---|---|
-| `create_task` | `title` (required); optional `project`, `notes`, `due_date`, `priority`, `tags` (array), `status` | Omit `project` → Inbox. |
-| `update_task` | `id` (required); any of `title`, `notes`, `status`, `priority`, `due_date`, `project`, `tags` | Only provided fields change, but a provided field **replaces** wholesale — `notes` and `tags` included. Read before you write, or use `append_note`. |
+| `create_task` | `title` (required); optional `project`, `notes`, `due_date`, `priority`, `tags` (array), `status`; claim fields `session_id`, `cwd`, `branch` (see below) | Omit `project` → Inbox. |
+| `update_task` | `id` (required); any of `title`, `notes`, `status`, `priority`, `due_date`, `project`, `tags`; claim fields `session_id`, `cwd`, `branch` (see below) | Only provided fields change, but a provided field **replaces** wholesale — `notes` and `tags` included. Read before you write, or use `append_note`. |
 | `append_note` | `id`, `text` | Appends prose to the **end** of `notes` (newline-separated). It cannot destroy existing notes and costs the same however long they are, but it is **end-only** — it cannot insert into a section. For a running log use `log_progress`. Returns a `notes_chars` size hint. |
 | `log_progress` | `task_id`, `text` | One narrative line — what you just did, found or decided. Lands in the task's **Activity** feed, timestamped. **Prefer this for progress logs**, not a `## Log` section in `notes`. |
 | `complete_task` | `id` | Shorthand for `status: "done"`; sets the completion timestamp. |
@@ -178,6 +178,16 @@ cursor. Loop on it.
 | `create_project` | `name` (required), `color` (hex, optional) | Fails if the name already exists. |
 | `update_project` | `id` (required), `name`, `color` | |
 | `delete_project` | `id` | **Destructive and irreversible** — permanently deletes the project *and all its tasks*. Confirm with the user first. |
+
+**Claiming a task** (live agent sessions): send `session_id` — the
+`CLAUDE_CODE_SESSION_ID` env var, **a UUID** — together with `status: "doing"`,
+plus `cwd` and `branch` once you have a worktree. That binding is what renders
+the live branch/worktree chips, presence, and the jump-to-terminal button.
+Heartbeats key on that UUID, so a claim under any other id can never join them —
+sending a `session_01…`/`cse_01…` id from a Claude-Session URL is **rejected as
+an error and the whole write is not applied**; read the real id with
+`echo $CLAUDE_CODE_SESSION_ID` and re-send. Omitting `session_id` entirely is
+fine (not every write is a claim).
 
 Writes return a **receipt, not the row**: `{id, title, status}` (plus
 `completed_at` once done). They deliberately do not echo `notes`/`tags`/etc. back

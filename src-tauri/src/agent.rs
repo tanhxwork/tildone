@@ -1452,6 +1452,14 @@ impl TildoneAgent {
         agent: Option<&str>,
         claim: ClaimInfo,
     ) -> Result<CallToolResult, ErrorData> {
+        // TIL-107: an unmatchable session id fails the write before anything is
+        // touched — see ClaimInfo::unmatchable_error. Only a `doing` write carries
+        // a claim, so only a `doing` write is guarded.
+        if status.as_deref() == Some("doing") {
+            if let Some(msg) = claim.unmatchable_error() {
+                return Ok(err(msg));
+            }
+        }
         let conn = self.db.lock().unwrap();
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
@@ -2020,7 +2028,7 @@ struct CreateTaskParams {
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
     #[schemars(
-        description = "Your CLAUDE_CODE_SESSION_ID env var; send with status \"doing\" to claim the task. Omit if not a live session."
+        description = "Your CLAUDE_CODE_SESSION_ID env var — a UUID; never a session_01…/cse_01… id from a Claude-Session URL. Send with status \"doing\" to claim the task. Omit if not a live session."
     )]
     session_id: Option<String>,
     #[schemars(description = "Checkout/worktree path, shown as a chip; only with session_id")]
@@ -2045,7 +2053,7 @@ struct UpdateTaskParams {
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
     #[schemars(
-        description = "Your CLAUDE_CODE_SESSION_ID env var; send with status \"doing\" to claim the task. Omit if not a live session."
+        description = "Your CLAUDE_CODE_SESSION_ID env var — a UUID; never a session_01…/cse_01… id from a Claude-Session URL. Send with status \"doing\" to claim the task. Omit if not a live session."
     )]
     session_id: Option<String>,
     #[schemars(description = "Checkout/worktree path, shown as a chip; only with session_id")]
@@ -2074,6 +2082,43 @@ impl ClaimInfo {
     fn session(&self) -> Option<&str> {
         self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
+
+    /// The loud half of TIL-107: `Some(error)` when this write carries a claim
+    /// whose session id can never match a heartbeat.
+    ///
+    /// Heartbeats key on the CLAUDE_CODE_SESSION_ID UUID (the hook forwards the
+    /// payload's top-level `session_id`, and that is always a UUID), and hosted
+    /// resume feeds the claimed id to `claude --resume` — so a claim under any
+    /// other shape is broken twice, and silently: the card sits `quiet` forever
+    /// and the jump-to-terminal button never renders (TIL-106). The observed
+    /// mistake is an agent sending the `session_01…`/`cse_01…` id from its
+    /// Claude-Session URL. A live agent can fix that in one retry, which is why
+    /// this fails the whole write instead of recording the rot. A blank or absent
+    /// id is NOT an error — that is a write with no claim at all (a human drag,
+    /// a non-live session) and stays silently claim-less.
+    fn unmatchable_error(&self) -> Option<String> {
+        let session = self.session()?;
+        (!is_heartbeat_uuid(session)).then(|| {
+            format!(
+                "session_id \"{session}\" can never match a heartbeat, so this claim would rot \
+                 silently (card stuck at quiet, no jump-to-terminal). Claims must carry the \
+                 CLAUDE_CODE_SESSION_ID env var — a UUID. Run `echo $CLAUDE_CODE_SESSION_ID` and \
+                 re-send this write with that id; never the session_01…/cse_01… id from a \
+                 Claude-Session URL. Nothing was changed."
+            )
+        })
+    }
+}
+
+/// True when `s` is a canonical UUID — the only session-id shape the heartbeat
+/// hook ever reports, hence the only shape a claim may key on.
+fn is_heartbeat_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        })
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -2438,6 +2483,15 @@ impl TildoneAgent {
             Some(d) if valid_date(d) => Some(d.to_string()),
             Some(_) => return Ok(err("due_date must be YYYY-MM-DD.")),
         };
+        // A task created straight into Doing is an agent starting work in one call;
+        // the claim rides it exactly as it rides an update — including the TIL-107
+        // guard, before the task row exists.
+        let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
+        if status == "doing" {
+            if let Some(msg) = claim.unmatchable_error() {
+                return Ok(err(msg));
+            }
+        }
 
         let conn = self.db.lock().unwrap();
         let project_id = match &p.project {
@@ -2476,14 +2530,7 @@ impl TildoneAgent {
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
-        // A task created straight into Doing is an agent starting work in one call;
-        // the claim rides it exactly as it rides an update.
         if status == "doing" {
-            let claim = ClaimInfo {
-                session_id: p.session_id,
-                cwd: p.cwd,
-                branch: p.branch,
-            };
             if let Some(session) = claim.session() {
                 Self::record_claim(
                     &conn,
@@ -4686,11 +4733,11 @@ mod tests {
     fn a_claimed_session_reads_its_card_with_live_state() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "wire the endpoint");
-        work_on(&agent, id, "doing", Some("sess-1"), Some("/wt"), Some("wt-1"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some("/wt"), Some("wt-1"));
         let out = lookup(
             &db,
-            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
-            "sess-1",
+            &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
             ALIVE,
         )
         .expect("a claimed session must resolve");
@@ -4708,8 +4755,8 @@ mod tests {
         // status line must still name the card, just without a live state.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let out = lookup(&db, &[], "sess-1", ALIVE).expect("claim without beat resolves");
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let out = lookup(&db, &[], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ALIVE).expect("claim without beat resolves");
         assert_eq!(out["state"], "quiet");
     }
 
@@ -4717,11 +4764,11 @@ mod tests {
     fn a_dead_pid_reads_quiet_in_the_status_line_too() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let out = lookup(
             &db,
-            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
-            "sess-1",
+            &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", a_beat("working", std::time::Duration::from_secs(1), Some(123)))],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
             DEAD,
         )
         .unwrap();
@@ -4732,8 +4779,8 @@ mod tests {
     fn an_unknown_session_resolves_to_nothing() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        assert!(lookup(&db, &[], "sess-other", ALIVE).is_none());
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert!(lookup(&db, &[], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab0", ALIVE).is_none());
     }
 
     #[test]
@@ -4742,9 +4789,9 @@ mod tests {
         // status line would just be stale noise.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        work_on(&agent, id, "done", Some("sess-1"), None, None);
-        assert!(lookup(&db, &[], "sess-1", ALIVE).is_none());
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, id, "done", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert!(lookup(&db, &[], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ALIVE).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -4781,8 +4828,8 @@ mod tests {
     fn a_branch_event_attaches_one_chip_and_only_one() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let ev = git_ev("sess-1", "branch", "https://github.com/o/r/tree/wt-1", Some("wt-1"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let ev = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "branch", "https://github.com/o/r/tree/wt-1", Some("wt-1"));
         assert!(apply_git_event(&db.lock().unwrap(), &ev));
         // The same push again is a no-op, not a second chip.
         assert!(!apply_git_event(&db.lock().unwrap(), &ev));
@@ -4807,10 +4854,10 @@ mod tests {
     fn a_merge_event_flips_the_latest_pr_chip() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let pr = git_ev("sess-1", "pr", "https://github.com/o/r/pull/7", Some("PR #7"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let pr = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "pr", "https://github.com/o/r/pull/7", Some("PR #7"));
         assert!(apply_git_event(&db.lock().unwrap(), &pr));
-        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/7", None);
+        let merged = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "pr_merged", "https://github.com/o/r/pull/7", None);
         assert!(apply_git_event(&db.lock().unwrap(), &merged));
         let links = link_rows(&db, id);
         assert_eq!(links.len(), 1, "merge flips the existing chip, never adds one");
@@ -4823,17 +4870,17 @@ mod tests {
         // The merge event names a URL; that chip flips, not the latest one.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         for n in [5, 7] {
             let ev = git_ev(
-                "sess-1",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
                 "pr",
                 &format!("https://github.com/o/r/pull/{n}"),
                 Some(&format!("PR #{n}")),
             );
             assert!(apply_git_event(&db.lock().unwrap(), &ev));
         }
-        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/5", None);
+        let merged = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "pr_merged", "https://github.com/o/r/pull/5", None);
         assert!(apply_git_event(&db.lock().unwrap(), &merged));
         let links = link_rows(&db, id);
         assert_eq!(links.len(), 2);
@@ -4846,8 +4893,8 @@ mod tests {
     fn a_merge_event_with_no_pr_chip_changes_nothing() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let merged = git_ev("sess-1", "pr_merged", "https://github.com/o/r/pull/7", None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let merged = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "pr_merged", "https://github.com/o/r/pull/7", None);
         assert!(!apply_git_event(&db.lock().unwrap(), &merged));
         assert!(link_rows(&db, id).is_empty());
     }
@@ -4856,8 +4903,8 @@ mod tests {
     fn an_unclaimed_session_attaches_nothing() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let ev = git_ev("sess-other", "branch", "https://github.com/o/r/tree/b", None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let ev = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab0", "branch", "https://github.com/o/r/tree/b", None);
         assert!(!apply_git_event(&db.lock().unwrap(), &ev));
         assert!(link_rows(&db, id).is_empty());
     }
@@ -4868,9 +4915,9 @@ mod tests {
         // links from a session that merely never re-claimed.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        work_on(&agent, id, "done", Some("sess-1"), None, None);
-        let ev = git_ev("sess-1", "branch", "https://github.com/o/r/tree/b", None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, id, "done", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let ev = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "branch", "https://github.com/o/r/tree/b", None);
         assert!(!apply_git_event(&db.lock().unwrap(), &ev));
         assert!(link_rows(&db, id).is_empty());
     }
@@ -4879,8 +4926,8 @@ mod tests {
     fn a_missing_label_falls_back_to_the_url_tail() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        let ev = git_ev("sess-1", "pr", "https://github.com/o/r/pull/12", None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let ev = git_ev("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "pr", "https://github.com/o/r/pull/12", None);
         assert!(apply_git_event(&db.lock().unwrap(), &ev));
         let links = link_rows(&db, id);
         assert_eq!(links[0].1, link_label_from_url("https://github.com/o/r/pull/12"));
@@ -5084,10 +5131,10 @@ mod tests {
     fn an_unattended_block_banners_once_naming_the_card() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "ship the thing");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let ep = std::time::Instant::now();
-        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
-        fire_if_still_blocked(&state, "sess-1", ep);
+        let (state, sink) = sidecar_for(&db, &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ep);
         let fired = sink.lock().unwrap();
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].0, "Waiting on you");
@@ -5101,13 +5148,13 @@ mod tests {
         // time the watch wakes. Silence is the whole feature.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let ep = std::time::Instant::now();
         let (state, sink) = sidecar_for(
             &db,
-            &[("sess-1", a_beat("working", std::time::Duration::from_secs(1), None))],
+            &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", a_beat("working", std::time::Duration::from_secs(1), None))],
         );
-        fire_if_still_blocked(&state, "sess-1", ep);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ep);
         assert!(sink.lock().unwrap().is_empty());
     }
 
@@ -5118,13 +5165,13 @@ mod tests {
         // could double-banner from a stale thread.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let old_ep = std::time::Instant::now() - std::time::Duration::from_secs(60);
         let new_ep = std::time::Instant::now();
-        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(new_ep))]);
-        fire_if_still_blocked(&state, "sess-1", old_ep);
+        let (state, sink) = sidecar_for(&db, &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", blocked_beat(new_ep))]);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", old_ep);
         assert!(sink.lock().unwrap().is_empty(), "stale watch must stay silent");
-        fire_if_still_blocked(&state, "sess-1", new_ep);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", new_ep);
         assert_eq!(sink.lock().unwrap().len(), 1, "the live episode still banners");
     }
 
@@ -5133,8 +5180,8 @@ mod tests {
         let (agent, db) = test_agent_with_db();
         let _ = &agent; // schema via the agent; no task claimed
         let ep = std::time::Instant::now();
-        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
-        fire_if_still_blocked(&state, "sess-1", ep);
+        let (state, sink) = sidecar_for(&db, &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ep);
         assert!(sink.lock().unwrap().is_empty());
     }
 
@@ -5142,11 +5189,11 @@ mod tests {
     fn a_block_on_a_finished_task_stays_silent() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        work_on(&agent, id, "done", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, id, "done", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let ep = std::time::Instant::now();
-        let (state, sink) = sidecar_for(&db, &[("sess-1", blocked_beat(ep))]);
-        fire_if_still_blocked(&state, "sess-1", ep);
+        let (state, sink) = sidecar_for(&db, &[("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", blocked_beat(ep))]);
+        fire_if_still_blocked(&state, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", ep);
         assert!(sink.lock().unwrap().is_empty());
     }
 
@@ -5310,11 +5357,11 @@ mod tests {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
         agent.beats.lock().unwrap().insert(
-            "sess-1".into(),
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1".into(),
             a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
         );
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        assert_eq!(claim_pid(&db, "sess-1"), Some(4242));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(4242));
     }
 
     #[test]
@@ -5324,21 +5371,21 @@ mod tests {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
         agent.beats.lock().unwrap().insert(
-            "sess-1".into(),
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1".into(),
             a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
         );
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         agent.beats.lock().unwrap().clear();
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        assert_eq!(claim_pid(&db, "sess-1"), Some(4242));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(4242));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_first_beat_persists_its_pid_and_later_beats_stay_in_memory() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        assert_eq!(claim_pid(&db, "sess-1"), None, "no beat yet, nothing to persist");
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, "no beat yet, nothing to persist");
 
         let (state, _sink) = sidecar_for(&db, &[]);
         let beat = |state: SidecarState, s: &'static str, pid: Option<u32>| async move {
@@ -5346,7 +5393,7 @@ mod tests {
                 axum::extract::State(state),
                 axum::http::HeaderMap::new(),
                 Some(axum::Json(HeartbeatBody {
-                    session_id: "sess-1".into(),
+                    session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1".into(),
                     state: s.into(),
                     pid,
                     agent_id: None,
@@ -5357,24 +5404,24 @@ mod tests {
 
         // The session's first beat of this app run is the one that writes.
         beat(state.clone(), "working", Some(777)).await;
-        assert_eq!(claim_pid(&db, "sess-1"), Some(777));
+        assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(777));
 
         // Steady state must touch memory only: plant a sentinel on the row — a
         // second same-pid beat that wrote anyway would overwrite it.
         db.lock()
             .unwrap()
-            .execute("UPDATE agent_claims SET last_pid = 1 WHERE session_id = 'sess-1'", [])
+            .execute("UPDATE agent_claims SET last_pid = 1 WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'", [])
             .unwrap();
         beat(state.clone(), "idle", Some(777)).await;
         assert_eq!(
-            claim_pid(&db, "sess-1"),
+            claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"),
             Some(1),
             "a repeat pid is not news and must not write"
         );
 
         // A pid that genuinely changed is news again.
         beat(state, "working", Some(778)).await;
-        assert_eq!(claim_pid(&db, "sess-1"), Some(778));
+        assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(778));
     }
 
     #[test]
@@ -5384,16 +5431,16 @@ mod tests {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "t");
         agent.beats.lock().unwrap().insert(
-            "sess-1".into(),
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1".into(),
             a_beat("working", std::time::Duration::from_secs(1), Some(4242)),
         );
-        work_on(&agent, id, "doing", Some("sess-1"), Some("/tmp/wt"), None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some("/tmp/wt"), None);
         let (cwd, pid) = db
             .lock()
             .unwrap()
             .query_row(
                 "SELECT cwd, last_pid FROM agent_claims WHERE session_id = ?1",
-                ["sess-1"],
+                ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"],
                 |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<u32>>(1)?)),
             )
             .unwrap();
@@ -5403,7 +5450,7 @@ mod tests {
 
     #[test]
     fn an_unclaimed_sessions_beat_joins_no_card() {
-        // The shared-cwd bug, at the resolution layer: sess-2 beats hard but claimed
+        // The shared-cwd bug, at the resolution layer: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2 beats hard but claimed
         // nothing, so it lights up nothing. Keyed on cwd it would have lit up s1's.
         let out = resolve_one(
             &[a_claim("s1", 7)],
@@ -5428,7 +5475,7 @@ mod tests {
     fn the_latest_agent_log_line_rides_the_presence_read() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Rebase it");
-        work_on(&agent, id, "doing", Some("sess-1"), None, Some("wt-1"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, Some("wt-1"));
         {
             let conn = db.lock().unwrap();
             TildoneAgent::record_activity(&conn, id, "rebasing onto main, 2 conflicts", Some("claude"));
@@ -5443,12 +5490,12 @@ mod tests {
     fn a_doing_write_with_a_session_id_claims_the_task() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Ship item 7");
-        let (is_err, _) = work_on(&agent, id, "doing", Some("sess-1"), Some("/w/foo"), Some("worktree-foo"));
+        let (is_err, _) = work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some("/w/foo"), Some("worktree-foo"));
         assert!(!is_err);
         let conn = db.lock().unwrap();
         let (task_id, branch, agent_name): (i64, String, String) = conn
             .query_row(
-                "SELECT task_id, branch, agent_name FROM agent_claims WHERE session_id = 'sess-1'",
+                "SELECT task_id, branch, agent_name FROM agent_claims WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -5476,18 +5523,100 @@ mod tests {
         assert_eq!(claim_count(&db), 0, "a blank session id must not claim");
     }
 
+    // ---- TIL-107: unmatchable session ids are rejected at claim time ----
+    //
+    // Heartbeats key on the CLAUDE_CODE_SESSION_ID UUID, so a claim under any other
+    // id — a `session_01…`/`cse_01…` Claude-Session URL id being the observed case —
+    // never joins them: the card sits quiet forever and the jump button never
+    // renders. Unlike a blank id (a human drag, legitimately claim-less), a shaped
+    // wrong id is a live agent making a mistake it can fix in seconds, so the whole
+    // write fails loudly instead of the claim rotting silently.
+
+    #[test]
+    fn heartbeat_uuid_shapes() {
+        assert!(is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ac6"));
+        assert!(is_heartbeat_uuid("64A00C19-A772-4FF7-8C75-7FE0C78B7AC6"), "case-insensitive");
+        assert!(!is_heartbeat_uuid("session_01AKPaNuSBMkf9nGJMryuwNh"));
+        assert!(!is_heartbeat_uuid("cse_01XYZ"));
+        assert!(!is_heartbeat_uuid("64a00c19a7724ff78c757fe0c78b7ac6"), "no dashes");
+        assert!(!is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ag6"), "g is not hex");
+        assert!(!is_heartbeat_uuid("64a00c19-a772-4ff7-8c75-7fe0c78b7ac"), "too short");
+    }
+
+    #[test]
+    fn a_bridge_id_claim_is_rejected_and_the_write_not_applied() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Wrong id");
+        let (is_err, msg) =
+            work_on(&agent, id, "doing", Some("session_01AKPaNuSBMkf9nGJMryuwNh"), None, None);
+        assert!(is_err, "an unmatchable session id must fail the write: {msg}");
+        assert!(
+            msg.as_str().unwrap().contains("CLAUDE_CODE_SESSION_ID"),
+            "the error must name the fix: {msg}"
+        );
+        assert_eq!(claim_count(&db), 0, "no claim row for an unmatchable id");
+        let status: String = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT status FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "todo", "the status move must not have been applied");
+    }
+
+    #[test]
+    fn creating_straight_to_doing_with_a_bridge_id_is_rejected() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, msg) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "Born claimed wrong".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        session_id: Some("cse_01XYZ".into()),
+                        cwd: None,
+                        branch: None,
+                        status: Some("doing".into()),
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "create straight to doing with an unmatchable id must fail: {msg}");
+        let tasks: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM tasks WHERE title = 'Born claimed wrong'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tasks, 0, "the task must not have been created");
+    }
+
+    #[test]
+    fn a_uuid_session_id_claims_normally() {
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "Right id");
+        let (is_err, _) = work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        assert!(!is_err);
+        assert_eq!(claim_count(&db), 1, "a UUID session id claims normally");
+    }
+
     #[test]
     fn a_session_claiming_a_second_task_rebinds_rather_than_duplicating() {
         let (agent, db) = test_agent_with_db();
         let first = a_task(&agent, "First");
         let second = a_task(&agent, "Second");
-        work_on(&agent, first, "doing", Some("sess-1"), None, None);
-        work_on(&agent, second, "doing", Some("sess-1"), None, None);
+        work_on(&agent, first, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, second, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         assert_eq!(claim_count(&db), 1, "a session claims at most one task");
         let task_id: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(task_id, second, "the newer claim wins");
     }
@@ -5499,13 +5628,13 @@ mod tests {
         // how a card recovers after the app restarts.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Long job");
-        work_on(&agent, id, "doing", Some("sess-1"), None, Some("old-branch"));
-        work_on(&agent, id, "doing", Some("sess-1"), None, Some("new-branch"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, Some("old-branch"));
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, Some("new-branch"));
         assert_eq!(claim_count(&db), 1);
         let branch: String = db
             .lock()
             .unwrap()
-            .query_row("SELECT branch FROM agent_claims WHERE session_id = 'sess-1'", [], |r| r.get(0))
+            .query_row("SELECT branch FROM agent_claims WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(branch, "new-branch");
     }
@@ -5515,8 +5644,8 @@ mod tests {
         // Pairing is legitimate; presence resolves to the liveliest of them.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Paired work");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"), None, None);
         assert_eq!(claim_count(&db), 2);
     }
 
@@ -5524,8 +5653,8 @@ mod tests {
     fn completing_a_task_releases_its_claims() {
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Ship item 7");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
-        work_on(&agent, id, "doing", Some("sess-2"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"), None, None);
         work_on(&agent, id, "done", None, None, None);
         assert_eq!(claim_count(&db), 0, "done releases every claim on the task");
     }
@@ -5536,7 +5665,7 @@ mod tests {
         // for free rather than needing its own teardown.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Ship item 7");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, Some("claude")).unwrap();
         assert_eq!(claim_count(&db), 0);
     }
@@ -5652,20 +5781,20 @@ mod tests {
         // heartbeat would light up the other's card: a false "working", which is the
         // exact lie this feature exists to remove.
         let (agent, db) = test_agent_with_db();
-        let id = a_task(&agent, "Claimed by sess-1");
+        let id = a_task(&agent, "Claimed by aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1");
         let shared = "/Users/x/projects/tildone";
-        work_on(&agent, id, "doing", Some("sess-1"), Some(shared), None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(shared), None);
 
         let conn = db.lock().unwrap();
-        // sess-2 lives in the very same cwd and claimed nothing.
+        // aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2 lives in the very same cwd and claimed nothing.
         let owned: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM agent_claims WHERE session_id = 'sess-2'",
+                "SELECT COUNT(*) FROM agent_claims WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(owned, 0, "sess-2 claimed nothing, so it owns no card");
+        assert_eq!(owned, 0, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2 claimed nothing, so it owns no card");
         // And the cwd alone resolves to more than one session, which is precisely why
         // it cannot be the key.
         let by_cwd: i64 = conn
@@ -5687,7 +5816,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
-                        session_id: Some("sess-9".into()),
+                        session_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9".into()),
                         cwd: None,
                         branch: Some("wt-9".into()),
                         status: Some("doing".into()),
@@ -5701,7 +5830,7 @@ mod tests {
         let task_id: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'sess-9'", [], |r| r.get(0))
+            .query_row("SELECT task_id FROM agent_claims WHERE session_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(task_id, id);
     }
@@ -5719,7 +5848,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
-                        session_id: Some("sess-9".into()),
+                        session_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9".into()),
                         cwd: None,
                         branch: None,
                         status: None,
@@ -5737,7 +5866,7 @@ mod tests {
         // ON DELETE CASCADE, with foreign_keys ON — a claim must not outlive its task.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Doomed");
-        work_on(&agent, id, "doing", Some("sess-1"), None, None);
+        work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         assert_eq!(claim_count(&db), 1);
         db.lock().unwrap().execute("DELETE FROM tasks WHERE id = ?1", [id]).unwrap();
         assert_eq!(claim_count(&db), 0);
