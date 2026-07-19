@@ -386,6 +386,18 @@ fn bind_targets(home: &str) -> Vec<BindTarget> {
         .collect()
 }
 
+/// Strict UUID shape: hex digits with dashes at 8/13/18/23. Every bound
+/// session id passes through this before it can ever become resume argv
+/// (`claude --resume <id>` / `codex resume <id>`) — a filename is untrusted
+/// input, and a validated UUID can't smuggle a flag (codex verify
+/// hardening, 2026-07-19).
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.chars().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
+        })
+}
+
 /// The UUID at the end of a codex rollout filename
 /// (`rollout-2026-06-12T16-23-07-<uuid>.jsonl`), if it looks like one.
 fn rollout_uuid(file_name: &str) -> Option<String> {
@@ -394,11 +406,7 @@ fn rollout_uuid(file_name: &str) -> Option<String> {
         return None;
     }
     let uuid = &stem[stem.len() - 36..];
-    let dashes_at = [8, 13, 18, 23];
-    let plausible = uuid.chars().enumerate().all(|(i, c)| {
-        if dashes_at.contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
-    });
-    plausible.then(|| uuid.to_string())
+    is_uuid(uuid).then(|| uuid.to_string())
 }
 
 fn mtime_iso(path: &Path) -> Option<String> {
@@ -430,7 +438,9 @@ fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> 
                     continue;
                 }
                 let Some(stem) = name.strip_suffix(".jsonl") else { continue };
-                if stem.len() != 36 {
+                // Same rigor as the codex branch: only a real UUID may bind
+                // (and later ride resume argv).
+                if !is_uuid(stem) {
                     continue;
                 }
                 (true, stem.to_string())
@@ -659,6 +669,17 @@ mod tests {
     fn turn_count_sees_only_assistant_records() {
         assert_eq!(count_turns(FIXTURE.as_bytes()), 1);
         assert_eq!(count_turns(b""), 0);
+    }
+
+    #[test]
+    fn bind_ids_must_be_real_uuids() {
+        // The bound id later rides resume argv — only strict UUIDs pass
+        // (codex verify hardening, 2026-07-19).
+        assert!(is_uuid("019ebaed-7e23-7e53-8fd5-08fafab4e104"));
+        assert!(!is_uuid("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"));
+        assert!(!is_uuid("------------------------------------"));
+        assert!(!is_uuid("--dangerously-skip-permissions-0000"));
+        assert!(!is_uuid("019ebaed7e237e538fd508fafab4e104"));
     }
 
     #[test]

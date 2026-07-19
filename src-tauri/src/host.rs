@@ -489,6 +489,46 @@ fn screen_tail(contents: &str) -> String {
     rows[start..].join("\n").to_lowercase()
 }
 
+/// One ticker visit to one session: decide the waiting flag and whether the
+/// user notification fires now. Pure over `Shared` so the lifecycle —
+/// including the deferred-notify path — is unit-testable.
+///
+/// The deferred path exists because the flip can happen while a pane is
+/// attached (the user is watching; notifying would be noise). If that pane
+/// later detaches with the session still waiting, the notification must
+/// still fire — computing notify only at the flip starves it forever
+/// (codex verify finding, 2026-07-19). Returns (chip_changed, notify).
+fn tick_session(shared: &mut Shared, adapter_id: &str) -> (bool, bool) {
+    if shared.exited {
+        return (false, false);
+    }
+    if !shared
+        .last_byte
+        .is_some_and(|last| last.elapsed() >= QUIESCE)
+    {
+        return (false, false);
+    }
+    if shared.waiting {
+        // Already waiting: fire the deferred notification the first tick the
+        // session is both unattended and un-notified.
+        if shared.attached.is_none() && !shared.notified {
+            shared.notified = true;
+            return (false, true);
+        }
+        return (false, false);
+    }
+    let tail = screen_tail(&shared.screen.screen().contents());
+    if screen_waiting(adapter_id, &tail) != Some(true) {
+        return (false, false);
+    }
+    shared.waiting = true;
+    let notify = shared.attached.is_none() && !shared.notified;
+    if notify {
+        shared.notified = true;
+    }
+    (true, notify)
+}
+
 fn app_handle_slot() -> &'static OnceLock<tauri::AppHandle> {
     static SLOT: OnceLock<tauri::AppHandle> = OnceLock::new();
     &SLOT
@@ -513,27 +553,13 @@ fn ensure_ticker(app: &tauri::AppHandle) {
                 .map(|s| (s.adapter_id, s.task_ref.clone(), Arc::clone(&s.shared)))
                 .collect();
             for (adapter_id, task_ref, shared) in snapshot {
-                let notify = {
+                let (flipped, notify) = {
                     let mut shared = shared.lock().unwrap();
-                    if shared.exited || shared.waiting {
-                        continue;
-                    }
-                    let Some(last) = shared.last_byte else { continue };
-                    if last.elapsed() < QUIESCE {
-                        continue;
-                    }
-                    let tail = screen_tail(&shared.screen.screen().contents());
-                    if screen_waiting(adapter_id, &tail) != Some(true) {
-                        continue;
-                    }
-                    shared.waiting = true;
-                    let notify = shared.attached.is_none() && !shared.notified;
-                    if notify {
-                        shared.notified = true;
-                    }
-                    notify
+                    tick_session(&mut shared, adapter_id)
                 };
-                let _ = app.emit("host-changed", ());
+                if flipped {
+                    let _ = app.emit("host-changed", ());
+                }
                 if notify {
                     let adapter_name =
                         adapter(adapter_id).map(|a| a.name).unwrap_or(adapter_id);
@@ -995,6 +1021,53 @@ mod tests {
         "• starting mcp servers (1/4): codex_apps, node_repl, tildone (0s • esc to interrupt)\n› find and fix a bug in @filename";
     const CODEX_IDLE: &str =
         "› find and fix a bug in @filename\ngpt-5.6-sol high · ~/.claude/jobs/scratch";
+
+    /// A session already quiesced on the claude idle screen, with the pane
+    /// state under test.
+    fn idle_shared(attached: Option<u64>) -> Shared {
+        let mut screen = vt100::Parser::new(24, 80, 0);
+        screen.process(CLAUDE_IDLE.as_bytes());
+        Shared {
+            buf: Vec::new(),
+            attached,
+            exited: false,
+            screen,
+            last_byte: Some(Instant::now() - QUIESCE),
+            waiting: false,
+            notified: false,
+        }
+    }
+
+    #[test]
+    fn unattended_flip_notifies_exactly_once() {
+        let mut s = idle_shared(None);
+        assert_eq!(tick_session(&mut s, "claude"), (true, true));
+        assert_eq!(tick_session(&mut s, "claude"), (false, false));
+    }
+
+    #[test]
+    fn deferred_notification_fires_when_the_pane_later_detaches() {
+        // Flip while a pane is attached: chip changes, no notification —
+        // the user is watching.
+        let mut s = idle_shared(Some(7));
+        assert_eq!(tick_session(&mut s, "claude"), (true, false));
+        assert_eq!(tick_session(&mut s, "claude"), (false, false));
+        // Pane closes with the session still waiting: the notification must
+        // fire now, once — the starvation codex verify caught (2026-07-19).
+        s.attached = None;
+        assert_eq!(tick_session(&mut s, "claude"), (false, true));
+        assert_eq!(tick_session(&mut s, "claude"), (false, false));
+    }
+
+    #[test]
+    fn exited_and_busy_sessions_never_tick() {
+        let mut s = idle_shared(None);
+        s.exited = true;
+        assert_eq!(tick_session(&mut s, "claude"), (false, false));
+        let mut s = idle_shared(None);
+        s.last_byte = Some(Instant::now()); // still streaming
+        assert_eq!(tick_session(&mut s, "claude"), (false, false));
+    }
 
     #[test]
     fn claude_classifier_reads_the_token_counter_not_the_old_hint() {
