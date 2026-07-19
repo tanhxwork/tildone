@@ -29,6 +29,15 @@ interface PtyEvent {
  *  body behind it, so the padding ring can never mismatch the canvas. */
 const TERM_BG = "#16181d";
 
+/** Serializes pane opens across effect instances. Two instances can race —
+ *  StrictMode re-invokes effects synchronously in dev, a fast session switch
+ *  does it for real — and whichever `pty_open` resolved *last* would own the
+ *  Rust slot, evicting the mounted pane (codex verify finding, 2026-07-19).
+ *  Queueing means a disposed instance reaches its turn already disposed and
+ *  never opens at all, and a live successor always opens after its
+ *  predecessor's takeover is settled. */
+let openQueue: Promise<unknown> = Promise.resolve();
+
 export function SessionPane() {
   const target = usePaneStore((s) => s.target);
   const widthFraction = usePaneStore((s) => s.widthFraction);
@@ -64,48 +73,89 @@ export function SessionPane() {
     fit.fit();
     termRef.current = term;
 
+    // The whole async chain below races the effect's own cleanup: StrictMode
+    // re-invokes effects synchronously in dev, and a fast session switch does
+    // the same for real. Every await is therefore followed by a `disposed`
+    // check that undoes exactly what just completed — and every Rust-side
+    // mutation carries `generation`, so a stale instance can no-op but never
+    // touch a successor pane's session (codex verify finding, 2026-07-19).
     let generation: number | null = null;
     let disposed = false;
     const unlistens: Array<() => void> = [];
+    let dataSub: { dispose(): void } | null = null;
+    let observer: ResizeObserver | null = null;
 
-    void (async () => {
+    const run = async () => {
+      if (disposed) return;
       const un1 = await listen<PtyEvent>("pty-data", (e) => {
         if (disposed || e.payload.generation !== generation || !e.payload.data) return;
         term.write(new Uint8Array(e.payload.data));
       });
+      if (disposed) {
+        // Cleanup already ran with an empty `unlistens` — release it here.
+        un1();
+        return;
+      }
+      unlistens.push(un1);
       const un2 = await listen<PtyEvent>("pty-exit", (e) => {
         if (disposed || e.payload.generation !== generation) return;
         term.write("\r\n\x1b[2m[session detached — the session itself keeps running]\x1b[0m\r\n");
       });
-      unlistens.push(un1, un2);
+      if (disposed) {
+        un2();
+        return;
+      }
+      unlistens.push(un2);
+
+      let opened: number;
       try {
-        generation = await invoke<number>("pty_open", {
+        opened = await invoke<number>("pty_open", {
           shortId: target.shortId,
           cols: term.cols,
           rows: term.rows,
         });
       } catch (err) {
-        term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r\n`);
+        if (!disposed) term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r\n`);
+        return;
       }
+      if (disposed) {
+        // This instance died while its open was in flight and may have just
+        // evicted the successor's pane. Generation-guarded close: undoes the
+        // takeover if ours is live, no-ops if the successor already won.
+        void invoke("pty_close", { generation: opened }).catch(() => {});
+        return;
+      }
+      generation = opened;
+
+      // Input and resize wire up only once the pane is genuinely ours.
+      dataSub = term.onData((data) => {
+        void invoke("pty_write", { generation: opened, data }).catch(() => {});
+      });
+      observer = new ResizeObserver(() => {
+        fit.fit();
+        void invoke("pty_resize", {
+          generation: opened,
+          cols: term.cols,
+          rows: term.rows,
+        }).catch(() => {});
+      });
+      if (bodyRef.current) observer.observe(bodyRef.current);
       term.focus();
+    };
+    const turn = openQueue;
+    openQueue = (async () => {
+      await turn.catch(() => {});
+      await run();
     })();
-
-    const dataSub = term.onData((data) => {
-      void invoke("pty_write", { data }).catch(() => {});
-    });
-
-    const observer = new ResizeObserver(() => {
-      fit.fit();
-      void invoke("pty_resize", { cols: term.cols, rows: term.rows }).catch(() => {});
-    });
-    observer.observe(bodyRef.current);
 
     return () => {
       disposed = true;
-      observer.disconnect();
-      dataSub.dispose();
+      observer?.disconnect();
+      dataSub?.dispose();
       unlistens.forEach((un) => un());
-      void invoke("pty_close").catch(() => {});
+      if (generation !== null) {
+        void invoke("pty_close", { generation }).catch(() => {});
+      }
       term.dispose();
       termRef.current = null;
     };

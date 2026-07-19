@@ -48,34 +48,44 @@ struct PtyEvent {
     data: Option<Vec<u8>>,
 }
 
-/// The claude binary, resolved once. A GUI app's PATH is minimal (launchd,
-/// not a login shell), so never assume `claude` resolves: try the known
-/// install locations, then ask a login shell, and cache whatever answered.
+/// The claude binary. A GUI app's PATH is minimal (launchd, not a login
+/// shell), so never assume `claude` resolves: try the known install
+/// locations, then ask a login shell. Only a *successful* answer is cached —
+/// caching a miss would make "install claude, then click again" require an
+/// app restart (codex verify finding, 2026-07-19).
 fn claude_bin() -> Option<String> {
-    static BIN: OnceLock<Option<String>> = OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Ok(home) = std::env::var("HOME") {
-            let local = format!("{home}/.local/bin/claude");
-            if std::path::Path::new(&local).exists() {
-                return Some(local);
-            }
+    static BIN: Mutex<Option<String>> = Mutex::new(None);
+    if let Some(cached) = BIN.lock().unwrap().clone() {
+        return Some(cached);
+    }
+    let found = resolve_claude_bin();
+    if let Some(ref path) = found {
+        *BIN.lock().unwrap() = Some(path.clone());
+    }
+    found
+}
+
+fn resolve_claude_bin() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let local = format!("{home}/.local/bin/claude");
+        if std::path::Path::new(&local).exists() {
+            return Some(local);
         }
-        for candidate in ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"] {
-            if std::path::Path::new(candidate).exists() {
-                return Some(candidate.to_string());
-            }
+    }
+    for candidate in ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"] {
+        if std::path::Path::new(candidate).exists() {
+            return Some(candidate.to_string());
         }
-        let out = std::process::Command::new("/bin/sh")
-            .args(["-lc", "command -v claude"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!path.is_empty()).then_some(path)
-    })
-    .clone()
+    }
+    let out = std::process::Command::new("/bin/sh")
+        .args(["-lc", "command -v claude"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
 }
 
 /// The short id `claude attach` expects for this session, from the registry's
@@ -140,39 +150,44 @@ pub async fn pty_open(
         *n
     };
 
-    let bin = claude_bin().ok_or_else(|| {
-        "claude CLI not found — install it or add it to ~/.local/bin".to_string()
-    })?;
-
-    let pair = native_pty_system()
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| format!("openpty failed: {e}"))?;
-
-    let mut cmd = CommandBuilder::new(bin);
-    cmd.arg("attach");
-    cmd.arg(&short_id);
-    cmd.env("TERM", "xterm-256color");
-    if let Ok(home) = std::env::var("HOME") {
-        cmd.cwd(home);
-    }
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("spawn failed: {e}"))?;
-    drop(pair.slave);
-
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("reader failed: {e}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("writer failed: {e}"))?;
+    // The blocking work — binary lookup (may run a login shell), openpty,
+    // spawn — happens off the async command body, like `attach_target`.
+    let parts = tauri::async_runtime::spawn_blocking(move || {
+        let bin = claude_bin().ok_or_else(|| {
+            "claude CLI not found — install it or add it to ~/.local/bin".to_string()
+        })?;
+        let pair = native_pty_system()
+            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| format!("openpty failed: {e}"))?;
+        let mut cmd = CommandBuilder::new(bin);
+        cmd.arg("attach");
+        cmd.arg(&short_id);
+        cmd.env("TERM", "xterm-256color");
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.cwd(home);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn failed: {e}"))?;
+        drop(pair.slave);
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("reader failed: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("writer failed: {e}"))?;
+        Ok::<_, String>((pair.master, child, reader, writer))
+    })
+    .await
+    .map_err(|e| format!("spawn task failed: {e}"))??;
+    let (master, child, mut reader, writer) = parts;
 
     let previous = {
         let mut slot = live.0.lock().unwrap();
-        slot.replace(Pane { writer, master: pair.master, child, generation })
+        slot.replace(Pane { writer, master, child, generation })
     };
     if let Some(previous) = previous {
         previous.shut_down();
@@ -199,11 +214,22 @@ pub async fn pty_open(
     Ok(generation)
 }
 
-/// Keystrokes from the pane. Silently a no-op when no pane is open — a key
-/// racing a close is normal, not an error.
+/// Keystrokes from the pane. Every mutation carries the caller's generation
+/// and is silently a no-op unless it matches the live pane's — a stale pane
+/// instance (an unmount racing a fresh open, StrictMode's discarded double
+/// in dev) must never write into a *different* session's attach client
+/// (codex verify finding, 2026-07-19). A key racing a close is normal, not
+/// an error.
 #[tauri::command]
-pub fn pty_write(live: tauri::State<'_, PtyLive>, data: String) -> Result<(), String> {
+pub fn pty_write(
+    live: tauri::State<'_, PtyLive>,
+    generation: u64,
+    data: String,
+) -> Result<(), String> {
     if let Some(pane) = live.0.lock().unwrap().as_mut() {
+        if pane.generation != generation {
+            return Ok(());
+        }
         pane.writer
             .write_all(data.as_bytes())
             .and_then(|()| pane.writer.flush())
@@ -213,14 +239,19 @@ pub fn pty_write(live: tauri::State<'_, PtyLive>, data: String) -> Result<(), St
 }
 
 /// The divider moved or fullscreen toggled: resize the PTY so the TUI
-/// reflows (SIGWINCH reaches the attach client).
+/// reflows (SIGWINCH reaches the attach client). Generation-guarded like
+/// `pty_write`.
 #[tauri::command]
 pub fn pty_resize(
     live: tauri::State<'_, PtyLive>,
+    generation: u64,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     if let Some(pane) = live.0.lock().unwrap().as_ref() {
+        if pane.generation != generation {
+            return Ok(());
+        }
         pane.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("resize failed: {e}"))?;
@@ -228,10 +259,20 @@ pub fn pty_resize(
     Ok(())
 }
 
-/// Detach: close the pane, never the session (see `Pane::shut_down`).
+/// Detach: close *this caller's* pane, never the session (see
+/// `Pane::shut_down`) — and never a newer pane that has since taken the
+/// slot. The generation guard is what lets a disposed pane instance undo an
+/// accidental takeover without ever being able to kill its successor.
 #[tauri::command]
-pub fn pty_close(live: tauri::State<'_, PtyLive>) -> Result<(), String> {
-    let pane = live.0.lock().unwrap().take();
+pub fn pty_close(live: tauri::State<'_, PtyLive>, generation: u64) -> Result<(), String> {
+    let pane = {
+        let mut slot = live.0.lock().unwrap();
+        if slot.as_ref().is_some_and(|p| p.generation == generation) {
+            slot.take()
+        } else {
+            None
+        }
+    };
     if let Some(pane) = pane {
         pane.shut_down();
     }

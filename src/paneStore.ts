@@ -29,9 +29,9 @@ const MAX_FRACTION = 0.9;
 
 function storedFraction(): number {
   const raw = window.localStorage.getItem(WIDTH_KEY);
-  // Number(null) is 0, which is finite — an absent key must fall through to
-  // the default, not clamp to the minimum width.
-  if (raw === null) return DEFAULT_FRACTION;
+  // Number(null) and Number("") are both 0, which is finite — an absent or
+  // empty key must fall through to the default, not clamp to the minimum.
+  if (raw === null || raw.trim() === "") return DEFAULT_FRACTION;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return DEFAULT_FRACTION;
   return Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, parsed));
