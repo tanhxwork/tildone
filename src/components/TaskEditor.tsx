@@ -36,7 +36,14 @@ import {
   LinkKindIcon,
 } from "./Icons";
 import { agentIdentity } from "../agents";
-import { hostedForTask, useHostStore, type HostSession } from "../hostStore";
+import { useArtifactStore } from "../artifactStore";
+import {
+  hostedForTask,
+  resumableForTask,
+  useHostStore,
+  type HostSession,
+  type Resumable,
+} from "../hostStore";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
@@ -187,6 +194,12 @@ export function TaskEditor() {
   // 2026-07-19-hosted-agent-sessions). Independent of `presence`: aliveness
   // here is owned-process fact, not a heartbeat.
   const hosted = hostedForTask(hostSessions, task.id);
+  // F3: a dead-but-resumable session from a previous run. Only offered when
+  // no current session exists — a live one always wins the row.
+  const hostResumables = useHostStore((s) => s.resumables);
+  const resumable = hosted ? null : resumableForTask(hostResumables, task.id);
+  // Artifact digest (F1): durable-trace facts for this task, if any exist.
+  const artifacts = useArtifactStore((s) => s.facts[task.id]);
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -340,6 +353,37 @@ export function TaskEditor() {
         adapter_id: adapterId,
         adapter_name: hostAdapters.find((a) => a.id === adapterId)?.name ?? adapterId,
         exited: false,
+        waiting: false,
+        bound: false,
+      });
+    } catch (e) {
+      setSessionError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  // F3: bring a previous run's session back on a fresh PTY via the adapter's
+  // resume argv. The row is consumed server-side; host-changed refreshes the
+  // store with the real new session.
+  async function resumeHostedSession(r: Resumable) {
+    setStarting(true);
+    setSessionError("");
+    try {
+      const id = await invoke<number>("host_resume", {
+        rowId: r.row_id,
+        cols: 80,
+        rows: 24,
+      });
+      openHostedPane({
+        id,
+        task_id: r.task_id,
+        task_ref: r.task_ref,
+        adapter_id: r.adapter_id,
+        adapter_name: r.adapter_name,
+        exited: false,
+        waiting: false,
+        bound: false,
       });
     } catch (e) {
       setSessionError(String(e));
@@ -590,11 +634,20 @@ export function TaskEditor() {
                 <span className="detail-session">
                   {hosted ? (
                     <>
-                      <span className={`hosted-chip${hosted.exited ? " exited" : ""}`}>
+                      <span
+                        className={`hosted-chip${hosted.exited ? " exited" : ""}${
+                          !hosted.exited && hosted.waiting ? " waiting" : ""
+                        }`}
+                        title={
+                          !hosted.exited && hosted.waiting
+                            ? "Looks idle at a prompt — a heuristic read of its screen"
+                            : undefined
+                        }
+                      >
                         <IconTerminal size={12} />
                         {hosted.adapter_name}
                         <span className="hosted-chip-state">
-                          {hosted.exited ? "exited" : "live"}
+                          {hosted.exited ? "exited" : hosted.waiting ? "waiting ❯" : "live"}
                         </span>
                       </span>
                       {!hosted.exited && (
@@ -635,6 +688,18 @@ export function TaskEditor() {
                         {hosted.exited ? "dismiss" : confirmKill ? "stop for sure?" : "stop"}
                       </button>
                     </>
+                  ) : resumable ? (
+                    // F3: a session from the previous app run, offered back —
+                    // manual, per card, never automatic.
+                    <button
+                      className="session-start-btn"
+                      disabled={starting}
+                      title={`Resume the ${resumable.adapter_name} session from the last run — continues its conversation`}
+                      onClick={() => void resumeHostedSession(resumable)}
+                    >
+                      <IconTerminal size={12} />
+                      Resume {resumable.adapter_name}
+                    </button>
                   ) : (
                     hostAdapters.map((a) => (
                       <button
@@ -724,6 +789,41 @@ export function TaskEditor() {
               </>
             )}
           </div>
+
+          {artifacts && (artifacts.last_message || artifacts.commit_subjects.length > 0) && (
+            // The artifact digest (F1): what the session last said and what
+            // landed on the branch — read off durable traces, so it still
+            // answers after the session is gone. A lens over the filesystem,
+            // not a store; no seen/unseen bookkeeping by design.
+            <div className="detail-artifacts">
+              <div className="detail-artifacts-head">
+                While you were away
+                {artifacts.last_active && (
+                  <span className="detail-artifacts-when">
+                    last activity {timeAgo(artifacts.last_active)}
+                  </span>
+                )}
+              </div>
+              {artifacts.last_message && (
+                <p className="detail-artifacts-msg">{artifacts.last_message}</p>
+              )}
+              {artifacts.commit_subjects.length > 0 && (
+                <ul className="detail-artifacts-commits">
+                  {artifacts.commit_subjects.map((s, i) => (
+                    <li key={i}>
+                      <IconGitBranch size={11} />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                  {artifacts.commits_ahead > artifacts.commit_subjects.length && (
+                    <li className="detail-artifacts-more">
+                      +{artifacts.commits_ahead - artifacts.commit_subjects.length} more ahead
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
 
           {inReview && (
             // The review brief, leading the editor while the tag is on: what the

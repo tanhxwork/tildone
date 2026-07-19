@@ -113,6 +113,9 @@ export interface TaskLink {
   // then falls back to its plain open-PR form.
   pr_state?: PrState | null; // merged | open | draft
   pr_behind?: number | null; // commits behind main, open PRs only
+  // CI rollup observed by the board's own gh poll (F4, migration 018) —
+  // rides the chip tooltip, never the chip color.
+  pr_checks?: string | null; // pending | passing | failing
 }
 
 /** The merge status a PR chip can show (TIL-84). "open" splits at render into

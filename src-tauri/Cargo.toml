@@ -19,6 +19,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 portable-pty = "0.9"
+# Artifact watching (F1): FSEvents on transcripts and git refs.
+notify = "8"
+# Waiting-detect (F2): a virtual screen per hosted session, so the grid's
+# bottom rows can be classified as "at a prompt" once output quiesces.
+vt100 = "0.15"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"

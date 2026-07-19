@@ -749,8 +749,14 @@ fn now_iso() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
+    iso_from_epoch_millis(now.as_millis() as u64)
+}
+
+/// The same ISO rendering for an arbitrary instant — artifact watching stamps
+/// file mtimes with it so board timestamps stay one format everywhere.
+pub(crate) fn iso_from_epoch_millis(epoch_millis: u64) -> String {
+    let secs = epoch_millis / 1000;
+    let millis = epoch_millis % 1000;
     let days = secs / 86400;
     let (y, m, d) = civil_from_days(days as i64);
     let rem = secs % 86400;
@@ -3822,7 +3828,7 @@ fn requested_port() -> u16 {
     port
 }
 
-fn open_db(app: &AppHandle) -> Result<Connection, String> {
+pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     // Same resolution as tauri-plugin-sql: "sqlite:tildone.db" lives in the
     // app config dir.
     let dir = app
@@ -4068,7 +4074,7 @@ pub fn deep_link_task_ref(url: &str) -> Option<String> {
 /// bounce off a tray-hidden window. Failures (denied permission, anything) stay
 /// silent no-ops: the notification is a courtesy, never part of the write's contract.
 #[cfg(target_os = "macos")]
-fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Option<&str>) {
+pub(crate) fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Option<&str>) {
     // Identity first, with the plugin's exact dev/prod logic: no bundle of our own
     // in dev, so borrow Terminal's. set_application is call-once per process; a
     // second call (ours or the plugin's first-hide hint) erroring is fine.
@@ -4106,7 +4112,7 @@ fn send_user_notification(app: &AppHandle, title: &str, body: &str, task_ref: Op
 /// Non-macOS: the plugin path, unchanged. No desktop click reporting exists here;
 /// the ref already rides in the body so the banner stays quotable.
 #[cfg(not(target_os = "macos"))]
-fn send_user_notification(app: &AppHandle, title: &str, body: &str, _task_ref: Option<&str>) {
+pub(crate) fn send_user_notification(app: &AppHandle, title: &str, body: &str, _task_ref: Option<&str>) {
     use tauri_plugin_notification::NotificationExt;
     let _ = app.notification().builder().title(title).body(body).show();
 }

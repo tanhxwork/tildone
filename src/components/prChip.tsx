@@ -18,6 +18,9 @@ export function prChip(
 ): { cls: string; color: string; suffix: ReactNode; title: string } | null {
   if (asLinkKind(link.kind) !== "pr" || !link.pr_state) return null;
   const behind = link.pr_behind ?? 0;
+  // CI rollup (F4): tooltip-only — the chip's color stays a merge-state
+  // signal; checks would double-encode and muddy both.
+  const checks = link.pr_checks ? ` · checks ${link.pr_checks}` : "";
   switch (link.pr_state) {
     case "merged":
       return {
@@ -28,14 +31,14 @@ export function prChip(
             <IconCheck size={11} />
           </span>
         ),
-        title: "merged",
+        title: `merged${checks}`,
       };
     case "draft":
       return {
         cls: "pr-draft",
         color: "var(--text-faint)",
         suffix: <span className="pr-draft-tag">draft</span>,
-        title: "draft",
+        title: `draft${checks}`,
       };
     case "open":
       return behind > 0
@@ -43,9 +46,14 @@ export function prChip(
             cls: "pr-behind",
             color: "var(--warn)",
             suffix: <span className="pr-behind-count">↓{behind}</span>,
-            title: `${behind} behind main · rebase before merge`,
+            title: `${behind} behind main · rebase before merge${checks}`,
           }
-        : { cls: "pr-ready", color: LINK_KIND_COLORS.pr, suffix: null, title: "up to date" };
+        : {
+            cls: "pr-ready",
+            color: LINK_KIND_COLORS.pr,
+            suffix: null,
+            title: `up to date${checks}`,
+          };
     default:
       return null;
   }
