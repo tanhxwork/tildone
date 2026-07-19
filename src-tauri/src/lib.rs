@@ -155,6 +155,12 @@ pub fn run() {
             sql: include_str!("../migrations/018_hosted_sessions.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 19,
+            description: "add_task_images",
+            sql: include_str!("../migrations/019_task_images.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

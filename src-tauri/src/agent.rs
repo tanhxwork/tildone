@@ -3163,7 +3163,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. kind is created/status/moved/trashed/restored/edited/link/comment/tag. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. kind is created/status/moved/trashed/restored/edited/link/comment/tag/image. A change says THAT a task changed, not what it now is — follow up with get_task."
     )]
     async fn list_changes(
         &self,

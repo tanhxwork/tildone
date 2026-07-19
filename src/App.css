@@ -712,6 +712,68 @@ textarea:focus-visible,
   color: var(--danger);
 }
 
+.qa-chip.qa-skipped {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+
+/* A screenshot pasted into Quick Add, waiting for Enter. Sits in the same
+   preview row as the parsed text tokens — one wrapping row, one rhythm. */
+.qa-image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+.qa-image-thumb {
+  display: block;
+  width: 44px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.qa-image-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.qa-image-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qa-image-size {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.qa-image-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.qa-image-x:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ---------- Task list ---------- */
 
 .task-group {
@@ -5184,4 +5246,227 @@ textarea:focus-visible,
   border-radius: 999px;
   padding: 0 6px;
   line-height: 1.5;
+}
+
+/* ---------- Image attachments (TIL-106) ---------- */
+
+/* Board card: up to three small thumbnails under the title, "+N" past that.
+   A strip, never a cover — image cards keep the same weight as text cards. */
+.card-thumbs {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.card-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-inset);
+  overflow: hidden;
+  cursor: zoom-in;
+  transition: border-color 150ms;
+}
+
+.card-thumb:hover {
+  border-color: var(--border-strong);
+}
+
+.card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card-thumb-more {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* Task detail: the Images property row. */
+.detail-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detail-image {
+  position: relative;
+}
+
+.detail-image-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 116px;
+  height: 78px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.detail-image-thumb:focus-visible,
+.detail-image:hover .detail-image-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.detail-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Reveal/remove surface on hover only — resting tiles stay quiet. */
+.detail-image-actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: none;
+  gap: 2px;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.detail-image:hover .detail-image-actions,
+.detail-image:focus-within .detail-image-actions {
+  display: flex;
+}
+
+.detail-image-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.detail-image-actions button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.detail-image-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 116px;
+  height: 78px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.detail-image-add:hover {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+/* Lightbox: the one legitimately floating image surface. Scrim + pop shadow;
+   Esc, click-out, or the close button dismisses. */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.lightbox-image {
+  max-width: min(90vw, 1400px);
+  max-height: 85vh;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  background: var(--bg-card);
+}
+
+.lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lightbox-close:hover {
+  color: var(--text);
+}
+
+.lightbox-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lightbox-nav:hover {
+  color: var(--text);
+}
+
+.lightbox-nav.prev {
+  left: 16px;
+}
+
+.lightbox-nav.next {
+  right: 16px;
+}
+
+.lightbox-count {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
