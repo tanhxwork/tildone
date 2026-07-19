@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 mod artifacts;
+mod forge;
 mod hookinstall;
 mod host;
 mod icons;
@@ -263,6 +264,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             artifacts::artifact_facts,
+            forge::forge_poll,
             host::host_adapters,
             host::host_list,
             host::host_start,

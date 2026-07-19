@@ -166,12 +166,28 @@ function App() {
     // Artifact facts are the same shape: Rust watches the filesystem and
     // emits `artifacts-changed`; the store re-pulls.
     const disposeArtifacts = initArtifactStore();
+    // Effect signals (F4): the board asks the forge itself about PR/CI state
+    // — on focus and every 5 minutes while visible, never in background.
+    // Repeats under 60 s are skipped; a failed poll is silent by contract.
+    let lastForgePoll = 0;
+    const pollForge = () => {
+      if (Date.now() - lastForgePoll < 60_000) return;
+      lastForgePoll = Date.now();
+      void invoke("forge_poll").catch(() => {});
+    };
+    pollForge();
+    window.addEventListener("focus", pollForge);
+    const forgeTimer = setInterval(() => {
+      if (document.hasFocus()) pollForge();
+    }, 5 * 60_000);
     return () => {
       void unlisten.then((fn) => fn());
       void unlistenOpenTask.then((fn) => fn());
       clearInterval(presenceTimer);
       disposeHost();
       disposeArtifacts();
+      window.removeEventListener("focus", pollForge);
+      clearInterval(forgeTimer);
     };
   }, []);
 

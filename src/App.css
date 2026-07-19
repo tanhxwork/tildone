@@ -5161,6 +5161,20 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
+/* --- Waiting-detect (F2) -------------------------------------------------- */
+/* The hosted chip's waiting face: the session looks idle at a prompt —
+   inferred from its grid, so it must stay STATIC (motion claims a certainty
+   inference doesn't have; same rule as quiet presence). Blocked's hue because
+   the semantics match — stopped, needs a human — while the distinct form
+   (text chip with a prompt caret, not frozen bars) keeps the two apart. */
+.card-hosted.waiting {
+  color: var(--blocked);
+}
+.hosted-chip.waiting,
+.hosted-chip.waiting .hosted-chip-state {
+  color: var(--blocked);
+}
+
 /* --- Restart survival (F3) ------------------------------------------------ */
 .quit-warning-resumable {
   font-size: 10px;
