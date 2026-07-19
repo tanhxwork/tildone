@@ -318,6 +318,13 @@ pub async fn host_start(
         let mut cmd = CommandBuilder::new(bin);
         if adapter.prompt_arg {
             if let Some(ref prompt) = prompt {
+                // The prompt is a positional arg; a value starting with '-'
+                // would be parsed as a flag by the CLI (argv smuggling). Refs
+                // never legitimately start with '-', and `--` end-of-options
+                // support is unverified across the three CLIs — reject.
+                if prompt.starts_with('-') {
+                    return Err("prompt must not start with '-'".into());
+                }
                 cmd.arg(prompt);
             }
         }
