@@ -4957,3 +4957,126 @@ textarea:focus-visible,
 .session-pane--full .session-pane-head {
   padding-left: 84px;
 }
+
+/* --- Hosted agent sessions (spec 2026-07-19-hosted-agent-sessions) -------- */
+
+/* The editor's Session row: either the launcher (one button per installed
+   CLI) or the existing session's chip + controls. */
+.detail-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.session-start-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: none;
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.session-start-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.session-start-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hosted-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.hosted-chip-state {
+  font-weight: 500;
+  color: var(--success);
+}
+
+.hosted-chip.exited .hosted-chip-state {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.session-stop-btn {
+  border: none;
+  background: none;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.session-stop-btn:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+/* Card chip: this task has its own terminal here. States, not a door — the
+   way in is the jump routing / the editor's Session row. */
+.card-hosted {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--success);
+}
+
+.card-hosted.exited {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+/* The quit guard's dialog. */
+.quit-warning {
+  max-width: 380px;
+}
+
+.quit-warning-text {
+  margin: 0;
+  padding: 0 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.quit-warning-list {
+  list-style: none;
+  margin: 10px 0 4px;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quit-warning-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.quit-warning-name {
+  font-weight: 500;
+}
+
+.quit-warning-ref {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}

@@ -36,6 +36,7 @@ import {
   LinkKindIcon,
 } from "./Icons";
 import { agentIdentity } from "../agents";
+import { hostedForTask, useHostStore, type HostSession } from "../hostStore";
 import { Markdown } from "./Markdown";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
@@ -111,6 +112,15 @@ export function TaskEditor() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [jumpMiss, setJumpMiss] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
+  // The disarm timer for "stop for sure?" — held so a task switch or rearm
+  // clears it; TaskEditor is one persistent instance across tasks, and an
+  // orphaned timer would disarm the NEXT task's fresh confirm early.
+  const killDisarmRef = useRef<number | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [sessionError, setSessionError] = useState("");
+  const hostSessions = useHostStore((s) => s.sessions);
+  const hostAdapters = useHostStore((s) => s.adapters);
 
   useEffect(() => {
     if (task) {
@@ -124,6 +134,13 @@ export function TaskEditor() {
       setConfirmDelete(false);
       setAiError("");
       setJumpMiss(false);
+      setConfirmKill(false);
+      if (killDisarmRef.current) {
+        window.clearTimeout(killDisarmRef.current);
+        killDisarmRef.current = null;
+      }
+      setStarting(false);
+      setSessionError("");
       setEditingNotes(false);
     }
     // Re-sync local fields only when switching to a different task.
@@ -166,6 +183,10 @@ export function TaskEditor() {
   const presence = live[task.id];
   const presenceAgent = presence ? agentIdentity(presence.agent_name) : null;
   const presenceCwdBase = presence?.cwd ? presence.cwd.split("/").filter(Boolean).pop() : null;
+  // The board-hosted session on this task, if any (spec
+  // 2026-07-19-hosted-agent-sessions). Independent of `presence`: aliveness
+  // here is owned-process fact, not a heartbeat.
+  const hosted = hostedForTask(hostSessions, task.id);
 
   function commitTitle() {
     const trimmed = title.trim();
@@ -241,6 +262,13 @@ export function TaskEditor() {
   // session is a fact about where it runs, not a failure of the click.
   async function jumpToSession() {
     if (!presence || !task) return;
+    // Routing order (spec 2026-07-19-hosted-agent-sessions): a live hosted
+    // session on this task always wins — the app owns it, so the landing is
+    // deterministic; the daemon arms below are for sessions born elsewhere.
+    if (hosted && !hosted.exited) {
+      openHostedPane(hosted);
+      return;
+    }
     let ok = false;
     try {
       if (presence.reachable) {
@@ -251,6 +279,7 @@ export function TaskEditor() {
         });
         if (shortId) {
           usePaneStore.getState().openPane({
+            kind: "attach",
             sessionId: presence.session_id,
             shortId,
             taskRef: task.ref,
@@ -270,6 +299,64 @@ export function TaskEditor() {
       setJumpMiss(true);
       window.setTimeout(() => setJumpMiss(false), 2500);
     }
+  }
+
+  /** Show a hosted session in the pane — the start's first landing and every
+   *  re-jump alike. The pane's mount runs `host_attach`, replaying the
+   *  buffer, so nothing more is needed here. */
+  function openHostedPane(session: HostSession) {
+    usePaneStore.getState().openPane({
+      kind: "hosted",
+      hostId: session.id,
+      sessionId: `hosted-${session.id}`,
+      taskRef: task!.ref,
+      taskId: task!.id,
+      name: session.adapter_name,
+    });
+    openEditor(null);
+  }
+
+  async function startHostedSession(adapterId: string) {
+    if (!task || starting) return;
+    setStarting(true);
+    setSessionError("");
+    try {
+      // 80×24 is only the spawn size; the pane's first attach resizes the
+      // PTY to its real dimensions and the TUI reflows via SIGWINCH.
+      const id = await invoke<number>("host_start", {
+        taskId: task.id,
+        taskRef: task.ref,
+        adapterId,
+        claimCwd: presence?.cwd ?? null,
+        projectName: project?.name ?? null,
+        prompt: task.ref,
+        cols: 80,
+        rows: 24,
+      });
+      openHostedPane({
+        id,
+        task_id: task.id,
+        task_ref: task.ref,
+        adapter_id: adapterId,
+        adapter_name: hostAdapters.find((a) => a.id === adapterId)?.name ?? adapterId,
+        exited: false,
+      });
+    } catch (e) {
+      setSessionError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  /** Stop (two-step confirm) a live hosted session, or dismiss an exited one
+   *  — same command; a dead child makes the kill half a no-op. */
+  async function killHostedSession(session: HostSession) {
+    try {
+      await invoke("host_kill", { sessionId: session.id });
+    } catch (e) {
+      setSessionError(String(e));
+    }
+    setConfirmKill(false);
   }
 
   async function addCommentFromInput() {
@@ -491,6 +578,89 @@ export function TaskEditor() {
 
             <span className="detail-prop-label">Created</span>
             <span className="detail-created">{createdLabel}</span>
+
+            {/* Board-hosted session (spec 2026-07-19-hosted-agent-sessions):
+                the task's own terminal. Either the session that exists — with
+                its open and stop/dismiss controls — or the launcher: one
+                button per installed CLI, launching in the task's directory
+                with the ref as the opening prompt. */}
+            {(hosted || hostAdapters.length > 0) && (
+              <>
+                <span className="detail-prop-label">Session</span>
+                <span className="detail-session">
+                  {hosted ? (
+                    <>
+                      <span className={`hosted-chip${hosted.exited ? " exited" : ""}`}>
+                        <IconTerminal size={12} />
+                        {hosted.adapter_name}
+                        <span className="hosted-chip-state">
+                          {hosted.exited ? "exited" : "live"}
+                        </span>
+                      </span>
+                      {!hosted.exited && (
+                        <button
+                          className="detail-agent-jump"
+                          title="Open the session pane"
+                          aria-label="Open the session pane"
+                          onClick={() => openHostedPane(hosted)}
+                        >
+                          <IconTerminal size={13} />
+                        </button>
+                      )}
+                      <button
+                        className="session-stop-btn"
+                        title={
+                          hosted.exited
+                            ? "Dismiss this exited session"
+                            : "Stop the session — it cannot be resumed"
+                        }
+                        onClick={() => {
+                          if (hosted.exited || confirmKill) {
+                            void killHostedSession(hosted);
+                            return;
+                          }
+                          // Armed state disarms itself — an armed "stop"
+                          // forgotten minutes ago must not kill on a later
+                          // stray click (codex verify note, 2026-07-19).
+                          setConfirmKill(true);
+                          if (killDisarmRef.current) {
+                            window.clearTimeout(killDisarmRef.current);
+                          }
+                          killDisarmRef.current = window.setTimeout(() => {
+                            killDisarmRef.current = null;
+                            setConfirmKill(false);
+                          }, 3000);
+                        }}
+                      >
+                        {hosted.exited ? "dismiss" : confirmKill ? "stop for sure?" : "stop"}
+                      </button>
+                    </>
+                  ) : (
+                    hostAdapters.map((a) => (
+                      <button
+                        key={a.id}
+                        className="session-start-btn"
+                        disabled={!a.available || starting}
+                        title={
+                          a.available
+                            ? `Start a ${a.name} session on this task`
+                            : `${a.name} CLI not found on this machine`
+                        }
+                        onClick={() => void startHostedSession(a.id)}
+                      >
+                        <IconTerminal size={12} />
+                        {a.name}
+                      </button>
+                    ))
+                  )}
+                  {sessionError && (
+                    <span className="detail-agent-miss" role="status">
+                      {sessionError}
+                    </span>
+                  )}
+                </span>
+              </>
+            )}
 
             {presence && presenceAgent && (
               <>

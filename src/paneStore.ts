@@ -8,18 +8,31 @@
 
 import { create } from "zustand";
 
-/** What the pane needs to attach and label itself. */
-export interface PaneTarget {
-  /** Full session UUID — the claim's identity, for re-click matching. */
+/** What the pane needs to attach and label itself. Two kinds of session can
+ *  be behind it (spec 2026-07-19-hosted-agent-sessions): a foreign claude
+ *  background session reached via `claude attach`, or a board-hosted session
+ *  from host.rs's table. */
+export type PaneTarget = {
+  /** Stable identity for re-click matching: the claim's session UUID for
+   *  attach targets, `hosted-<id>` for hosted ones. */
   sessionId: string;
-  /** The short id `claude attach` takes, from the Rust `attach_target` command. */
-  shortId: string;
   /** Card context for the header: "TIL-100" (null on legacy rows). */
   taskRef: string | null;
   taskId: number;
-  /** Session display name, if the claim knows one. */
+  /** Display name: the claim's session name, or the adapter's. */
   name: string | null;
-}
+} & (
+  | {
+      kind: "attach";
+      /** The short id `claude attach` takes, from the Rust `attach_target` command. */
+      shortId: string;
+    }
+  | {
+      kind: "hosted";
+      /** Row in host.rs's session table. */
+      hostId: number;
+    }
+);
 
 const WIDTH_KEY = "tildone.pane.widthFraction";
 /** Spec default: the pane takes 3/4 of the window. */

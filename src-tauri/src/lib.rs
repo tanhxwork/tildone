@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 mod hookinstall;
+mod host;
 mod icons;
 mod pty;
 
@@ -191,6 +192,13 @@ pub fn run() {
             // installed app, so `tauri dev` never receives these). A deep link must
             // never error at the user: any recognisable ref opens that card, anything
             // else still shows the window.
+            // Route the guarded Quit item through Tauri's exit machinery so
+            // the hosted-session guard (ExitRequested below) can see it.
+            app.on_menu_event(|app, event| {
+                if event.id().as_ref() == host::QUIT_MENU_ID {
+                    app.exit(0);
+                }
+            });
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -243,6 +251,12 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_close,
+            host::host_adapters,
+            host::host_list,
+            host::host_start,
+            host::host_attach,
+            host::host_kill,
+            host::host_confirm_quit,
             hookinstall::hook_status,
             hookinstall::hook_install,
             hookinstall::hook_uninstall,
@@ -252,7 +266,28 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| match event {
+            // The default menu exists only once the app is running — swap its
+            // native Quit for the guarded one here, not in setup.
+            tauri::RunEvent::Ready => {
+                #[cfg(target_os = "macos")]
+                host::install_quit_menu(app);
+            }
+            // Hosted agent sessions are children of this process and die with
+            // it (unlike claude daemon sessions). Quitting while any is live
+            // must be a decision, not an accident: block the exit once, show
+            // the window, and let the frontend's warning dialog either cancel
+            // or come back through `host_confirm_quit` (which sets the flag,
+            // stops the sessions, and exits for real).
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !host::quit_confirmed() && host::any_live() {
+                    api.prevent_exit();
+                    agent::show_main_window(app);
+                    use tauri::Emitter;
+                    let _ = app.emit("host-quit-warning", ());
+                }
+            }
             tauri::RunEvent::Exit => {
+                host::kill_all();
                 ai::kill_engine(app);
                 agent::shutdown(app);
             }
