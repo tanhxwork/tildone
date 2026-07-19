@@ -92,6 +92,7 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
 }
 
 export function Kanban() {
+  const paneOpenTaskId = usePaneStore((s) => s.target?.taskId ?? null);
   const {
     tasks,
     tags,
@@ -245,7 +246,7 @@ export function Kanban() {
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
     >
-      <div className="board">
+      <div className={paneOpenTaskId !== null ? "board pane-focus" : "board"}>
         {STATUSES.map((status) => (
           <Column
             key={status}
@@ -333,9 +334,15 @@ function Column({
   const reviewSplit = Math.min(reviewCount, ids.length);
   const hasReview = isDoing && reviewSplit > 0;
   const hasWorking = isDoing && ids.length > reviewSplit;
+  // While the session pane is open, the board strip shows only the jumped
+  // card's column — the whole board can't fit beside a ¾ pane, and the
+  // pane's entire point is "this card, that session, side by side"
+  // (user review finding, 2026-07-19).
+  const paneTaskId = usePaneStore((s) => s.target?.taskId ?? null);
+  const holdsPaneSrc = paneTaskId !== null && ids.includes(paneTaskId);
 
   return (
-    <div className="board-column">
+    <div className={holdsPaneSrc ? "board-column pane-src-col" : "board-column"}>
       <div className={`column-header ${status}`}>
         <span className="column-dot" />
         {STATUS_LABELS[status]}

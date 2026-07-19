@@ -167,7 +167,21 @@ export function SessionPane() {
     termRef.current?.focus();
   }, [focusNonce, fullscreen, widthFraction]);
 
-  // The jumped card must stay in sight: center it in the remaining strip.
+  // The jumped card must stay in sight. Two mechanisms: the layout inset
+  // (a root CSS var the board strip uses to stop underlapping the fixed
+  // pane) and a vertical scroll to center the card in its now-solo column.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (target && !fullscreen) {
+      root.style.setProperty("--pane-inset", `${widthFraction * 100}vw`);
+    } else {
+      root.style.setProperty("--pane-inset", "0px");
+    }
+    return () => {
+      root.style.setProperty("--pane-inset", "0px");
+    };
+  }, [target, widthFraction, fullscreen]);
+
   useEffect(() => {
     if (!target) return;
     document
