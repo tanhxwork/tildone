@@ -38,3 +38,4 @@ src-tauri/icons-dev/*/
 .design-sync/
 .ds-sync/
 ds-bundle/
+tests/e2e/artifacts/
