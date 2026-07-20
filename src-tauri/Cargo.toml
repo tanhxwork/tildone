@@ -47,6 +47,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 tokio-util = "0.7.18"
 base64 = "0.22"
+tauri-plugin-wdio-webdriver = "1.2.0"
+tauri-plugin-wdio = "1.2.0"
 
 # The notification plugin's desktop click API is mobile-only, but the crate it
 # drives on macOS can report clicks (wait_for_click). Depending on it directly —

@@ -175,7 +175,7 @@ pub fn run() {
         },
     ];
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(ai::EngineProcess::default())
         .manage(agent::AgentServer::default())
         .manage(agent::AgentLive::default())
@@ -190,7 +190,16 @@ pub fn run() {
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:tildone.db", migrations)
                 .build(),
-        )
+        );
+
+    // WebDriver server + execute/mock bridge for e2e verification (wdio);
+    // never present in release.
+    #[cfg(debug_assertions)]
+    let builder = builder
+        .plugin(tauri_plugin_wdio_webdriver::init())
+        .plugin(tauri_plugin_wdio::init());
+
+    builder
         .setup(|app| {
             // The default window size (tauri.conf.json) is chosen so the board's
             // three columns render at their full 340px width. On a display whose
