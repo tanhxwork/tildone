@@ -25,6 +25,7 @@ import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
   removeImageFile,
   saveImageFile,
+  sweepOrphanAttachments,
   type PendingImage,
 } from "./utils/images";
 
@@ -349,6 +350,16 @@ export const useStore = create<Store>()((set, get) => ({
         await db.openDb();
         step(`Cleaning up old trash…${nth}`, `init: attempt ${attempt} purge`);
         await db.purgeTrashedBefore(cutoff);
+        // The purge above (and any earlier one) leaves attachment files behind —
+        // sweep them now that the surviving task ids are authoritative. Best-effort:
+        // a failed sweep must never keep the board from loading.
+        void db
+          .allTaskIds()
+          .then((ids) => sweepOrphanAttachments(ids))
+          .then((n) => {
+            if (n > 0) db.trace(`init: swept ${n} orphan attachment dir(s)`);
+          })
+          .catch(() => {});
         // Give pre-migration-010 projects/tasks their code/number/ref before the
         // first read, so nothing ever renders the raw #id fallback. Idempotent.
         step(`Checking task references…${nth}`, `init: attempt ${attempt} backfillRefs`);

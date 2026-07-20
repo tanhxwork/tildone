@@ -6,7 +6,14 @@ import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isHttpUrl } from "../utils/links";
-import { remarkTaskRefs, taskUrlTransform, TASK_SCHEME } from "../utils/markdownTaskRefs";
+import {
+  remarkTaskRefs,
+  taskUrlTransform,
+  IMG_SCHEME,
+  TASK_SCHEME,
+} from "../utils/markdownTaskRefs";
+import { imageSrc, useImageBase } from "../utils/images";
+import { useLightbox } from "../lightbox";
 import { remarkAsciiRules, remarkSections } from "../utils/markdownSections";
 import { IconChevronRight } from "./Icons";
 
@@ -44,6 +51,43 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
     >
       {children}
     </a>
+  );
+}
+
+/** ![alt](tildone:img/12) — an image attached to a task, rendered inline in its
+ *  notes. The row is looked up live so a removed image degrades to its alt text
+ *  rather than a broken tile, and clicking opens the same lightbox as the tile. */
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const images = useStore((s) => s.images);
+  const openLightbox = useLightbox((s) => s.open);
+  useImageBase();
+
+  if (!src?.startsWith(IMG_SCHEME)) {
+    // Any other src is a remote/absolute URL the webview can't be trusted to
+    // fetch; show the alt text rather than reaching off-machine from notes.
+    return <span className="md-image-missing">{alt || "image"}</span>;
+  }
+  const id = Number(src.slice(IMG_SCHEME.length));
+  const image = Object.values(images)
+    .flat()
+    .find((img) => img.id === id);
+  const url = image ? imageSrc(image) : null;
+  if (!image || !url) {
+    return <span className="md-image-missing">{alt || "Image removed"}</span>;
+  }
+  return (
+    <img
+      className="md-image"
+      src={url}
+      alt={alt || image.filename}
+      // The rendered notes are click-to-edit; opening the image must not also
+      // drop the user into the raw textarea.
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openLightbox([image], 0);
+      }}
+    />
   );
 }
 
@@ -111,10 +155,12 @@ function NotesSection({ children, ...rest }: SectionProps) {
 
 const BLOCK_COMPONENTS: Components = {
   a: MarkdownLink,
+  img: MarkdownImage,
 };
 
 const SECTIONED_COMPONENTS: Components = {
   a: MarkdownLink,
+  img: MarkdownImage,
   section: NotesSection as Components["section"],
 };
 
@@ -122,6 +168,7 @@ const SECTIONED_COMPONENTS: Components = {
 // one-line entry keeps its tight row instead of gaining block spacing.
 const INLINE_COMPONENTS: Components = {
   a: MarkdownLink,
+  img: MarkdownImage,
   p: ({ children }) => <>{children}</>,
 };
 

@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { appDataDir } from "@tauri-apps/api/path";
-import { BaseDirectory, mkdir, remove, writeFile } from "@tauri-apps/plugin-fs";
+import {
+  BaseDirectory,
+  mkdir,
+  readDir,
+  readFile,
+  remove,
+  stat,
+  writeFile,
+} from "@tauri-apps/plugin-fs";
 import type { TaskImage } from "../types";
 
 /** Hard per-image ceiling. A paste over this is refused outright — a task board
@@ -69,6 +77,48 @@ async function toPendingBlob(blob: Blob, name: string): Promise<PendingImage> {
     height: scaled.height,
     url: URL.createObjectURL(scaled.blob),
   };
+}
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  avif: "image/avif",
+};
+
+/** Turn OS-dropped file paths into pending images. Non-image files are ignored
+ *  (a drop is often a mixed selection) and over-cap ones are counted as skipped,
+ *  matching the paste path. A path we can't read is skipped rather than fatal —
+ *  a drop from a sandboxed source must not take the whole gesture down. */
+export async function imagesFromPaths(
+  paths: string[],
+): Promise<{ images: PendingImage[]; skipped: number }> {
+  const images: PendingImage[] = [];
+  let skipped = 0;
+  for (const path of paths) {
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    const mime = IMAGE_MIME_BY_EXT[ext];
+    if (!mime) continue;
+    try {
+      // stat first: reading a 400 MB file into the webview just to reject it is
+      // exactly the runaway the cap exists to prevent.
+      const info = await stat(path);
+      if (info.size > MAX_IMAGE_BYTES) {
+        skipped += 1;
+        continue;
+      }
+      const bytes = await readFile(path);
+      const name = path.split("/").pop() || "Dropped image";
+      images.push(await toPendingBlob(new Blob([bytes], { type: mime }), name));
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { images, skipped };
 }
 
 /** Read images straight off the async clipboard (the editor's "Paste image"
@@ -151,6 +201,38 @@ export async function saveImageFile(
 
 export async function removeImageFile(image: TaskImage): Promise<void> {
   await remove(image.path, { baseDir: BaseDirectory.AppData });
+}
+
+/** Delete attachment dirs whose task no longer exists. `task_images` rows cascade
+ *  when a task row is hard-deleted, but the files under attachments/<task_id>/ are
+ *  outside SQLite's reach — without this sweep a purged trash leaks disk forever.
+ *  Best-effort throughout: a dir we can't read or remove is disk, not a failure
+ *  worth surfacing, and the next startup tries again. */
+export async function sweepOrphanAttachments(liveTaskIds: Set<number>): Promise<number> {
+  let entries;
+  try {
+    entries = await readDir("attachments", { baseDir: BaseDirectory.AppData });
+  } catch {
+    return 0; // no attachments dir yet — nothing has ever been pasted
+  }
+  let swept = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory) continue;
+    const id = Number(entry.name);
+    // Anything that isn't a plain task-id dir is not ours to delete.
+    if (!Number.isInteger(id) || String(id) !== entry.name) continue;
+    if (liveTaskIds.has(id)) continue;
+    try {
+      await remove(`attachments/${entry.name}`, {
+        baseDir: BaseDirectory.AppData,
+        recursive: true,
+      });
+      swept += 1;
+    } catch {
+      // keep sweeping the rest
+    }
+  }
+  return swept;
 }
 
 function extensionFor(mime: string): string {

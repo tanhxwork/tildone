@@ -669,6 +669,14 @@ textarea:focus-visible,
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* Drag-over: the standard 2px Signal Violet ring at 1px offset, the same
+   treatment focus gets — one surface can accept the drop at a time, so the ring
+   alone says which, with no extra scrim or overlay copy. */
+.drop-over {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .quick-add input {
   flex: 1;
   border: none;
@@ -3908,6 +3916,30 @@ textarea:focus-visible,
   font-weight: 500;
 }
 
+/* An embedded attachment sits in the text column at its natural size, capped so
+   a screenshot never dominates the notes — the lightbox is where it goes big. */
+.md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  width: auto;
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+}
+
+.md-image:hover {
+  border-color: var(--border-strong);
+}
+
+/* The image was removed from the task; keep the alt text in place of a broken
+   tile so the surrounding sentence still reads. */
+.md-image-missing {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
 .detail-notes-rendered code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.86em;
@@ -5332,7 +5364,7 @@ textarea:focus-visible,
   object-fit: cover;
 }
 
-/* Reveal/remove surface on hover only — resting tiles stay quiet. */
+/* Reveal/insert/remove surface on hover only — resting tiles stay quiet. */
 .detail-image-actions {
   position: absolute;
   top: 4px;

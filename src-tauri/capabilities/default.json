@@ -33,6 +33,18 @@
       "identifier": "fs:allow-remove",
       "allow": [{ "path": "$APPDATA/attachments/**" }]
     },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "$APPDATA/attachments" }, { "path": "$APPDATA/attachments/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [{ "path": "$HOME/**" }]
+    },
     "notification:default",
     "deep-link:default"
   ]

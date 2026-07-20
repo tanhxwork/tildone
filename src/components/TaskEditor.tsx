@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { usePaneStore } from "../paneStore";
 import { useStore } from "../store";
-import type { Status, TaskLink } from "../types";
+import type { Status, TaskImage, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -23,15 +23,19 @@ import {
   imageSrc,
   imagesFromClipboardRead,
   imagesFromDataTransfer,
+  imagesFromPaths,
   releasePending,
   useImageBase,
 } from "../utils/images";
+import { useDropTarget } from "../fileDrop";
 import { isFileEvidence, isHttpUrl, isRevealOnlyEvidence } from "../utils/links";
+import { imageEmbedMarkdown } from "../utils/markdownTaskRefs";
 import { useLightbox } from "../lightbox";
 import {
   FileEvidenceIcon,
   IconAlert,
   IconCheck,
+  IconFileText,
   IconFolderOpen,
   IconGitBranch,
   IconLink,
@@ -174,6 +178,25 @@ export function TaskEditor() {
     if (editingNotes) notesRef.current?.focus();
   }, [editingNotes]);
 
+  // Dropping image files anywhere on the open card attaches them straight away —
+  // the task already exists, so unlike Quick Add there is nothing to hold.
+  const dropTaskId = task?.id;
+  const onDropFiles = useCallback(
+    (paths: string[]) => {
+      if (dropTaskId === undefined) return;
+      void imagesFromPaths(paths).then(async ({ images: dropped }) => {
+        if (dropped.length === 0) return;
+        try {
+          await attachImages(dropTaskId, dropped);
+        } finally {
+          releasePending(dropped);
+        }
+      });
+    },
+    [dropTaskId, attachImages],
+  );
+  const { isOver, dropProps } = useDropTarget("task-editor", onDropFiles);
+
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.project_id);
@@ -232,6 +255,16 @@ export function TaskEditor() {
     if (notes !== task!.notes) {
       void patchTask(task!.id, { notes });
     }
+  }
+
+  /** Append an inline embed of an attached image to the notes. Writes through
+   *  patchTask rather than only the local `notes` state, so the ref survives
+   *  whether or not the notes textarea is currently open. */
+  function insertImageInNotes(img: TaskImage) {
+    const ref = imageEmbedMarkdown(img.id, img.filename);
+    const next = notes.trim() ? `${notes.replace(/\s+$/, "")}\n\n${ref}` : ref;
+    setNotes(next);
+    void patchTask(task!.id, { notes: next });
   }
 
   async function addTagFromInput() {
@@ -511,11 +544,12 @@ export function TaskEditor() {
   return (
     <div className="modal-overlay detail-overlay" onClick={() => openEditor(null)}>
       <div
-        className={`detail-card ${expanded ? "expanded" : ""}`}
+        className={`detail-card ${expanded ? "expanded" : ""}${isOver ? " drop-over" : ""}`}
         role="dialog"
         aria-label="Task details"
         onClick={(e) => e.stopPropagation()}
         onPaste={onEditorPaste}
+        {...dropProps}
       >
         <div className="detail-topbar">
           <span className="detail-breadcrumb">
@@ -707,6 +741,14 @@ export function TaskEditor() {
                         }}
                       >
                         <IconFolderOpen size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Insert ${img.filename} in notes`}
+                        title="Insert in notes"
+                        onClick={() => insertImageInNotes(img)}
+                      >
+                        <IconFileText size={12} />
                       </button>
                       <button
                         type="button"

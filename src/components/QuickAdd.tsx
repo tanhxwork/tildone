@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type RefObject,
+} from "react";
 import { format } from "date-fns";
+import { useDropTarget } from "../fileDrop";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import { PRIORITY_LABELS } from "../types";
@@ -7,6 +16,7 @@ import { dueLabel, todayStr, tomorrowStr } from "../utils/dates";
 import {
   formatImageBytes,
   imagesFromDataTransfer,
+  imagesFromPaths,
   releasePending,
   type PendingImage,
 } from "../utils/images";
@@ -56,6 +66,16 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       if (skipped > 0) setSkippedOversize(true);
     });
   }
+
+  // Dropping image files onto the bar collects them as chips, exactly as a paste
+  // does — the task they attach to is still created on Enter.
+  const onDropFiles = useCallback((paths: string[]) => {
+    void imagesFromPaths(paths).then(({ images, skipped }) => {
+      if (images.length > 0) setPending((p) => [...p, ...images]);
+      if (skipped > 0) setSkippedOversize(true);
+    });
+  }, []);
+  const { isOver, dropProps } = useDropTarget("quick-add", onDropFiles);
 
   function removePending(image: PendingImage) {
     releasePending([image]);
@@ -115,7 +135,7 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
 
   return (
     <>
-      <div className="quick-add">
+      <div className={`quick-add${isOver ? " drop-over" : ""}`} {...dropProps}>
         <IconPlus size={15} />
         <input
           ref={inputRef}

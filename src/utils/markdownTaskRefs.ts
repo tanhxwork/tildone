@@ -8,6 +8,18 @@ import type { Root, Text } from "mdast";
 export const WIKI_REF = /\[\[task (\d+)\]\]/gi;
 export const TASK_SCHEME = "tildone:task/";
 
+// ![alt](tildone:img/12) -> an attached image rendered inline in the notes. The
+// id addresses a task_images row, not a path, so the embed survives the app-data
+// dir moving between the dev and release identifiers.
+export const IMG_SCHEME = "tildone:img/";
+
+/** The markdown a notes embed of an attached image is written as. */
+export function imageEmbedMarkdown(id: number, alt: string): string {
+  // ] and ) would terminate the alt text / URL early; a filename may contain them.
+  const safeAlt = alt.replace(/[[\]]/g, "");
+  return `![${safeAlt}](${IMG_SCHEME}${id})`;
+}
+
 // Visiting only `text` nodes means refs written inside `code`/`inlineCode` are
 // left literal — those nodes carry a `value` string, not text children.
 export function remarkTaskRefs() {
@@ -50,6 +62,6 @@ export function remarkTaskRefs() {
 // it only ever routes to openEditor, never navigates — and defer everything else
 // to the default transform, which still neutralises javascript:/data: URLs.
 export function taskUrlTransform(url: string) {
-  if (url.startsWith(TASK_SCHEME)) return url;
+  if (url.startsWith(TASK_SCHEME) || url.startsWith(IMG_SCHEME)) return url;
   return defaultUrlTransform(url);
 }

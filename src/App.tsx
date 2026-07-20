@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import { useAI } from "./ai";
+import { useFileDropListener } from "./fileDrop";
 import { AISettings } from "./components/AISettings";
 import { TildoneMark } from "./components/Brand";
 import { CalendarView } from "./components/CalendarView";
@@ -82,6 +83,10 @@ function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const quickAddRef = useRef<HTMLInputElement>(null);
   const [firstRunDone, setFirstRunDone] = useState(firstRunDismissed);
+
+  // One app-wide listener for native OS file drops; individual surfaces opt in
+  // with useDropTarget (see src/fileDrop.ts for why it can't be per-element).
+  useFileDropListener();
 
   useEffect(() => {
     void init();

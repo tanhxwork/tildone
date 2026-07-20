@@ -501,6 +501,14 @@ export async function purgeTrashedBefore(cutoff: string): Promise<void> {
   ]);
 }
 
+/** Every task id still in the DB, trashed included — the attachment sweep must not
+ *  delete files belonging to a task the user can still restore. */
+export async function allTaskIds(): Promise<Set<number>> {
+  const d = await getDb();
+  const rows = await d.select<{ id: number }[]>("SELECT id FROM tasks");
+  return new Set(rows.map((r) => r.id));
+}
+
 export async function insertTag(name: string, color: string): Promise<number> {
   const d = await getDb();
   const result = await d.execute("INSERT INTO tags (name, color) VALUES ($1, $2)", [
