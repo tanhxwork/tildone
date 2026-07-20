@@ -5054,6 +5054,11 @@ textarea:focus-visible,
   cursor: default;
 }
 
+/* Icon-only launcher: the brand mark is the whole label (name on title/aria). */
+.session-start-btn--mark {
+  padding: 3px 6px;
+}
+
 .hosted-chip {
   display: inline-flex;
   align-items: center;

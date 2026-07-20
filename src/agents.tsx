@@ -72,6 +72,40 @@ const CursorMark = (p: MarkProps) => (
   </Frame>
 );
 
+// The OpenCode frame. The official mark is a solid slab with a hollow window;
+// drawn filled at 14px it reads as a black brick beside the line marks, so it
+// is drawn as the same frame in stroke, at the weight the other marks use.
+const OpencodeMark = (p: MarkProps) => (
+  <Frame {...p}>
+    <rect
+      x="3.2"
+      y="2"
+      width="17.6"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinejoin="round"
+    />
+  </Frame>
+);
+
+// A shell prompt — not a brand; the honest mark for "your own terminal".
+const ShellMark = (p: MarkProps) => (
+  <Frame {...p}>
+    <g
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="13" y1="19" x2="21" y2="19" />
+    </g>
+  </Frame>
+);
+
 // Fallback: a small spark-in-a-ring, clearly "an agent" without claiming a brand.
 const GenericAgentMark = (p: MarkProps) => (
   <Frame {...p}>
@@ -101,6 +135,27 @@ const GENERIC: Omit<AgentIdentity, "label"> = {
   color: "#8a8a8a",
   Mark: GenericAgentMark,
 };
+
+/**
+ * The mark for a hosted-session adapter id (the Session row's launcher buttons
+ * and chips). Distinct from `agentIdentity`, which matches free-form MCP client
+ * names; adapter ids are a closed set we define ourselves in host.rs.
+ */
+export function adapterMark(adapterId: string): (p: MarkProps) => ReactElement {
+  switch (adapterId) {
+    case "claude":
+      return ClaudeMark;
+    case "codex":
+      return CodexMark;
+    case "opencode":
+      return OpencodeMark;
+    case "shell":
+      return ShellMark;
+    default:
+      // An adapter we haven't branded yet is still a terminal.
+      return ShellMark;
+  }
+}
 
 /**
  * Resolve a raw client name to how it should look.
