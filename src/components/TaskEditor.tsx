@@ -45,7 +45,7 @@ import {
   IconX,
   LinkKindIcon,
 } from "./Icons";
-import { agentIdentity } from "../agents";
+import { adapterMark, agentIdentity } from "../agents";
 import { useArtifactStore } from "../artifactStore";
 import {
   hostedForTask,
@@ -210,10 +210,12 @@ export function TaskEditor() {
   // 2026-07-19-hosted-agent-sessions). Independent of `presence`: aliveness
   // here is owned-process fact, not a heartbeat.
   const hosted = hostedForTask(hostSessions, task.id);
+  const HostedMark = hosted ? adapterMark(hosted.adapter_id) : null;
   // F3: a dead-but-resumable session from a previous run. Only offered when
   // no current session exists — a live one always wins the row.
   const hostResumables = useHostStore((s) => s.resumables);
   const resumable = hosted ? null : resumableForTask(hostResumables, task.id);
+  const ResumableMark = resumable ? adapterMark(resumable.adapter_id) : null;
   // Artifact digest (F1): durable-trace facts for this task, if any exist.
   const artifacts = useArtifactStore((s) => s.facts[task.id]);
 
@@ -753,7 +755,7 @@ export function TaskEditor() {
                             : undefined
                         }
                       >
-                        <IconTerminal size={12} />
+                        {HostedMark && <HostedMark size={12} />}
                         {hosted.adapter_name}
                         <span className="hosted-chip-state">
                           {hosted.exited ? "exited" : hosted.waiting ? "waiting ❯" : "live"}
@@ -806,26 +808,31 @@ export function TaskEditor() {
                       title={`Resume the ${resumable.adapter_name} session from the last run — continues its conversation`}
                       onClick={() => void resumeHostedSession(resumable)}
                     >
-                      <IconTerminal size={12} />
+                      {ResumableMark && <ResumableMark size={12} />}
                       Resume {resumable.adapter_name}
                     </button>
                   ) : (
-                    hostAdapters.map((a) => (
-                      <button
-                        key={a.id}
-                        className="session-start-btn"
-                        disabled={!a.available || starting}
-                        title={
-                          a.available
-                            ? `Start a ${a.name} session on this task`
-                            : `${a.name} CLI not found on this machine`
-                        }
-                        onClick={() => void startHostedSession(a.id)}
-                      >
-                        <IconTerminal size={12} />
-                        {a.name}
-                      </button>
-                    ))
+                    // Icon-only launchers: the brand mark is the label; the
+                    // name survives on hover (title) and for assistive tech.
+                    hostAdapters.map((a) => {
+                      const Mark = adapterMark(a.id);
+                      return (
+                        <button
+                          key={a.id}
+                          className="session-start-btn session-start-btn--mark"
+                          disabled={!a.available || starting}
+                          aria-label={`Start a ${a.name} session on this task`}
+                          title={
+                            a.available
+                              ? `Start a ${a.name} session on this task`
+                              : `${a.name} CLI not found on this machine`
+                          }
+                          onClick={() => void startHostedSession(a.id)}
+                        >
+                          <Mark size={14} />
+                        </button>
+                      );
+                    })
                   )}
                   {sessionError && (
                     <span className="detail-agent-miss" role="status">
