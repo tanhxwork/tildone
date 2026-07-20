@@ -73,20 +73,15 @@ const CursorMark = (p: MarkProps) => (
 );
 
 // The OpenCode frame. The official mark is a solid slab with a hollow window;
-// drawn filled at 14px it reads as a black brick beside the line marks, so it
-// is drawn as the same frame in stroke, at the weight the other marks use.
+// drawn filled at 14px it reads as a black brick beside the line marks, so both
+// the slab and its window are drawn in stroke. The window is what makes it a
+// mark rather than an empty box — without it the glyph reads as a placeholder.
 const OpencodeMark = (p: MarkProps) => (
   <Frame {...p}>
-    <rect
-      x="3.2"
-      y="2"
-      width="17.6"
-      height="20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.4}
-      strokeLinejoin="round"
-    />
+    <g fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinejoin="round">
+      <rect x="3.2" y="2" width="17.6" height="20" />
+      <rect x="8" y="7.5" width="8" height="9" />
+    </g>
   </Frame>
 );
 
