@@ -33,3 +33,8 @@ docs/
 
 # per-worktree generated dev icons (scripts/tauri.sh); the committed red set stays
 src-tauri/icons-dev/*/
+
+# design-sync (dev tooling — tracked in the private repo)
+.design-sync/
+.ds-sync/
+ds-bundle/
