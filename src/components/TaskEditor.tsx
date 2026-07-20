@@ -133,6 +133,8 @@ export function TaskEditor() {
   const [commentInput, setCommentInput] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(loadExpanded);
+  /** Why the last dropped file didn't attach, shown under the Images row. */
+  const [dropNote, setDropNote] = useState<string | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [jumpMiss, setJumpMiss] = useState(false);
@@ -184,7 +186,16 @@ export function TaskEditor() {
   const onDropFiles = useCallback(
     (paths: string[]) => {
       if (dropTaskId === undefined) return;
-      void imagesFromPaths(paths).then(async ({ images: dropped }) => {
+      void imagesFromPaths(paths).then(async ({ images: dropped, oversize, unreadable }) => {
+        // Say why nothing appeared. Silently swallowing a failed drop leaves the
+        // user re-dragging the same file (found by the TIL-110 review pass).
+        setDropNote(
+          oversize > 0
+            ? "Image over 10 MB skipped"
+            : unreadable > 0
+              ? "Couldn’t read that file"
+              : null,
+        );
         if (dropped.length === 0) return;
         try {
           await attachImages(dropTaskId, dropped);
@@ -257,12 +268,18 @@ export function TaskEditor() {
     }
   }
 
-  /** Append an inline embed of an attached image to the notes. Writes through
-   *  patchTask rather than only the local `notes` state, so the ref survives
-   *  whether or not the notes textarea is currently open. */
+  /** Append an inline embed of an attached image to the notes.
+   *
+   *  Composes from the *store's* notes, not the local `notes` state: local state
+   *  only re-syncs when the open task changes, so an agent writing notes over
+   *  MCP while this card is open leaves it stale — and appending to a stale copy
+   *  would silently destroy what the agent wrote (found by the TIL-111 review
+   *  pass). While the textarea is open the user's own unsaved edits are the
+   *  newer truth, so that case keeps using local state. */
   function insertImageInNotes(img: TaskImage) {
     const ref = imageEmbedMarkdown(img.id, img.filename);
-    const next = notes.trim() ? `${notes.replace(/\s+$/, "")}\n\n${ref}` : ref;
+    const base = editingNotes ? notes : (task!.notes ?? "");
+    const next = base.trim() ? `${base.replace(/\s+$/, "")}\n\n${ref}` : ref;
     setNotes(next);
     void patchTask(task!.id, { notes: next });
   }
@@ -771,6 +788,7 @@ export function TaskEditor() {
                 <IconPlus size={13} />
                 Paste image
               </button>
+              {dropNote && <span className="detail-image-note">{dropNote}</span>}
             </span>
 
             <span className="detail-prop-label">Created</span>

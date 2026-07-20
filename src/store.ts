@@ -24,6 +24,7 @@ import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
   removeImageFile,
+  removeTaskAttachments,
   saveImageFile,
   sweepOrphanAttachments,
   type PendingImage,
@@ -353,9 +354,7 @@ export const useStore = create<Store>()((set, get) => ({
         // The purge above (and any earlier one) leaves attachment files behind —
         // sweep them now that the surviving task ids are authoritative. Best-effort:
         // a failed sweep must never keep the board from loading.
-        void db
-          .allTaskIds()
-          .then((ids) => sweepOrphanAttachments(ids))
+        void sweepOrphanAttachments(db.allTaskIds)
           .then((n) => {
             if (n > 0) db.trace(`init: swept ${n} orphan attachment dir(s)`);
           })
@@ -687,6 +686,8 @@ export const useStore = create<Store>()((set, get) => ({
 
   destroyTask: async (id) => {
     await db.deleteTask(id);
+    // The task_images rows cascade with the row; the files don't.
+    void removeTaskAttachments(id);
     set((s) => {
       const links = { ...s.links };
       delete links[id];
@@ -700,7 +701,13 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   emptyTrash: async () => {
+    // Collect the ids before the delete — afterwards there is nothing to read
+    // them from, and the files would wait for the next startup sweep.
+    const trashed = get()
+      .tasks.filter((t) => t.deleted_at !== null)
+      .map((t) => t.id);
     await db.deleteAllTrashed();
+    for (const id of trashed) void removeTaskAttachments(id);
     set((s) => {
       const trashedIds = new Set(
         s.tasks.filter((t) => t.deleted_at !== null).map((t) => t.id),

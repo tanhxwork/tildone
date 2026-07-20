@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   IMG_SCHEME,
   imageEmbedMarkdown,
+  imageRefId,
   remarkTaskRefs,
   taskUrlTransform,
 } from "../src/utils/markdownTaskRefs";
@@ -26,17 +27,30 @@ function render(md: string): string {
 describe("inline image embeds", () => {
   it("writes an embed addressing the image row, not a path", () => {
     expect(imageEmbedMarkdown(12, "screenshot.png")).toBe(
-      "![screenshot.png](tildone:img/12)",
+      "![screenshot.png](tildone://img/12)",
     );
+  });
+
+  it("accepts both the spec's slashed scheme and the bare one", () => {
+    expect(imageRefId("tildone://img/12")).toBe(12);
+    expect(imageRefId("tildone:img/12")).toBe(12);
+  });
+
+  it("rejects anything that isn't a positive image id", () => {
+    expect(imageRefId("tildone://img/0")).toBeNull();
+    expect(imageRefId("tildone://img/-3")).toBeNull();
+    expect(imageRefId("tildone://img/abc")).toBeNull();
+    expect(imageRefId("https://evil.example/x.png")).toBeNull();
+    expect(imageRefId("file:///etc/passwd")).toBeNull();
   });
 
   it("strips brackets from the filename so the alt text can't terminate early", () => {
     expect(imageEmbedMarkdown(3, "shot [final].png")).toBe(
-      "![shot final.png](tildone:img/3)",
+      "![shot final.png](tildone://img/3)",
     );
   });
 
-  it("keeps the tildone:img src through the sanitizer", () => {
+  it("keeps the embed src through the sanitizer", () => {
     const out = render(imageEmbedMarkdown(12, "screenshot.png"));
     expect(out).toContain(`src="${IMG_SCHEME}12"`);
     expect(out).toContain('alt="screenshot.png"');

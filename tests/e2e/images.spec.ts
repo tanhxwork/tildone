@@ -79,7 +79,7 @@ describe("task images", () => {
     const embed = $(".detail-notes-rendered img.md-image");
     await embed.waitForExist({ timeout: 10000 });
     const src = await embed.getAttribute("src");
-    expect(src).not.toContain("tildone:img/");
+    expect(src).not.toContain("tildone:");
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/image-embed.png");

@@ -199,7 +199,9 @@ export function NotesView({
           }
         }}
       >
-        <Markdown sections={sectioned ? sectionUi : undefined}>{source}</Markdown>
+        <Markdown taskId={taskId} sections={sectioned ? sectionUi : undefined}>
+          {source}
+        </Markdown>
       </div>
     </div>
   );

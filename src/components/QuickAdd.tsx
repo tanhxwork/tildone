@@ -31,6 +31,10 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
   // land on. Chips render in the preview row beside the parsed text tokens.
   const [pending, setPending] = useState<PendingImage[]>([]);
   const [skippedOversize, setSkippedOversize] = useState(false);
+  // Kept apart from the oversize note: a file we couldn't open (permissions, a
+  // corrupt image) is not a size problem, and saying so sends the user looking
+  // for the wrong thing.
+  const [skippedUnreadable, setSkippedUnreadable] = useState(false);
   // Revoke outstanding chip object-URLs if the component unmounts (view switch)
   // with pastes still pending. Ref, not dep-driven cleanup: a cleanup keyed on
   // `pending` would revoke URLs the chips still render.
@@ -70,9 +74,10 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
   // Dropping image files onto the bar collects them as chips, exactly as a paste
   // does — the task they attach to is still created on Enter.
   const onDropFiles = useCallback((paths: string[]) => {
-    void imagesFromPaths(paths).then(({ images, skipped }) => {
+    void imagesFromPaths(paths).then(({ images, oversize, unreadable }) => {
       if (images.length > 0) setPending((p) => [...p, ...images]);
-      if (skipped > 0) setSkippedOversize(true);
+      if (oversize > 0) setSkippedOversize(true);
+      if (unreadable > 0) setSkippedUnreadable(true);
     });
   }, []);
   const { isOver, dropProps } = useDropTarget("quick-add", onDropFiles);
@@ -147,7 +152,7 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
           onPaste={onPaste}
         />
       </div>
-      {(hasTokens || pending.length > 0 || skippedOversize) && (
+      {(hasTokens || pending.length > 0 || skippedOversize || skippedUnreadable) && (
         <div className="quick-add-preview" aria-live="polite">
           {pending.map((img) => (
             <span key={img.key} className="qa-image-chip">
@@ -168,6 +173,9 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
           ))}
           {skippedOversize && (
             <span className="qa-chip qa-skipped">Image over 10 MB skipped</span>
+          )}
+          {skippedUnreadable && (
+            <span className="qa-chip qa-skipped">Couldn’t read that file</span>
           )}
           {parsed.dueDate !== null && (
             <span className="qa-chip qa-date">{dueLabel(parsed.dueDate)}</span>

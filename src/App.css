@@ -5364,6 +5364,15 @@ textarea:focus-visible,
   object-fit: cover;
 }
 
+/* Why a dropped file didn't attach. Sits with the tiles in the Images row and
+   carries the same danger tint as Quick Add's skipped chip. */
+.detail-image-note {
+  align-self: center;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* Reveal/insert/remove surface on hover only — resting tiles stay quiet. */
 .detail-image-actions {
   position: absolute;

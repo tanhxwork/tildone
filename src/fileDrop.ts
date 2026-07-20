@@ -79,6 +79,11 @@ export function useDropTarget(
   useEffect(() => {
     handlers.set(name, onDrop);
     return () => {
+      // Only retract our own registration. If a second target claimed this name
+      // while we were mounted, it owns the entry now, and deleting it would
+      // leave that target attributed but unreachable (found by the TIL-110
+      // review pass).
+      if (handlers.get(name) !== onDrop) return;
       handlers.delete(name);
       // A target that unmounts mid-drag would otherwise leave its ring lit.
       if (useFileDropStore.getState().over === name) {

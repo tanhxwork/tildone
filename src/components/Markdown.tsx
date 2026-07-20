@@ -7,9 +7,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isHttpUrl } from "../utils/links";
 import {
+  imageRefId,
   remarkTaskRefs,
   taskUrlTransform,
-  IMG_SCHEME,
   TASK_SCHEME,
 } from "../utils/markdownTaskRefs";
 import { imageSrc, useImageBase } from "../utils/images";
@@ -54,23 +54,32 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   );
 }
 
-/** ![alt](tildone:img/12) — an image attached to a task, rendered inline in its
- *  notes. The row is looked up live so a removed image degrades to its alt text
- *  rather than a broken tile, and clicking opens the same lightbox as the tile. */
+/** The task whose notes are being rendered. An embed may only resolve to that
+ *  task's own attachments — notes are agent-writable over MCP, so a global
+ *  by-id lookup would let one task's notes display another's image (found by
+ *  the TIL-111 review pass). Absent (the Activity feed, comments) means no
+ *  task owns this text, and embeds resolve to nothing. */
+const OwnerContext = createContext<number | null>(null);
+
+/** ![alt](tildone://img/12) — an image attached to this task, rendered inline in
+ *  its notes. The row is looked up live so a removed image degrades to its alt
+ *  text rather than a broken tile, and clicking opens the lightbox. */
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const ownerTaskId = useContext(OwnerContext);
   const images = useStore((s) => s.images);
   const openLightbox = useLightbox((s) => s.open);
   useImageBase();
 
-  if (!src?.startsWith(IMG_SCHEME)) {
+  const id = src ? imageRefId(src) : null;
+  if (id === null) {
     // Any other src is a remote/absolute URL the webview can't be trusted to
     // fetch; show the alt text rather than reaching off-machine from notes.
     return <span className="md-image-missing">{alt || "image"}</span>;
   }
-  const id = Number(src.slice(IMG_SCHEME.length));
-  const image = Object.values(images)
-    .flat()
-    .find((img) => img.id === id);
+  const image =
+    ownerTaskId === null
+      ? undefined
+      : (images[ownerTaskId] ?? []).find((img) => img.id === id);
   const url = image ? imageSrc(image) : null;
   if (!image || !url) {
     return <span className="md-image-missing">{alt || "Image removed"}</span>;
@@ -179,10 +188,14 @@ export function Markdown({
   children,
   inline = false,
   sections,
+  taskId,
 }: {
   children: string;
   inline?: boolean;
   sections?: SectionUi;
+  /** Whose notes these are. Required for ![](tildone://img/…) embeds to resolve;
+   *  without it an embed renders as its alt text. */
+  taskId?: number;
 }) {
   const rendered = (
     <ReactMarkdown
@@ -193,6 +206,9 @@ export function Markdown({
       {children}
     </ReactMarkdown>
   );
-  if (!sections) return rendered;
-  return <SectionContext.Provider value={sections}>{rendered}</SectionContext.Provider>;
+  const owned = (
+    <OwnerContext.Provider value={taskId ?? null}>{rendered}</OwnerContext.Provider>
+  );
+  if (!sections) return owned;
+  return <SectionContext.Provider value={sections}>{owned}</SectionContext.Provider>;
 }

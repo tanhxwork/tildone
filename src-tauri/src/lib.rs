@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 mod artifacts;
+mod drops;
 mod forge;
 mod hookinstall;
 mod host;
@@ -251,7 +252,13 @@ pub fn run() {
             });
             Ok(())
         })
+        .manage(drops::DroppedPaths::default())
         .on_window_event(|window, event| {
+            // Remember what the OS just handed us, so read_dropped_image can
+            // serve those paths — and nothing else — to the webview.
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                window.state::<drops::DroppedPaths>().remember(paths);
+            }
             // Background mode: while the agent server is running, closing the
             // window hides it to the tray instead of quitting, so a parked
             // list_changes agent keeps serving. When the server is off, close
@@ -267,6 +274,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            drops::read_dropped_image,
             ai::ai_probe,
             ai::ai_identify,
             ai::ai_chat,

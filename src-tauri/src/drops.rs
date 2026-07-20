@@ -1,0 +1,74 @@
+//! Reading files the user dragged in from the OS.
+//!
+//! The webview cannot be given a filesystem read scope wide enough to cover
+//! "wherever the user dragged that image from" — `$HOME/**` would hand every
+//! line of renderer code standing read access to SSH keys, `.env` files and
+//! `~/Library`, for a capability that is only ever needed for the handful of
+//! paths in one drop gesture (found by the TIL-110 review pass).
+//!
+//! So the grant follows the gesture instead of the directory: Rust watches the
+//! window's own drag-drop events, remembers exactly the paths the OS delivered,
+//! and `read_dropped_image` serves only those, only briefly. A path the user
+//! never dropped is unreadable no matter who asks.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// How long a dropped path stays readable. Long enough for the webview to
+/// decode and downscale a large image, far too short to be a standing grant.
+const DROP_TTL: Duration = Duration::from_secs(30);
+
+/// Refuse anything larger than the webview's own per-image ceiling
+/// (MAX_IMAGE_BYTES in src/utils/images.ts) before it is ever read into memory.
+const MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+#[derive(Default)]
+pub struct DroppedPaths(Mutex<HashMap<PathBuf, Instant>>);
+
+impl DroppedPaths {
+    /// Record the paths of one drop and forget any that have aged out.
+    pub fn remember(&self, paths: &[PathBuf]) {
+        let Ok(mut map) = self.0.lock() else { return };
+        let now = Instant::now();
+        map.retain(|_, at| now.duration_since(*at) < DROP_TTL);
+        for path in paths {
+            map.insert(path.clone(), now);
+        }
+    }
+
+    fn is_fresh(&self, path: &PathBuf) -> bool {
+        let Ok(map) = self.0.lock() else { return false };
+        map.get(path)
+            .is_some_and(|at| Instant::now().duration_since(*at) < DROP_TTL)
+    }
+}
+
+/// Read one image the user just dropped. Errors are strings the UI reports as
+/// "couldn't read" — deliberately distinct from the over-size case, which the
+/// user can act on.
+#[tauri::command]
+pub fn read_dropped_image(
+    state: tauri::State<'_, DroppedPaths>,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let path = PathBuf::from(&path);
+    if !state.is_fresh(&path) {
+        return Err("not a recently dropped path".into());
+    }
+    // Re-stat here rather than trusting a size the caller checked earlier: the
+    // file could have been swapped between the two calls.
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".into());
+    }
+    if meta.len() > MAX_BYTES {
+        return Err("too large".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("too large".into());
+    }
+    Ok(tauri::ipc::Response::new(bytes))
+}
