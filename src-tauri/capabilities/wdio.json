@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "wdio",
+  "description": "WebDriver e2e bridge — selected only by tauri.e2e.conf.json",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "wdio-webdriver:default",
+    "wdio:default"
+  ]
+}

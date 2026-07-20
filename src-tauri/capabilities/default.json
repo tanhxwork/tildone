@@ -34,8 +34,6 @@
       "allow": [{ "path": "$APPDATA/attachments/**" }]
     },
     "notification:default",
-    "deep-link:default",
-    "wdio-webdriver:default",
-    "wdio:default"
+    "deep-link:default"
   ]
 }

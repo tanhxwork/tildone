@@ -2,6 +2,9 @@
   "$schema": "https://schema.tauri.app/config/2",
   "identifier": "com.tildone.e2e",
   "app": {
-    "withGlobalTauri": true
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["default", "wdio"]
+    }
   }
 }
