@@ -402,9 +402,23 @@ pub(crate) struct UnboundHosted {
     /// artifacts.rs needs a task to look up, so it skips these.
     pub task_id: Option<i64>,
     pub adapter_id: &'static str,
+    /// The cwd the session was spawned in.
     pub cwd: String,
+    /// The PTY child's pid, when the OS still reports one. A shell's own cwd
+    /// follows the user's `cd`s, so it — not `cwd` — names the directory an
+    /// agent CLI launched at the prompt will file its transcript under.
+    pub pid: Option<u32>,
     /// ISO — binding only accepts artifacts stamped at or after this.
     pub started_at: String,
+}
+
+/// Which adapters can reveal a CLI session id through an artifact. Agent
+/// adapters write one themselves; a shell writes none, but the user may run
+/// `claude` or `codex` at its prompt, and that CLI's artifacts are what bind
+/// the shell's pane to a card (TIL-128). Adapters that produce nothing we can
+/// watch (opencode) stay out.
+fn bindable(adapter_id: &str) -> bool {
+    matches!(adapter_id, "claude" | "codex" | "shell")
 }
 
 pub(crate) fn unbound_hosted() -> Vec<UnboundHosted> {
@@ -412,12 +426,13 @@ pub(crate) fn unbound_hosted() -> Vec<UnboundHosted> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, s)| s.cli_session_id.is_none() && matches!(s.adapter_id, "claude" | "codex"))
+        .filter(|(_, s)| s.cli_session_id.is_none() && bindable(s.adapter_id))
         .map(|(id, s)| UnboundHosted {
             session_id: *id,
             task_id: s.task_id,
             adapter_id: s.adapter_id,
             cwd: s.cwd.clone(),
+            pid: s.child.process_id(),
             started_at: s.started_at.clone(),
         })
         .collect()
@@ -1403,6 +1418,14 @@ mod tests {
         // And the waiting classifier never has a verdict for it — a shell
         // prompt is not "waiting for you".
         assert_eq!(screen_waiting("shell", "~/projects %"), None);
+    }
+
+    #[test]
+    fn shells_are_watched_for_binding_because_a_cli_may_run_at_the_prompt() {
+        assert!(bindable("shell"), "TIL-128: a shell-hosted claude must be able to bind");
+        assert!(bindable("claude"));
+        assert!(bindable("codex"));
+        assert!(!bindable("opencode"), "no artifact we know how to watch");
     }
 
     #[test]
