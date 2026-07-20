@@ -445,7 +445,7 @@ fn lsof_cwd(stdout: &str) -> Option<String> {
 }
 
 /// One row of the process snapshot: pid, parent, and the command line.
-struct Proc {
+pub(crate) struct Proc {
     pid: u32,
     ppid: u32,
     cmd: String,
@@ -464,27 +464,105 @@ fn parse_ps(stdout: &str) -> Vec<Proc> {
         .collect()
 }
 
-/// Is a CLI of `kind` running underneath `ancestor` right now? Both CLIs are
-/// real binaries named after their adapter, so the leading token's basename
-/// identifies them (a shim execs a vendor binary of the same name).
+/// Is this command line a CLI of `kind`? Both CLIs are real binaries named
+/// after their adapter, so the leading token's basename identifies them (a
+/// shim execs a vendor binary of the same name).
+fn cmd_is_cli(cmd: &str, kind: &str) -> bool {
+    cmd.split_whitespace()
+        .next()
+        .and_then(|t| t.rsplit('/').next())
+        .is_some_and(|base| base == kind)
+}
+
+/// Does `cmd` prove ownership of `uuid`? A descendant of the shell donates its
+/// id only when its own argv names it: `--session-id <uuid>`, or a `--resume`
+/// target whose file stem is the uuid. Descendant-ness alone is not proof —
+/// every session for one repo writes into the same slug dir, so an unrelated
+/// `claude` elsewhere on the machine can touch a transcript there while a
+/// perfectly innocent bare-argv `claude` runs inside the pane (the TIL-130
+/// regression: a `--fork-session` process outside the shell donated its uuid).
 ///
-/// This is what stops a shell pane from adopting a *stranger's* session: an
-/// unrelated `claude` in the same directory writes a transcript into the same
-/// slug dir, and mtime alone cannot tell the two apart.
-fn has_cli_descendant(procs: &[Proc], ancestor: u32, kind: &str) -> bool {
+/// Matching is token-exact, never a substring: a uuid appearing inside some
+/// longer argument is not a claim of ownership.
+pub(crate) fn argv_proves_uuid(cmd: &str, uuid: &str) -> bool {
+    let mut tokens = cmd.split_whitespace();
+    while let Some(tok) = tokens.next() {
+        match tok {
+            "--session-id" | "--resume" => match tokens.next() {
+                // `--resume` takes either a bare id or a transcript path.
+                Some(v) if v == uuid => return true,
+                Some(v) => {
+                    let stem = v.rsplit('/').next().unwrap_or(v);
+                    let stem = stem.strip_suffix(".jsonl").unwrap_or(stem);
+                    if stem == uuid {
+                        return true;
+                    }
+                }
+                None => return false,
+            },
+            _ => {
+                // `--session-id=<uuid>` is the same assertion, spelled joined.
+                for k in ["--session-id=", "--resume="] {
+                    if let Some(v) = tok.strip_prefix(k) {
+                        let stem = v.rsplit('/').next().unwrap_or(v);
+                        if stem.strip_suffix(".jsonl").unwrap_or(stem) == uuid {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Is a CLI of `kind` running under `ancestor` that *proves* it owns `uuid`?
+/// The tightened shell guard: `has_cli_descendant` answers "is someone home",
+/// which a stranger's artifact can ride; this answers "did the process in this
+/// pane say this id is his".
+fn descendant_proves_uuid(procs: &[Proc], ancestor: u32, kind: &str, uuid: &str) -> bool {
     procs.iter().any(|p| {
-        p.cmd
-            .split_whitespace()
-            .next()
-            .and_then(|t| t.rsplit('/').next())
-            .is_some_and(|base| base == kind)
+        cmd_is_cli(&p.cmd, kind)
+            && argv_proves_uuid(&p.cmd, uuid)
             && descends_from(procs, p.pid, ancestor)
     })
 }
 
+/// Which hosted session owns a claim, decided by process ancestry rather than
+/// by any shared directory. `last_pid` is reported by the session's own
+/// heartbeat hook, so it cannot be donated by a stranger: if it descends from
+/// a session's PTY child, that session is where the claiming agent runs.
+///
+/// `candidates` is `(session_id, pty_child_pid)`. The deepest match wins —
+/// with nested panes the innermost shell is the one the agent is actually in.
+pub(crate) fn session_for_claim(
+    procs: &[Proc],
+    candidates: &[(u64, u32)],
+    last_pid: u32,
+) -> Option<u64> {
+    candidates
+        .iter()
+        .filter(|(_, pty)| descends_from(procs, last_pid, *pty))
+        .max_by_key(|(_, pty)| depth_of(procs, *pty))
+        .map(|(session_id, _)| *session_id)
+}
+
+/// How far `pid` sits from the process tree's root, for picking the innermost
+/// of several matching ancestors. Bounded like every other walk here.
+fn depth_of(procs: &[Proc], pid: u32) -> usize {
+    let mut cur = pid;
+    for d in 0..procs.len() {
+        match procs.iter().find(|p| p.pid == cur) {
+            Some(p) if p.ppid != 0 => cur = p.ppid,
+            _ => return d,
+        }
+    }
+    procs.len()
+}
+
 /// Walk the ppid chain up from `pid`. Bounded by the snapshot length so a
 /// cycle in a stale snapshot cannot hang the watcher thread.
-fn descends_from(procs: &[Proc], pid: u32, ancestor: u32) -> bool {
+pub(crate) fn descends_from(procs: &[Proc], pid: u32, ancestor: u32) -> bool {
     let mut cur = pid;
     for _ in 0..procs.len() {
         if cur == ancestor {
@@ -507,18 +585,21 @@ fn descends_from(procs: &[Proc], pid: u32, ancestor: u32) -> bool {
 /// already exists, so there is nothing to fire until the next sweep. Both
 /// would otherwise leave the pane saying "no card yet" for up to a minute.
 ///
-/// Binding is what ends the fast sweep: a bound session leaves
-/// `unbound_hosted`, so the cost is paid only while a shell is still looking
-/// for its card.
+/// Getting a *card* ends the fast sweep — not getting a resume key. Since
+/// TIL-130 split the two, a shell may legitimately keep a null
+/// `cli_session_id` for its whole life (a bare `claude` can never prove one),
+/// so keying the fast sweep on "still in `unbound_hosted`" would leave every
+/// such pane paying `lsof` every 5s forever. Once the card is bound there is
+/// nothing urgent left to discover.
 fn sweep_interval(binds: &[BindTarget]) -> Duration {
-    if binds.iter().any(|b| b.adapter_id == "shell") {
+    if binds.iter().any(|b| b.adapter_id == "shell" && b.task_id.is_none()) {
         Duration::from_secs(5)
     } else {
         Duration::from_secs(60)
     }
 }
 
-fn ps_snapshot() -> Vec<Proc> {
+pub(crate) fn ps_snapshot() -> Vec<Proc> {
     std::process::Command::new("/bin/ps")
         .args(["-Ao", "pid=,ppid=,command="])
         .output()
@@ -592,13 +673,20 @@ fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> 
         if !matched {
             continue;
         }
-        // A shell only owns this artifact if the matching CLI is actually
-        // running inside it — otherwise a stranger's session in the same cwd
-        // would bind the pane to the wrong card.
+        // A shell owns this artifact only if a CLI running inside it *names
+        // this uuid in its own argv*. "Some CLI is running beneath me" was the
+        // old test and it was not ownership: every session for one repo writes
+        // into the same slug dir, so a stranger's transcript passed the guard
+        // on an innocent descendant's credentials and donated its id (TIL-130).
+        //
+        // A bare `claude` at the prompt therefore yields no resume key, which
+        // is the honest answer — we cannot tell which transcript is his. The
+        // card does not depend on this: it arrives via pid ancestry on the
+        // claim (`host::try_adopt_claim`).
         if b.adapter_id == "shell" {
             let Some(pid) = b.pid else { continue };
             let snapshot = procs.get_or_insert_with(ps_snapshot);
-            if !has_cli_descendant(snapshot, pid, b.kind) {
+            if !descendant_proves_uuid(snapshot, pid, b.kind, &uuid) {
                 continue;
             }
         }
@@ -927,16 +1015,92 @@ mod tests {
 
     #[test]
     fn a_cli_binds_a_shell_only_when_it_runs_underneath_that_shell() {
+        const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
+        let owned = format!("/usr/local/bin/claude --session-id {U}");
         let table = procs(&[
-            (100, 1, "/bin/zsh -l"),          // our hosted shell
-            (101, 100, "/usr/local/bin/claude"), // …running claude
-            (200, 1, "/bin/zsh -l"),          // a stranger's shell
-            (201, 200, "/usr/local/bin/claude"), // …with its own claude
+            (100, 1, "/bin/zsh -l"),  // our hosted shell
+            (101, 100, &owned),       // …running a claude that names the id
+            (200, 1, "/bin/zsh -l"),  // a stranger's shell
+            (201, 200, &owned),       // …with a claude naming the same id
         ]);
-        assert!(has_cli_descendant(&table, 100, "claude"));
-        assert!(has_cli_descendant(&table, 200, "claude"));
-        assert!(!has_cli_descendant(&table, 100, "codex"), "wrong CLI must not bind");
-        assert!(!has_cli_descendant(&table, 300, "claude"), "unknown shell owns nothing");
+        assert!(descendant_proves_uuid(&table, 100, "claude", U));
+        assert!(descendant_proves_uuid(&table, 200, "claude", U));
+        assert!(!descendant_proves_uuid(&table, 100, "codex", U), "wrong CLI must not bind");
+        assert!(!descendant_proves_uuid(&table, 300, "claude", U), "unknown shell owns nothing");
+    }
+
+    /// The TIL-130 regression, verbatim from the installed app: a foreign
+    /// `--fork-session` process outside the shell wrote into the shared slug
+    /// dir while an innocent bare-argv `claude` ran *inside* the pane. The old
+    /// guard ("is some claude running beneath me?") said yes and bound the
+    /// stranger's uuid — permanently, since binding is set-once.
+    #[test]
+    fn a_strangers_uuid_cannot_bind_even_while_an_innocent_cli_runs_inside() {
+        const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
+        let stranger = format!("claude --session-id {U} --fork-session --resume /p/1d76953e.jsonl");
+        let table = procs(&[
+            (82600, 1, "/Applications/Tildone.app/Contents/MacOS/tildone"),
+            (15634, 82600, "/bin/zsh -l"), // the hosted shell (PTY child)
+            (16078, 15634, "claude"),      // the real inner CLI — bare argv, proves nothing
+            (24027, 1, &stranger),         // the donor, outside the shell entirely
+        ]);
+        assert!(
+            !descendant_proves_uuid(&table, 15634, "claude", U),
+            "a non-descendant naming the uuid must never donate it"
+        );
+        // And the honest consequence: the inner CLI yields no resume key.
+        assert!(!argv_proves_uuid("claude", U), "bare argv proves no id");
+    }
+
+    #[test]
+    fn argv_proof_accepts_only_an_explicit_claim_of_the_id() {
+        const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
+        assert!(argv_proves_uuid(&format!("claude --session-id {U}"), U));
+        assert!(argv_proves_uuid(&format!("claude --session-id={U}"), U));
+        assert!(argv_proves_uuid(&format!("claude --resume {U}"), U));
+        assert!(argv_proves_uuid(&format!("claude --resume /a/b/{U}.jsonl"), U));
+        assert!(!argv_proves_uuid("claude", U));
+        assert!(!argv_proves_uuid("claude --session-id", U), "a dangling flag proves nothing");
+        assert!(
+            !argv_proves_uuid(&format!("claude --session-id 00000000-0000-4000-8000-{U}"), U),
+            "a uuid must be the whole token, never a substring"
+        );
+        assert!(
+            !argv_proves_uuid(&format!("claude --add-dir /logs/{U}-notes"), U),
+            "the id must be claimed by an identity flag, not merely appear"
+        );
+    }
+
+    #[test]
+    fn a_claim_binds_the_pane_its_process_actually_runs_inside() {
+        let table = procs(&[
+            (82600, 1, "tildone"),
+            (15634, 82600, "/bin/zsh -l"), // hosted shell A (session 7)
+            (16078, 15634, "claude"),
+            (21264, 16078, "/bin/zsh -c ..."), // the tool shell the hook beats from
+            (40000, 82600, "/bin/zsh -l"),     // hosted shell B (session 8)
+            (40001, 1, "claude"),              // an agent in no pane at all
+        ]);
+        let panes = [(7u64, 15634u32), (8, 40000)];
+        assert_eq!(session_for_claim(&table, &panes, 21264), Some(7), "deep descendant binds");
+        assert_eq!(session_for_claim(&table, &panes, 16078), Some(7));
+        assert_eq!(session_for_claim(&table, &panes, 40000), Some(8));
+        assert_eq!(session_for_claim(&table, &panes, 40001), None, "outsider binds nothing");
+        assert_eq!(session_for_claim(&table, &[], 21264), None);
+    }
+
+    #[test]
+    fn nested_panes_bind_the_innermost_one() {
+        // A hosted shell whose agent opened another hosted shell: both are
+        // ancestors of the claim, and the card belongs to the pane it is in.
+        let table = procs(&[
+            (100, 1, "/bin/zsh -l"),   // outer pane (session 1)
+            (101, 100, "claude"),
+            (102, 101, "/bin/zsh -l"), // inner pane (session 2)
+            (103, 102, "claude"),
+        ]);
+        let panes = [(1u64, 100u32), (2, 102)];
+        assert_eq!(session_for_claim(&table, &panes, 103), Some(2));
     }
 
     fn target(adapter_id: &'static str) -> BindTarget {
@@ -959,6 +1123,16 @@ mod tests {
         assert_eq!(fast, Duration::from_secs(5));
         // No targets at all is the idle case — coast.
         assert_eq!(sweep_interval(&[]), slow);
+    }
+
+    #[test]
+    fn a_shell_that_already_has_its_card_stops_paying_the_fast_sweep() {
+        // Since the card and the resume key were split, a shell can stay in the
+        // watch set for life (a bare `claude` never proves a key). Only the
+        // still-cardless one is urgent.
+        let mut carded = target("shell");
+        carded.task_id = Some(1);
+        assert_eq!(sweep_interval(&[carded]), Duration::from_secs(60));
     }
 
     #[test]

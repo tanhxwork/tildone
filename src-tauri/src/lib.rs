@@ -167,6 +167,12 @@ pub fn run() {
             sql: include_str!("../migrations/020_unbound_sessions.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 21,
+            description: "shell_bind_identity",
+            sql: include_str!("../migrations/021_shell_bind_identity.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

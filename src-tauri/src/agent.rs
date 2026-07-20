@@ -1144,6 +1144,22 @@ impl TildoneAgent {
         self.beats.lock().unwrap().get(session_id).and_then(|b| b.pid)
     }
 
+    /// The pid to resolve a claim's owning pane with: the live beat if there
+    /// is one, else whatever a previous beat already persisted. Read *after*
+    /// `record_claim`, because that write COALESCEs a stored pid forward — a
+    /// re-claim carrying no beat must still be bindable.
+    fn binding_pid(conn: &Connection, session_id: &str, beat: Option<u32>) -> Option<u32> {
+        beat.or_else(|| {
+            conn.query_row(
+                "SELECT last_pid FROM agent_claims WHERE session_id = ?1",
+                [session_id],
+                |r| r.get::<_, Option<u32>>(0),
+            )
+            .ok()
+            .flatten()
+        })
+    }
+
     /// Completing a task releases every claim on it.
     ///
     /// The one release signal worth trusting. Process-lifecycle events are not:
@@ -1702,9 +1718,10 @@ impl TildoneAgent {
                         agent,
                         self.beat_pid(session),
                     );
-                    // Bind-on-claim (session-first intake): an unbound hosted
-                    // session whose CLI id matches this claim adopts the card.
-                    crate::host::try_adopt_claim(session, id);
+                    // Bind-on-claim (session-first intake): the hosted session
+                    // this claim's process runs inside adopts the card.
+                    let pid = Self::binding_pid(&conn, session, self.beat_pid(session));
+                    crate::host::try_adopt_claim(session, id, pid);
                 }
             }
             Some("done") => Self::release_claims_for_task(&conn, id),
@@ -2536,7 +2553,8 @@ impl TildoneAgent {
                 // Bind-on-claim (session-first intake): the create-and-claim
                 // in one write — the canonical "card emerges from the
                 // discussion" moment.
-                crate::host::try_adopt_claim(session, id);
+                let pid = Self::binding_pid(&conn, session, self.beat_pid(session));
+                crate::host::try_adopt_claim(session, id, pid);
             }
         }
         Self::record_activity(&conn, id, "Task created", agent);
@@ -3423,6 +3441,22 @@ async fn heartbeat_handler(
                 "UPDATE agent_claims SET last_pid = ?1 WHERE session_id = ?2",
                 rusqlite::params![pid, session],
             );
+            // The other half of bind-on-claim's race: the claim may have landed
+            // before any beat, in which case there was no pid to resolve a pane
+            // with and adoption silently did nothing. Now there is one — retry
+            // for a claim still waiting on a card. `try_adopt_claim` no-ops on
+            // an already-bound session, so a repeat beat is harmless.
+            let pending: Option<i64> = conn
+                .query_row(
+                    "SELECT task_id FROM agent_claims WHERE session_id = ?1",
+                    [session],
+                    |r| r.get(0),
+                )
+                .ok();
+            drop(conn);
+            if let Some(task_id) = pending {
+                crate::host::try_adopt_claim(session, task_id, Some(pid));
+            }
         }
     }
     if entering_blocked {
@@ -5383,6 +5417,30 @@ mod tests {
         );
         work_on(&agent, id, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         assert_eq!(claim_pid(&db, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), Some(4242));
+    }
+
+    /// Pid ancestry is how a claim finds its pane (TIL-130), so the pid must be
+    /// resolvable even when no beat is live — a re-claim after an app restart
+    /// meets an empty beat map, and falling back to None there would silently
+    /// stop binding.
+    #[test]
+    fn the_binding_pid_falls_back_to_the_durable_row_when_no_beat_is_live() {
+        const S: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let (agent, db) = test_agent_with_db();
+        let id = a_task(&agent, "t");
+        agent
+            .beats
+            .lock()
+            .unwrap()
+            .insert(S.into(), a_beat("working", std::time::Duration::from_secs(1), Some(4242)));
+        work_on(&agent, id, "doing", Some(S), None, None);
+        // The session goes quiet: beats are dropped, the durable row keeps it.
+        agent.beats.lock().unwrap().clear();
+        let conn = db.lock().unwrap();
+        assert_eq!(TildoneAgent::binding_pid(&conn, S, None), Some(4242));
+        // A live beat always wins over the stored one.
+        assert_eq!(TildoneAgent::binding_pid(&conn, S, Some(99)), Some(99));
+        assert_eq!(TildoneAgent::binding_pid(&conn, "no-such-session", None), None);
     }
 
     #[test]

@@ -282,9 +282,16 @@ struct HostedSession {
     cwd: String,
     /// ISO start stamp; binding only accepts artifacts younger than this.
     started_at: String,
-    /// The CLI's own session id, once an artifact reveals it (F3's resume
-    /// key). Set-once — racing bind sources are benign.
+    /// The CLI's own session id, once an artifact *proves* it (F3's resume
+    /// key, and only that). Set-once — racing bind sources are benign. Stays
+    /// None for a shell running a bare `claude`, which can prove nothing:
+    /// unresumable is the honest state, and never wrong.
     cli_session_id: Option<String>,
+    /// Which agent session owns this pane, learned from the claim that pid
+    /// ancestry matched to it. Split from `cli_session_id` (TIL-130) because
+    /// the two answer different questions and only one is artifact-provable —
+    /// a session may own a card and still have no resume key.
+    claim_session_id: Option<String>,
     /// The first line typed into an unbound session, accumulated until Enter —
     /// the "make it a task" title hint. Never collected once bound.
     first_input: String,
@@ -466,7 +473,7 @@ pub(crate) fn bind_cli_session(app: &tauri::AppHandle, session_id: u64, cli_sess
                 |r| r.get::<_, i64>(0),
             ) {
                 let task_ref = task_ref_for(app, task_id);
-                adopt_task(app, session_id, task_id, task_ref);
+                adopt_task(app, session_id, task_id, task_ref, Some(cli_session_id));
             }
         }
     }
@@ -490,8 +497,14 @@ fn task_ref_for(app: &tauri::AppHandle, task_id: i64) -> Option<String> {
 /// Adopt a card onto an unbound hosted session: set task_id/ref, persist,
 /// announce. The shared tail of bind-on-claim and "make it a task". A bound
 /// session never rebinds.
-fn adopt_task(app: &tauri::AppHandle, session_id: u64, task_id: i64, task_ref: Option<String>) {
-    let row_id = {
+fn adopt_task(
+    app: &tauri::AppHandle,
+    session_id: u64,
+    task_id: i64,
+    task_ref: Option<String>,
+    claim_sid: Option<&str>,
+) {
+    let (row_id, claim_sid) = {
         let mut table = sessions().lock().unwrap();
         let Some(s) = table.get_mut(&session_id) else { return };
         if s.task_id.is_some() {
@@ -499,14 +512,32 @@ fn adopt_task(app: &tauri::AppHandle, session_id: u64, task_id: i64, task_ref: O
         }
         s.task_id = Some(task_id);
         s.task_ref = task_ref.clone();
-        s.row_id
+        // Who owns the pane, recorded alongside the card it earned. Kept
+        // distinct from `cli_session_id`, which stays the resume key.
+        if let Some(sid) = claim_sid {
+            s.claim_session_id = Some(sid.to_string());
+        }
+        (s.row_id, s.claim_session_id.clone())
     };
     db_exec(
         app,
-        "UPDATE hosted_sessions SET task_id = ?1, task_ref = ?2 WHERE id = ?3",
-        &[&task_id, &task_ref, &row_id],
+        "UPDATE hosted_sessions SET task_id = ?1, task_ref = ?2, claim_session_id = ?3 \
+         WHERE id = ?4",
+        &[&task_id, &task_ref, &claim_sid, &row_id],
     );
     let _ = app.emit("host-changed", ());
+}
+
+/// `(session_id, PTY child pid)` for every hosted session that still has no
+/// card — the candidate set pid-ancestry adoption resolves against.
+fn unbound_pty_pids() -> Vec<(u64, u32)> {
+    sessions()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, s)| s.task_id.is_none())
+        .filter_map(|(id, s)| s.child.process_id().map(|pid| (*id, pid)))
+        .collect()
 }
 
 /// Bind-on-claim, claim-first direction (spec 2026-07-20-shell-escape-hatch-
@@ -514,17 +545,34 @@ fn adopt_task(app: &tauri::AppHandle, session_id: u64, task_id: i64, task_ref: O
 /// hosted session already captured that CLI session id, the claimed card is
 /// its card — no new protocol, the claim the agent already sends is the
 /// signal. Called from the agent server on every recorded claim.
-pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64) {
+pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64, last_pid: Option<u32>) {
     let Some(app) = app_handle_slot().get().cloned() else { return };
-    let found = sessions()
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|(_, s)| adoptable(s.cli_session_id.as_deref(), s.task_id, claim_sid))
-        .map(|(id, _)| *id);
+    // Preferred: process ancestry. `last_pid` comes from the claiming
+    // session's own heartbeat hook, so it names a process in *that* session's
+    // tree and no stranger can donate it. This is what makes a bare `claude`
+    // at a shell prompt bindable at all — it publishes no artifact we can
+    // attribute (TIL-130).
+    let by_pid = last_pid.and_then(|pid| {
+        let candidates = unbound_pty_pids();
+        if candidates.is_empty() {
+            return None;
+        }
+        crate::artifacts::session_for_claim(&crate::artifacts::ps_snapshot(), &candidates, pid)
+    });
+    // Fallback: id equality, for an adapter session whose `cli_session_id`
+    // Tildone assigned itself (and for a shell that argv-proved one). Sound
+    // now that a shell can no longer hold an unproven value.
+    let found = by_pid.or_else(|| {
+        sessions()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, s)| adoptable(s.cli_session_id.as_deref(), s.task_id, claim_sid))
+            .map(|(id, _)| *id)
+    });
     if let Some(session_id) = found {
         let task_ref = task_ref_for(&app, task_id);
-        adopt_task(&app, session_id, task_id, task_ref);
+        adopt_task(&app, session_id, task_id, task_ref, Some(claim_sid));
     }
 }
 
@@ -537,7 +585,7 @@ pub fn host_bind_task(
     task_id: i64,
     task_ref: Option<String>,
 ) {
-    adopt_task(&app, session_id, task_id, task_ref);
+    adopt_task(&app, session_id, task_id, task_ref, None);
 }
 
 /// The expiry chip's "keep": restart the unbound idle clock — a snooze, not
@@ -1196,6 +1244,7 @@ fn spawn_hosted(
                 cwd,
                 started_at,
                 cli_session_id: None,
+                claim_session_id: None,
                 first_input: String::new(),
                 first_input_done: false,
                 writer,
@@ -1477,6 +1526,58 @@ mod tests {
         assert!(!adoptable(Some(sid), Some(7), sid), "bound sessions never rebind");
         assert!(!adoptable(None, None, sid), "no captured id, nothing to match");
         assert!(!adoptable(Some("other"), None, sid));
+    }
+
+    /// Migration 021: shell rows captured their id under a guard that never
+    /// proved ownership, so every stored value is unproven and one is known to
+    /// have come from a stranger. Adapter rows assigned their own id and keep
+    /// it. A wrong resume key would open someone else's conversation; a null
+    /// one only costs an offer.
+    #[test]
+    fn the_split_clears_every_unproven_shell_resume_key() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 018 touches task_links; the sweep test above stubs it the same way.
+        conn.execute_batch(
+            "CREATE TABLE task_links (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             task_id INTEGER, kind TEXT, url TEXT);",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("../migrations/018_hosted_sessions.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/020_unbound_sessions.sql")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO hosted_sessions \
+             (task_id, task_ref, adapter_id, cwd, cli_session_id, started_at, live) VALUES \
+             (1, 'TIL-1', 'claude', '/w', 'assigned-by-tildone', '2026-07-20T00:00:00.000Z', 1), \
+             (NULL, NULL, 'shell', '/w', 'donated-by-a-stranger', '2026-07-20T00:00:00.000Z', 1);",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("../migrations/021_shell_bind_identity.sql")).unwrap();
+
+        let shell: Option<String> = conn
+            .query_row(
+                "SELECT cli_session_id FROM hosted_sessions WHERE adapter_id = 'shell'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(shell, None, "an unproven shell key must not survive the upgrade");
+        let adapter: Option<String> = conn
+            .query_row(
+                "SELECT cli_session_id FROM hosted_sessions WHERE adapter_id = 'claude'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(adapter.as_deref(), Some("assigned-by-tildone"));
+        // The new ownership column exists and starts empty for every row.
+        let unowned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM hosted_sessions WHERE claim_session_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unowned, 2);
     }
 
     #[test]
