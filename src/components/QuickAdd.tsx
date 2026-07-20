@@ -113,9 +113,14 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       priority: p?.priority ?? 0,
       tag_ids,
     });
-    if (pending.length > 0) {
-      const toAttach = pending;
-      setPending([]);
+    // Read the ref, not the render-time closure: addTask and the addTag loop
+    // above are awaited, and an image dropped or pasted in that window would
+    // otherwise be wiped by setPending([]) without ever being attached, leaking
+    // its object URL too (found by the TIL-110 review pass). The ref tracks
+    // every render, so it is the newest list by the time the awaits resolve.
+    const toAttach = pendingRef.current;
+    setPending([]);
+    if (toAttach.length > 0) {
       try {
         await attachImages(id, toAttach);
       } finally {

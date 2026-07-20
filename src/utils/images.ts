@@ -47,7 +47,15 @@ export async function imagesFromDataTransfer(
       skipped += 1;
       continue;
     }
-    images.push(await toPending(file));
+    // Per item, not per paste: decoding throws for a corrupt or undecodable
+    // image, and without this one bad item rejected the whole promise — every
+    // other image in the same paste was lost, with no chip and no message
+    // (found by the TIL-110 review pass).
+    try {
+      images.push(await toPending(file));
+    } catch {
+      skipped += 1;
+    }
   }
   return { images, skipped };
 }
@@ -80,7 +88,21 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
   svg: "image/svg+xml",
   bmp: "image/bmp",
   avif: "image/avif",
+  // HEIC is what an iPhone and macOS Photos hand you by default, so leaving it
+  // out made the most likely drop the one that silently did nothing.
+  heic: "image/heic",
+  heif: "image/heif",
+  tif: "image/tiff",
+  tiff: "image/tiff",
 };
+
+/** Extensions common enough in a mixed drop that flagging them as failed images
+ *  would be noise — the user dragged a folder of mixed files, not a photo. */
+const OBVIOUSLY_NOT_IMAGE = /\.(txt|md|pdf|docx?|xlsx?|zip|mov|mp4|json|csv|log|ya?ml)$/i;
+
+function isProbablyNonImage(name: string): boolean {
+  return OBVIOUSLY_NOT_IMAGE.test(name);
+}
 
 /** What a drop yielded. `oversize` and `unreadable` are counted apart because
  *  they are different messages to the user: one is "your file is too big", the
@@ -97,20 +119,31 @@ export interface DroppedImages {
  *  fatal — one bad path must not take the whole gesture down.
  *
  *  Bytes come from the Rust `read_dropped_image` command, which serves only
- *  paths the OS actually delivered in a recent drop. The webview deliberately
- *  holds no filesystem read scope of its own (see src-tauri/src/drops.rs). */
+ *  paths the OS actually delivered in a recent drop (see src-tauri/src/drops.rs
+ *  for what that does and does not buy). */
 export async function imagesFromPaths(paths: string[]): Promise<DroppedImages> {
   const images: PendingImage[] = [];
   let oversize = 0;
   let unreadable = 0;
   for (const path of paths) {
-    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    const name = path.split("/").pop() || "";
+    const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+    // A path with no dot has no extension — "photo".split(".").pop() is "photo",
+    // which used to sniff as an unknown type and vanish.
     const mime = IMAGE_MIME_BY_EXT[ext];
-    if (!mime) continue;
+    if (!mime) {
+      // Say so rather than doing nothing: a dropped file that is plainly an
+      // image to the user (a screenshot with no extension, a format we don't
+      // list) otherwise produced no chip and no message at all, which reads as
+      // the app ignoring the gesture (found by the TIL-110 review pass).
+      if (!isProbablyNonImage(name)) unreadable += 1;
+      continue;
+    }
     try {
       const bytes = await invoke<ArrayBuffer>("read_dropped_image", { path });
-      const name = path.split("/").pop() || "Dropped image";
-      images.push(await toPendingBlob(new Blob([bytes], { type: mime }), name));
+      images.push(
+        await toPendingBlob(new Blob([bytes], { type: mime }), name || "Dropped image"),
+      );
     } catch (err) {
       // Matches the ERR_TOO_LARGE sentinel in src-tauri/src/drops.rs. Anything
       // else — permissions, a missing file, a path we never saw dropped — is
@@ -135,12 +168,17 @@ export async function imagesFromClipboardRead(): Promise<{
   for (const item of items) {
     const type = item.types.find((t) => t.startsWith("image/"));
     if (!type) continue;
-    const blob = await item.getType(type);
-    if (blob.size > MAX_IMAGE_BYTES) {
+    // Per item, for the same reason as imagesFromDataTransfer above.
+    try {
+      const blob = await item.getType(type);
+      if (blob.size > MAX_IMAGE_BYTES) {
+        skipped += 1;
+        continue;
+      }
+      images.push(await toPendingBlob(blob, "Pasted image"));
+    } catch {
       skipped += 1;
-      continue;
     }
-    images.push(await toPendingBlob(blob, "Pasted image"));
   }
   return { images, skipped };
 }

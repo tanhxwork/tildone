@@ -527,7 +527,15 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   removeProject: async (id) => {
+    // Deleting a project hard-deletes its tasks by FK cascade, taking the
+    // task_images rows with them — but not the files. Collect the ids before the
+    // delete, as emptyTrash does, or the attachments sit on disk until the next
+    // launch's sweep (found by the TIL-112 review pass).
+    const orphaned = get()
+      .tasks.filter((t) => t.project_id === id)
+      .map((t) => t.id);
     await db.deleteProject(id);
+    for (const taskId of orphaned) void removeTaskAttachments(taskId);
     set((s) => {
       const selection =
         s.selection.type === "project" && s.selection.projectId === id

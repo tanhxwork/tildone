@@ -32,7 +32,8 @@ export function imageRefId(url: string): number | null {
 
 /** The markdown a notes embed of an attached image is written as. */
 export function imageEmbedMarkdown(id: number, alt: string): string {
-  // ] and ) would terminate the alt text / URL early; a filename may contain them.
+  // [ and ] would terminate the alt text early; a filename may contain them. The
+  // URL half needs no escaping — it is a fixed scheme plus a number.
   const safeAlt = alt.replace(/[[\]]/g, "");
   return `![${safeAlt}](${IMG_SCHEME}${id})`;
 }

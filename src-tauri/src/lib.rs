@@ -256,6 +256,15 @@ pub fn run() {
         .on_window_event(|window, event| {
             // Remember what the OS just handed us, so read_dropped_image can
             // serve those paths — and nothing else — to the webview.
+            //
+            // Ordering note: Tauri runs its internal handler (which emits
+            // tauri://drag-drop to the webview) before these builder listeners,
+            // so this records *after* the webview is told. It is safe only
+            // because the emit reaches the webview via an async
+            // evaluateJavaScript and the IPC reply cannot be processed until
+            // this returns to the run loop. If a future Tauri emits
+            // synchronously, every drop would start failing the freshness check
+            // instead — surfacing as "couldn't read that file", not silence.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window.state::<drops::DroppedPaths>().remember(paths);
             }

@@ -176,6 +176,18 @@ export function TaskEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.id]);
 
+  // Notes can change under an open card: App listens for agent-db-changed and
+  // reloads, so an agent appending over MCP updates task.notes while the user is
+  // looking at it. Local state must follow, or the card renders a stale copy and
+  // the next blur writes that stale copy back over the agent's text — silent
+  // data loss (found by the TIL-111 review pass). While the textarea is open the
+  // user's own unsaved edits are the newer truth, so leave them alone; that
+  // narrows the clobber to a genuine concurrent edit rather than merely having
+  // the card open.
+  useEffect(() => {
+    if (task && !editingNotes) setNotes(task.notes);
+  }, [task, task?.notes, editingNotes]);
+
   // Focus the notes textarea the moment it swaps in for the rendered view.
   useEffect(() => {
     if (editingNotes) notesRef.current?.focus();
@@ -1116,10 +1128,12 @@ export function TaskEditor() {
                 setEditingNotes(false);
               }}
             />
-          ) : notes.trim() ? (
+          ) : task.notes.trim() ? (
             <NotesView
               taskId={task.id}
-              source={notes}
+              // Render from the store, not local state: one paint can land
+              // between an external notes change and the sync effect above.
+              source={task.notes}
               onStartEdit={() => setEditingNotes(true)}
             />
           ) : (
@@ -1303,7 +1317,10 @@ export function TaskEditor() {
                       <span className="detail-comment-time">{timeAgo(c.created_at)}</span>
                     </div>
                     <div className="detail-comment-body">
-                      <Markdown>{c.body}</Markdown>
+                      {/* Comments belong to this task, so their embeds resolve
+                          against it. The Activity feed below is cross-task and
+                          deliberately stays unowned. */}
+                      <Markdown taskId={task.id}>{c.body}</Markdown>
                     </div>
                   </div>
                 );

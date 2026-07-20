@@ -8,8 +8,18 @@
 //!
 //! So the grant follows the gesture instead of the directory: Rust watches the
 //! window's own drag-drop events, remembers exactly the paths the OS delivered,
-//! and `read_dropped_image` serves only those, only briefly. A path the user
-//! never dropped is unreadable no matter who asks.
+//! and `read_dropped_image` serves only those, only briefly.
+//!
+//! What this does NOT do — do not read the above as "the webview cannot touch
+//! the filesystem". Tauri core handles `DragDropEvent::Drop` before any of this
+//! runs and adds every dropped path to the fs plugin's *runtime* scope, with no
+//! expiry, recursively for a directory. The capability file still grants
+//! `fs:allow-read-text-file` / `fs:allow-write-text-file` unscoped (settings
+//! import/export uses them), so after the user drags a folder in, renderer code
+//! can read and write text files anywhere under that folder for the rest of the
+//! process. That is far narrower than the `$HOME/**` standing grant this
+//! replaced, but it is not nothing, and closing it means moving settings
+//! import/export off the fs plugin too. Tracked as a follow-up.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
