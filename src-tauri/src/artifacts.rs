@@ -497,21 +497,24 @@ pub(crate) fn argv_proves_uuid(cmd: &str, uuid: &str) -> bool {
         match tok {
             // Only `--resume` takes a transcript path; `--session-id` is
             // always a bare id, so a path there proves nothing.
+            // A consumed `--` is still the terminator, never a value: in
+            // `claude --resume -- --session-id <u>` the flag takes no argument
+            // and everything after is positional.
             "--session-id" => match tokens.next() {
+                Some("--") | None => return false,
                 Some(v) => {
                     if v == uuid {
                         return true;
                     }
                 }
-                None => return false,
             },
             "--resume" => match tokens.next() {
+                Some("--") | None => return false,
                 Some(v) => {
                     if resume_target_is(v, uuid) {
                         return true;
                     }
                 }
-                None => return false,
             },
             // The same assertions, spelled joined.
             _ => {
@@ -1121,6 +1124,14 @@ mod tests {
         assert!(
             !argv_proves_uuid(&format!("claude --session-id /p/{U}.jsonl"), U),
             "--session-id takes a bare id; a path there proves nothing"
+        );
+        assert!(
+            !argv_proves_uuid(&format!("claude --resume -- --session-id {U}"), U),
+            "a consumed `--` is still the terminator, not a value"
+        );
+        assert!(
+            !argv_proves_uuid(&format!("claude --session-id -- {U}"), U),
+            "the flag takes no argument when `--` follows it"
         );
     }
 

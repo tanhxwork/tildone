@@ -465,17 +465,11 @@ pub(crate) fn bind_cli_session(app: &tauri::AppHandle, session_id: u64, cli_sess
     // Bind-on-claim, late-capture direction: the agent may have claimed its
     // card over MCP before any transcript revealed this id. Now that the id
     // is known, an existing claim under it names this session's card.
+    // Reads the claim inside the write, like every other claim-driven
+    // adoption: a separate SELECT here would reopen the same stale-card
+    // window, and this path is no less racy than the beat's.
     if unbound {
-        if let Ok(conn) = crate::agent::open_db(app) {
-            if let Ok(task_id) = conn.query_row(
-                "SELECT task_id FROM agent_claims WHERE session_id = ?1",
-                [cli_session_id],
-                |r| r.get::<_, i64>(0),
-            ) {
-                let task_ref = task_ref_for(app, task_id);
-                adopt_task(app, session_id, task_id, task_ref, Some(cli_session_id));
-            }
-        }
+        adopt_from_claim(app, session_id, cli_session_id);
     }
 }
 
@@ -483,15 +477,6 @@ pub(crate) fn bind_cli_session(app: &tauri::AppHandle, session_id: u64, cli_sess
 /// captured CLI id equals the claim's session id adopts the claimed card.
 fn adoptable(cli_session_id: Option<&str>, task_id: Option<i64>, claim_sid: &str) -> bool {
     task_id.is_none() && cli_session_id == Some(claim_sid)
-}
-
-fn task_ref_for(app: &tauri::AppHandle, task_id: i64) -> Option<String> {
-    let conn = crate::agent::open_db(app).ok()?;
-    conn.query_row("SELECT \"ref\" FROM tasks WHERE id = ?1", [task_id], |r| {
-        r.get::<_, Option<String>>(0)
-    })
-    .ok()
-    .flatten()
 }
 
 /// Adopt a card onto an unbound hosted session: set task_id/ref, persist,
@@ -550,7 +535,7 @@ fn unbound_shell_pty_pids() -> Vec<(u64, u32)> {
 /// hosted session already captured that CLI session id, the claimed card is
 /// its card — no new protocol, the claim the agent already sends is the
 /// signal. Called from the agent server on every recorded claim.
-pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64, last_pid: Option<u32>) {
+pub(crate) fn try_adopt_claim(claim_sid: &str, last_pid: Option<u32>) {
     let Some(app) = app_handle_slot().get().cloned() else { return };
     // Preferred: process ancestry. `last_pid` comes from the claiming
     // session's own heartbeat hook, so it names a process in *that* session's
@@ -576,31 +561,62 @@ pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64, last_pid: Option<u3
             .map(|(id, _)| *id)
     });
     if let Some(session_id) = found {
-        let task_ref = task_ref_for(&app, task_id);
-        adopt_task(&app, session_id, task_id, task_ref, Some(claim_sid));
+        adopt_from_claim(&app, session_id, claim_sid);
     }
 }
 
-/// Bind-on-claim retried from a heartbeat: the claim may have landed before any
-/// beat reported a pid, leaving nothing to resolve a pane with.
+/// Adopt whatever card `claim_sid` currently names, in one statement.
 ///
-/// The task is re-read here rather than passed in. The beat handler must drop
-/// the agent DB lock before calling into host (see the lock-ordering note on
-/// `try_adopt_claim`), and a claim can move to another card in that window — a
-/// cached task id would then adopt the *previous* card, permanently, since
-/// adoption is set-once.
-pub(crate) fn try_adopt_claim_from_beat(claim_sid: &str, last_pid: u32) {
-    let Some(app) = app_handle_slot().get().cloned() else { return };
-    let Ok(conn) = crate::agent::open_db(&app) else { return };
-    let task_id: Option<i64> = conn
-        .query_row("SELECT task_id FROM agent_claims WHERE session_id = ?1", [claim_sid], |r| {
-            r.get(0)
+/// The card is read from `agent_claims` *inside* the write rather than passed
+/// in. Every caller must release the agent's DB lock before entering host (see
+/// the lock-ordering note above), and a session can re-claim onto a different
+/// card in that window — a task id carried across the gap would then adopt the
+/// *previous* card, permanently, because adoption is set-once. Reading and
+/// writing in a single UPDATE removes the window instead of narrowing it.
+///
+/// `task_id IS NULL` in the WHERE clause is the set-once guard, enforced by the
+/// database rather than by a prior in-memory check.
+fn adopt_from_claim(app: &tauri::AppHandle, session_id: u64, claim_sid: &str) {
+    let row_id = {
+        let table = sessions().lock().unwrap();
+        let Some(s) = table.get(&session_id) else { return };
+        if s.task_id.is_some() {
+            return;
+        }
+        s.row_id
+    };
+    let Ok(conn) = crate::agent::open_db(app) else { return };
+    let updated = conn.execute(
+        "UPDATE hosted_sessions SET \
+           task_id = (SELECT task_id FROM agent_claims WHERE session_id = ?1), \
+           task_ref = (SELECT t.\"ref\" FROM tasks t \
+                        JOIN agent_claims c ON c.task_id = t.id \
+                       WHERE c.session_id = ?1), \
+           claim_session_id = ?1 \
+         WHERE id = ?2 AND task_id IS NULL \
+           AND EXISTS (SELECT 1 FROM agent_claims WHERE session_id = ?1)",
+        rusqlite::params![claim_sid, row_id],
+    );
+    if !matches!(updated, Ok(1)) {
+        return;
+    }
+    // Mirror what the database actually committed — never what we hoped it
+    // would, since a concurrent re-claim may have moved the card first.
+    let landed: Option<(Option<i64>, Option<String>)> = conn
+        .query_row("SELECT task_id, task_ref FROM hosted_sessions WHERE id = ?1", [row_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
         })
         .ok();
     drop(conn);
-    if let Some(task_id) = task_id {
-        try_adopt_claim(claim_sid, task_id, Some(last_pid));
+    let Some((Some(task_id), task_ref)) = landed else { return };
+    {
+        let mut table = sessions().lock().unwrap();
+        let Some(s) = table.get_mut(&session_id) else { return };
+        s.task_id = Some(task_id);
+        s.task_ref = task_ref;
+        s.claim_session_id = Some(claim_sid.to_string());
     }
+    let _ = app.emit("host-changed", ());
 }
 
 /// The expiry chip's "make it a task": the frontend created the card; bind
