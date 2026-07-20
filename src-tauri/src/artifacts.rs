@@ -359,34 +359,172 @@ struct BindTarget {
     /// fallback below has nothing to look up then — those sessions bind the
     /// other way around (host::try_adopt_claim, bind-on-claim).
     task_id: Option<i64>,
+    /// The hosted session's adapter. `"shell"` means the CLI is not the
+    /// session itself but something the user typed at its prompt, which is
+    /// why those targets carry the extra ownership proof below.
     adapter_id: &'static str,
+    /// Which kind of artifact this dir holds — `"claude"` or `"codex"`. For
+    /// agent adapters it equals `adapter_id`; a shell gets one target of
+    /// each, since either CLI may be run at its prompt.
+    kind: &'static str,
     /// claude: the cwd's transcript slug dir (exact-parent match).
     /// codex: `$HOME/.codex/sessions` (prefix match, watched recursively).
     dir: PathBuf,
+    /// The PTY child's pid — Some only for shell targets, where binding must
+    /// prove the CLI really runs inside *this* shell.
+    pid: Option<u32>,
     /// ISO — only artifacts stamped at or after the spawn may bind.
     started_at: String,
 }
 
+/// Every directory an unbound session could reveal its CLI session id in,
+/// paired with the artifact kind that dir holds. A shell yields both kinds
+/// and, for claude, one dir per candidate cwd (TIL-128).
+fn bind_dirs(adapter_id: &str, cwds: &[String], home: &str) -> Vec<(&'static str, PathBuf)> {
+    let codex = ("codex", PathBuf::from(format!("{home}/.codex/sessions")));
+    let claude = |cwd: &String| {
+        (
+            "claude",
+            PathBuf::from(format!("{home}/.claude/projects/{}", transcript_slug(cwd))),
+        )
+    };
+    match adapter_id {
+        "codex" => vec![codex],
+        "shell" => cwds.iter().map(claude).chain(std::iter::once(codex)).collect(),
+        _ => cwds.iter().map(claude).collect(),
+    }
+}
+
 fn bind_targets(home: &str) -> Vec<BindTarget> {
-    crate::host::unbound_hosted()
-        .into_iter()
-        .map(|u| {
-            let dir = match u.adapter_id {
-                "codex" => PathBuf::from(format!("{home}/.codex/sessions")),
-                _ => PathBuf::from(format!(
-                    "{home}/.claude/projects/{}",
-                    transcript_slug(&u.cwd)
-                )),
-            };
-            BindTarget {
+    let mut out = Vec::new();
+    for u in crate::host::unbound_hosted() {
+        // A shell's user may `cd` before launching the CLI, and the CLI files
+        // its transcript under the directory it was launched in — so watch
+        // the shell's current cwd as well as the one it was spawned in.
+        let mut cwds = vec![u.cwd.clone()];
+        if u.adapter_id == "shell" {
+            if let Some(live) = u.pid.and_then(live_cwd) {
+                if !cwds.contains(&live) {
+                    cwds.push(live);
+                }
+            }
+        }
+        for (kind, dir) in bind_dirs(u.adapter_id, &cwds, home) {
+            out.push(BindTarget {
                 session_id: u.session_id,
                 task_id: u.task_id,
                 adapter_id: u.adapter_id,
+                kind,
                 dir,
-                started_at: u.started_at,
-            }
+                pid: (u.adapter_id == "shell").then_some(u.pid).flatten(),
+                started_at: u.started_at.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// A hosted shell's current working directory, read from the PTY child. macOS
+/// has no `/proc`; `lsof` on a single pid costs ~50ms and this runs at most
+/// once per watch-set rebuild.
+fn live_cwd(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-a", "-w", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    lsof_cwd(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `lsof -Fn` prints one tagged field per line; the cwd is the first `n`.
+fn lsof_cwd(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix('n'))
+        .filter(|p| p.starts_with('/'))
+        .map(str::to_string)
+}
+
+/// One row of the process snapshot: pid, parent, and the command line.
+struct Proc {
+    pid: u32,
+    ppid: u32,
+    cmd: String,
+}
+
+fn parse_ps(stdout: &str) -> Vec<Proc> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.split_whitespace();
+            let pid = it.next()?.parse().ok()?;
+            let ppid = it.next()?.parse().ok()?;
+            let cmd = it.collect::<Vec<_>>().join(" ");
+            (!cmd.is_empty()).then_some(Proc { pid, ppid, cmd })
         })
         .collect()
+}
+
+/// Is a CLI of `kind` running underneath `ancestor` right now? Both CLIs are
+/// real binaries named after their adapter, so the leading token's basename
+/// identifies them (a shim execs a vendor binary of the same name).
+///
+/// This is what stops a shell pane from adopting a *stranger's* session: an
+/// unrelated `claude` in the same directory writes a transcript into the same
+/// slug dir, and mtime alone cannot tell the two apart.
+fn has_cli_descendant(procs: &[Proc], ancestor: u32, kind: &str) -> bool {
+    procs.iter().any(|p| {
+        p.cmd
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.rsplit('/').next())
+            .is_some_and(|base| base == kind)
+            && descends_from(procs, p.pid, ancestor)
+    })
+}
+
+/// Walk the ppid chain up from `pid`. Bounded by the snapshot length so a
+/// cycle in a stale snapshot cannot hang the watcher thread.
+fn descends_from(procs: &[Proc], pid: u32, ancestor: u32) -> bool {
+    let mut cur = pid;
+    for _ in 0..procs.len() {
+        if cur == ancestor {
+            return true;
+        }
+        match procs.iter().find(|p| p.pid == cur) {
+            Some(p) if p.ppid != 0 => cur = p.ppid,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// How long the watcher may coast before re-enumerating its targets.
+///
+/// An unbound shell makes the watch set volatile in ways no filesystem event
+/// can announce: the user may `cd` (changing which slug dir to watch, and the
+/// live cwd is only read at enumeration), or run a CLI in a directory whose
+/// transcript dir does not exist yet — and `init` can only watch a dir that
+/// already exists, so there is nothing to fire until the next sweep. Both
+/// would otherwise leave the pane saying "no card yet" for up to a minute.
+///
+/// Binding is what ends the fast sweep: a bound session leaves
+/// `unbound_hosted`, so the cost is paid only while a shell is still looking
+/// for its card.
+fn sweep_interval(binds: &[BindTarget]) -> Duration {
+    if binds.iter().any(|b| b.adapter_id == "shell") {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(60)
+    }
+}
+
+fn ps_snapshot() -> Vec<Proc> {
+    std::process::Command::new("/bin/ps")
+        .args(["-Ao", "pid=,ppid=,command="])
+        .output()
+        .ok()
+        .map(|o| parse_ps(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
 }
 
 /// Strict UUID shape: hex digits with dashes at 8/13/18/23. Every bound
@@ -424,8 +562,10 @@ fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> 
     let Some(name) = event_path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
+    // Lazily taken, and only for shell targets: most events never need it.
+    let mut procs: Option<Vec<Proc>> = None;
     for b in binds {
-        let (matched, uuid) = match b.adapter_id {
+        let (matched, uuid) = match b.kind {
             "codex" => {
                 if !event_path.starts_with(&b.dir) {
                     continue;
@@ -452,6 +592,16 @@ fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> 
         if !matched {
             continue;
         }
+        // A shell only owns this artifact if the matching CLI is actually
+        // running inside it — otherwise a stranger's session in the same cwd
+        // would bind the pane to the wrong card.
+        if b.adapter_id == "shell" {
+            let Some(pid) = b.pid else { continue };
+            let snapshot = procs.get_or_insert_with(ps_snapshot);
+            if !has_cli_descendant(snapshot, pid, b.kind) {
+                continue;
+            }
+        }
         // Only artifacts younger than the spawn: an old transcript sitting in
         // the same dir (another session, same cwd) must not bind. ISO strings
         // compare lexicographically.
@@ -470,6 +620,9 @@ fn try_bind(app: &tauri::AppHandle, binds: &[BindTarget], event_path: &Path) -> 
 /// (or instead of) the transcript watcher firing: the claim carries the
 /// session id directly. Returns true when something bound.
 fn try_bind_from_claims(app: &tauri::AppHandle, binds: &[BindTarget]) -> bool {
+    // Adapter sessions only: for those the session *is* the CLI, so a claim on
+    // its task names its session id. A shell's prompt could be running anyone's
+    // CLI, so it must earn its bind from an artifact it demonstrably owns.
     let claude_targets: Vec<&BindTarget> =
         binds.iter().filter(|b| b.adapter_id == "claude").collect();
     if claude_targets.is_empty() {
@@ -524,9 +677,8 @@ pub fn init(app: &tauri::AppHandle) {
         let mut last_enumerate = Instant::now();
 
         loop {
-            if dirty.swap(false, Ordering::Relaxed)
-                || last_enumerate.elapsed() > Duration::from_secs(60)
-            {
+            let due_sweep = last_enumerate.elapsed() > sweep_interval(&binds);
+            if dirty.swap(false, Ordering::Relaxed) || due_sweep {
                 last_enumerate = Instant::now();
                 targets = enumerate(&app, &home);
                 binds = bind_targets(&home);
@@ -545,7 +697,7 @@ pub fn init(app: &tauri::AppHandle) {
                     for b in &binds {
                         // codex nests rollouts in Y/M/D dirs — recursive; the
                         // claude slug dir is flat.
-                        let mode = if b.adapter_id == "codex" {
+                        let mode = if b.kind == "codex" {
                             RecursiveMode::Recursive
                         } else {
                             RecursiveMode::NonRecursive
@@ -714,5 +866,108 @@ mod tests {
         let got = last_assistant_message(&line).unwrap();
         assert_eq!(got.chars().count(), 501);
         assert!(got.ends_with('…'));
+    }
+
+    // -- shell sessions running an agent CLI at the prompt (TIL-128) --------
+
+    fn dirs(adapter: &str, cwds: &[&str]) -> Vec<(String, String)> {
+        let owned: Vec<String> = cwds.iter().map(|c| c.to_string()).collect();
+        bind_dirs(adapter, &owned, "/home")
+            .into_iter()
+            .map(|(k, d)| (k.to_string(), d.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn agent_adapters_watch_exactly_their_own_artifact_dir() {
+        assert_eq!(
+            dirs("claude", &["/w/proj"]),
+            vec![("claude".into(), "/home/.claude/projects/-w-proj".into())]
+        );
+        assert_eq!(
+            dirs("codex", &["/w/proj"]),
+            vec![("codex".into(), "/home/.codex/sessions".into())]
+        );
+    }
+
+    #[test]
+    fn a_shell_watches_both_clis_and_every_candidate_cwd() {
+        // The user may `cd` before typing `claude`, so the shell's live cwd
+        // is watched alongside the one it was spawned in.
+        assert_eq!(
+            dirs("shell", &["/w/proj", "/w/other"]),
+            vec![
+                ("claude".into(), "/home/.claude/projects/-w-proj".into()),
+                ("claude".into(), "/home/.claude/projects/-w-other".into()),
+                ("codex".into(), "/home/.codex/sessions".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lsof_reads_the_cwd_field_and_ignores_the_rest() {
+        assert_eq!(lsof_cwd("p54751\nfcwd\nn/private/tmp\n").as_deref(), Some("/private/tmp"));
+        assert_eq!(lsof_cwd("p54751\nfcwd\n"), None);
+        assert_eq!(lsof_cwd(""), None);
+        assert_eq!(lsof_cwd("nnot-a-path\n"), None, "only absolute paths are cwds");
+    }
+
+    fn procs(rows: &[(u32, u32, &str)]) -> Vec<Proc> {
+        rows.iter().map(|(pid, ppid, cmd)| Proc { pid: *pid, ppid: *ppid, cmd: cmd.to_string() }).collect()
+    }
+
+    #[test]
+    fn ps_rows_split_into_pid_ppid_and_the_whole_command_line() {
+        let got = parse_ps("  9351  9350 /usr/local/bin/codex --foo\n33807 99381 claude bg-pty-host\nnoise\n");
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].pid, got[0].ppid), (9351, 9350));
+        assert_eq!(got[0].cmd, "/usr/local/bin/codex --foo");
+        assert_eq!(got[1].cmd, "claude bg-pty-host");
+    }
+
+    #[test]
+    fn a_cli_binds_a_shell_only_when_it_runs_underneath_that_shell() {
+        let table = procs(&[
+            (100, 1, "/bin/zsh -l"),          // our hosted shell
+            (101, 100, "/usr/local/bin/claude"), // …running claude
+            (200, 1, "/bin/zsh -l"),          // a stranger's shell
+            (201, 200, "/usr/local/bin/claude"), // …with its own claude
+        ]);
+        assert!(has_cli_descendant(&table, 100, "claude"));
+        assert!(has_cli_descendant(&table, 200, "claude"));
+        assert!(!has_cli_descendant(&table, 100, "codex"), "wrong CLI must not bind");
+        assert!(!has_cli_descendant(&table, 300, "claude"), "unknown shell owns nothing");
+    }
+
+    fn target(adapter_id: &'static str) -> BindTarget {
+        BindTarget {
+            session_id: 1,
+            task_id: None,
+            adapter_id,
+            kind: "claude",
+            dir: PathBuf::from("/home/.claude/projects/-w-proj"),
+            pid: None,
+            started_at: "2026-07-20T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn an_unbound_shell_shortens_the_sweep_because_nothing_announces_a_cd() {
+        let slow = sweep_interval(&[target("claude"), target("codex")]);
+        let fast = sweep_interval(&[target("claude"), target("shell")]);
+        assert!(fast < slow, "a shell must not wait a full slow sweep to bind");
+        assert_eq!(fast, Duration::from_secs(5));
+        // No targets at all is the idle case — coast.
+        assert_eq!(sweep_interval(&[]), slow);
+    }
+
+    #[test]
+    fn descent_reaches_grandchildren_and_survives_a_cyclic_snapshot() {
+        let table = procs(&[(100, 1, "sh"), (101, 100, "sh"), (102, 101, "claude")]);
+        assert!(descends_from(&table, 102, 100));
+        assert!(!descends_from(&table, 100, 102));
+
+        let cycle = procs(&[(1, 2, "a"), (2, 1, "b")]);
+        assert!(!descends_from(&cycle, 1, 99));
     }
 }
