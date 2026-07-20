@@ -106,4 +106,45 @@ describe("attachment cleanup on hard delete", () => {
       timeoutMsg: "attachment directory survived Empty trash",
     });
   });
+
+  it("removes the files when the whole project is deleted", async () => {
+    // Deleting a project hard-deletes its tasks by FK cascade, so nothing goes
+    // through the trash at all — a separate path from the test above, and the
+    // one that was shipped on code-reading alone.
+    await $(".nav-item*=Today").click();
+    const start = attachmentDirs();
+
+    await $('button[aria-label="New project"]').click();
+    const nameField = $('.modal input[placeholder="Project name"]');
+    await nameField.waitForDisplayed({ timeout: 10000 });
+    await nameField.setValue("Cascade probe");
+    await $(".modal-footer button.btn.primary").click();
+    await $(".nav-project*=Cascade probe").waitForExist({ timeout: 10000 });
+
+    // Put a task with an image inside it.
+    await $(".nav-project*=Cascade probe").click();
+    const input = $(".quick-add input");
+    await input.waitForExist();
+    await input.setValue("Cascade probe task");
+    await pasteImageInto(".quick-add input");
+    await $(".qa-image-chip").waitForExist({ timeout: 10000 });
+    await browser.keys("Enter");
+    await browser.waitUntil(() => attachmentDirs().length === start.length + 1, {
+      timeout: 10000,
+      timeoutMsg: "no attachment directory appeared for the project task",
+    });
+
+    // Delete the project, tasks and all.
+    // wdio's *= text selector can't take a descendant, so target the edit button
+    // by its aria-label rather than by nesting it under the project row.
+    await $('button[aria-label="Edit Cascade probe"]').click();
+    await $(".modal-footer").waitForDisplayed({ timeout: 10000 });
+    await $("button*=Delete").click();
+    await $("button*=Delete project and its tasks").click();
+
+    await browser.waitUntil(() => attachmentDirs().length === start.length, {
+      timeout: 10000,
+      timeoutMsg: "attachment directory survived deleting the project",
+    });
+  });
 });
