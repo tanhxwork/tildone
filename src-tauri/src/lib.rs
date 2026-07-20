@@ -161,6 +161,12 @@ pub fn run() {
             sql: include_str!("../migrations/019_task_images.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 20,
+            description: "unbound_sessions",
+            sql: include_str!("../migrations/020_unbound_sessions.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -279,6 +285,9 @@ pub fn run() {
             host::host_resumables,
             host::host_resume,
             host::host_confirm_quit,
+            host::host_bind_task,
+            host::host_keep,
+            agent::recent_claim_cwds,
             hookinstall::hook_status,
             hookinstall::hook_install,
             hookinstall::hook_uninstall,

@@ -16,9 +16,10 @@ export type PaneTarget = {
   /** Stable identity for re-click matching: the claim's session UUID for
    *  attach targets, `hosted-<id>` for hosted ones. */
   sessionId: string;
-  /** Card context for the header: "TIL-100" (null on legacy rows). */
+  /** Card context for the header: "TIL-100"; null for an unbound (no card
+   *  yet) session — the header shows the dashed "no card yet" chip then. */
   taskRef: string | null;
-  taskId: number;
+  taskId: number | null;
   /** Display name: the claim's session name, or the adapter's. */
   name: string | null;
 } & (

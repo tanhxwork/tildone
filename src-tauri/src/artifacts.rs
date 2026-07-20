@@ -355,7 +355,10 @@ fn watch_dirs(targets: &[Target]) -> Vec<PathBuf> {
 
 struct BindTarget {
     session_id: u64,
-    task_id: i64,
+    /// None for a session-first (unbound) session: the task-first claims
+    /// fallback below has nothing to look up then — those sessions bind the
+    /// other way around (host::try_adopt_claim, bind-on-claim).
+    task_id: Option<i64>,
     adapter_id: &'static str,
     /// claude: the cwd's transcript slug dir (exact-parent match).
     /// codex: `$HOME/.codex/sessions` (prefix match, watched recursively).
@@ -475,12 +478,13 @@ fn try_bind_from_claims(app: &tauri::AppHandle, binds: &[BindTarget]) -> bool {
     let Ok(conn) = crate::agent::open_db(app) else { return false };
     let mut bound = false;
     for b in claude_targets {
+        let Some(task_id) = b.task_id else { continue };
         let found: Option<String> = conn
             .query_row(
                 "SELECT session_id FROM agent_claims \
                  WHERE task_id = ?1 AND claimed_at >= ?2 \
                  ORDER BY claimed_at ASC LIMIT 1",
-                rusqlite::params![b.task_id, b.started_at],
+                rusqlite::params![task_id, b.started_at],
                 |r| r.get(0),
             )
             .ok();

@@ -50,6 +50,9 @@ pub struct Adapter {
     /// the argv shapes don't rot meanwhile.
     #[allow(dead_code)]
     resume_args: Option<fn(&str) -> Vec<String>>,
+    /// Args every spawn gets before any prompt — the shell's `-l`, so it
+    /// reads the user's login rc files like a terminal emulator would.
+    base_args: &'static [&'static str],
 }
 
 const ADAPTERS: &[Adapter] = &[
@@ -60,6 +63,7 @@ const ADAPTERS: &[Adapter] = &[
         home_candidates: &[".local/bin/claude"],
         prompt_arg: true,
         resume_args: Some(claude_resume),
+        base_args: &[],
     },
     Adapter {
         id: "codex",
@@ -68,6 +72,7 @@ const ADAPTERS: &[Adapter] = &[
         home_candidates: &[".local/bin/codex"],
         prompt_arg: true,
         resume_args: Some(codex_resume),
+        base_args: &[],
     },
     Adapter {
         id: "opencode",
@@ -76,6 +81,20 @@ const ADAPTERS: &[Adapter] = &[
         home_candidates: &[".opencode/bin/opencode"],
         prompt_arg: false,
         resume_args: None,
+        base_args: &[],
+    },
+    // The escape hatch (spec 2026-07-20-shell-escape-hatch-session-first-
+    // intake): a plain shell on the same PTY plumbing. No resume contract —
+    // a shell has no session id — so it is excluded from restart survival by
+    // construction. `bin` is the fallback; `lookup_bin` prefers $SHELL.
+    Adapter {
+        id: "shell",
+        name: "Shell",
+        bin: "zsh",
+        home_candidates: &[],
+        prompt_arg: false,
+        resume_args: None,
+        base_args: &["-l"],
     },
 ];
 
@@ -109,6 +128,14 @@ fn resolve_bin(adapter: &Adapter) -> Option<String> {
 }
 
 fn lookup_bin(adapter: &Adapter) -> Option<String> {
+    // The shell adapter runs the user's own shell, not a fixed binary.
+    if adapter.id == "shell" {
+        if let Ok(sh) = std::env::var("SHELL") {
+            if std::path::Path::new(&sh).exists() {
+                return Some(sh);
+            }
+        }
+    }
     if let Ok(home) = std::env::var("HOME") {
         for rel in adapter.home_candidates {
             let path = format!("{home}/{rel}");
@@ -231,10 +258,20 @@ struct Shared {
     waiting: bool,
     /// One notification per waiting episode; new bytes re-arm.
     notified: bool,
+    /// When the session became continuously idle-at-prompt (agents: waiting
+    /// flipped; shells: output quiesced). Cleared by any output. The unbound
+    /// lifecycle (remind → expiry chip → expire) is measured from here;
+    /// "keep" resets it to now.
+    idle_since: Option<Instant>,
+    /// Last unbound-lifecycle stage the ticker saw — a change emits
+    /// `host-changed` exactly once per transition.
+    unbound_stage: UnboundStage,
 }
 
 struct HostedSession {
-    task_id: i64,
+    /// None = unbound: no card yet (session-first intake). Bind-on-claim or
+    /// the expiry chip's "make it a task" fills it in.
+    task_id: Option<i64>,
     task_ref: Option<String>,
     adapter_id: &'static str,
     /// This session's row in `hosted_sessions` (F3) — the persistence that
@@ -248,6 +285,10 @@ struct HostedSession {
     /// The CLI's own session id, once an artifact reveals it (F3's resume
     /// key). Set-once — racing bind sources are benign.
     cli_session_id: Option<String>,
+    /// The first line typed into an unbound session, accumulated until Enter —
+    /// the "make it a task" title hint. Never collected once bound.
+    first_input: String,
+    first_input_done: bool,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -293,6 +334,13 @@ pub(crate) fn write_bytes(session_id: u64, data: &[u8]) -> Result<(), String> {
     let Some(s) = table.get_mut(&session_id) else {
         return Ok(()); // killed while the keystroke was in flight — a no-op, not an error
     };
+    // Unbound sessions collect their first typed line as the "make it a
+    // task" title hint. Bound sessions never do.
+    if s.task_id.is_none() && !s.first_input_done {
+        let mut done = s.first_input_done;
+        accumulate_first_input(&mut s.first_input, &mut done, data);
+        s.first_input_done = done;
+    }
     s.writer
         .write_all(data)
         .and_then(|()| s.writer.flush())
@@ -329,7 +377,7 @@ fn db_exec(app: &tauri::AppHandle, sql: &str, params: &[&dyn rusqlite::ToSql]) {
 
 fn db_insert_session(
     app: &tauri::AppHandle,
-    task_id: i64,
+    task_id: Option<i64>,
     task_ref: Option<&str>,
     adapter_id: &str,
     cwd: &str,
@@ -350,7 +398,9 @@ fn db_insert_session(
 /// watchers in artifacts.rs scan for.
 pub(crate) struct UnboundHosted {
     pub session_id: u64,
-    pub task_id: i64,
+    /// None for a session-first (task-less) session — the claims fallback in
+    /// artifacts.rs needs a task to look up, so it skips these.
+    pub task_id: Option<i64>,
     pub adapter_id: &'static str,
     pub cwd: String,
     /// ISO — binding only accepts artifacts stamped at or after this.
@@ -376,20 +426,115 @@ pub(crate) fn unbound_hosted() -> Vec<UnboundHosted> {
 /// Set-once binding of the CLI's own session id (the resume key). Racing
 /// sources (transcript file vs MCP claim) are benign — first writer wins.
 pub(crate) fn bind_cli_session(app: &tauri::AppHandle, session_id: u64, cli_session_id: &str) {
-    let row_id = {
+    let (row_id, unbound) = {
         let mut table = sessions().lock().unwrap();
         let Some(s) = table.get_mut(&session_id) else { return };
         if s.cli_session_id.is_some() {
             return;
         }
         s.cli_session_id = Some(cli_session_id.to_string());
-        s.row_id
+        (s.row_id, s.task_id.is_none())
     };
     db_exec(
         app,
         "UPDATE hosted_sessions SET cli_session_id = ?1 WHERE id = ?2",
         &[&cli_session_id, &row_id],
     );
+    // Bind-on-claim, late-capture direction: the agent may have claimed its
+    // card over MCP before any transcript revealed this id. Now that the id
+    // is known, an existing claim under it names this session's card.
+    if unbound {
+        if let Ok(conn) = crate::agent::open_db(app) {
+            if let Ok(task_id) = conn.query_row(
+                "SELECT task_id FROM agent_claims WHERE session_id = ?1",
+                [cli_session_id],
+                |r| r.get::<_, i64>(0),
+            ) {
+                let task_ref = task_ref_for(app, task_id);
+                adopt_task(app, session_id, task_id, task_ref);
+            }
+        }
+    }
+}
+
+/// The bind-on-claim decision, pure for tests: an unbound session whose
+/// captured CLI id equals the claim's session id adopts the claimed card.
+fn adoptable(cli_session_id: Option<&str>, task_id: Option<i64>, claim_sid: &str) -> bool {
+    task_id.is_none() && cli_session_id == Some(claim_sid)
+}
+
+fn task_ref_for(app: &tauri::AppHandle, task_id: i64) -> Option<String> {
+    let conn = crate::agent::open_db(app).ok()?;
+    conn.query_row("SELECT \"ref\" FROM tasks WHERE id = ?1", [task_id], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
+/// Adopt a card onto an unbound hosted session: set task_id/ref, persist,
+/// announce. The shared tail of bind-on-claim and "make it a task". A bound
+/// session never rebinds.
+fn adopt_task(app: &tauri::AppHandle, session_id: u64, task_id: i64, task_ref: Option<String>) {
+    let row_id = {
+        let mut table = sessions().lock().unwrap();
+        let Some(s) = table.get_mut(&session_id) else { return };
+        if s.task_id.is_some() {
+            return;
+        }
+        s.task_id = Some(task_id);
+        s.task_ref = task_ref.clone();
+        s.row_id
+    };
+    db_exec(
+        app,
+        "UPDATE hosted_sessions SET task_id = ?1, task_ref = ?2 WHERE id = ?3",
+        &[&task_id, &task_ref, &row_id],
+    );
+    let _ = app.emit("host-changed", ());
+}
+
+/// Bind-on-claim, claim-first direction (spec 2026-07-20-shell-escape-hatch-
+/// session-first-intake): an MCP `doing`-claim just landed. If an unbound
+/// hosted session already captured that CLI session id, the claimed card is
+/// its card — no new protocol, the claim the agent already sends is the
+/// signal. Called from the agent server on every recorded claim.
+pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64) {
+    let Some(app) = app_handle_slot().get().cloned() else { return };
+    let found = sessions()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, s)| adoptable(s.cli_session_id.as_deref(), s.task_id, claim_sid))
+        .map(|(id, _)| *id);
+    if let Some(session_id) = found {
+        let task_ref = task_ref_for(&app, task_id);
+        adopt_task(&app, session_id, task_id, task_ref);
+    }
+}
+
+/// The expiry chip's "make it a task": the frontend created the card; bind
+/// it here. Also the manual bind path for shells (no MCP, no self-claim).
+#[tauri::command]
+pub fn host_bind_task(
+    app: tauri::AppHandle,
+    session_id: u64,
+    task_id: i64,
+    task_ref: Option<String>,
+) {
+    adopt_task(&app, session_id, task_id, task_ref);
+}
+
+/// The expiry chip's "keep": restart the unbound idle clock — a snooze, not
+/// a setting.
+#[tauri::command]
+pub fn host_keep(app: tauri::AppHandle, session_id: u64) {
+    if let Some(s) = sessions().lock().unwrap().get(&session_id) {
+        let mut shared = s.shared.lock().unwrap();
+        shared.idle_since = Some(Instant::now());
+        shared.unbound_stage = UnboundStage::Quiet;
+    }
+    let _ = app.emit("host-changed", ());
 }
 
 /// A dead-but-resumable session from a previous app run.
@@ -421,7 +566,7 @@ fn sweep_hosted_rows(conn: &rusqlite::Connection) -> Vec<ResumableInfo> {
     ) else {
         return keep;
     };
-    let rows: Vec<(i64, i64, Option<String>, String, String, Option<String>, i64)> = stmt
+    let rows: Vec<(i64, Option<i64>, Option<String>, String, String, Option<String>, i64)> = stmt
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
@@ -437,7 +582,10 @@ fn sweep_hosted_rows(conn: &rusqlite::Connection) -> Vec<ResumableInfo> {
         .unwrap_or_default();
     drop(stmt);
     for (id, task_id, task_ref, adapter_id, cwd, cli, live) in rows {
+        // Binding earns persistence: an unbound (task-less) row never becomes
+        // a resumable, whatever else it has going for it.
         let resumable = live == 1
+            && task_id.is_some()
             && cli.is_some()
             && adapter(&adapter_id).is_some_and(|a| a.resume_args.is_some());
         if resumable {
@@ -445,7 +593,7 @@ fn sweep_hosted_rows(conn: &rusqlite::Connection) -> Vec<ResumableInfo> {
                 adapter(&adapter_id).map(|a| a.name.to_string()).unwrap_or_else(|| adapter_id.clone());
             keep.push(ResumableInfo {
                 row_id: id,
-                task_id,
+                task_id: task_id.unwrap(),
                 task_ref,
                 adapter_id,
                 adapter_name,
@@ -461,6 +609,8 @@ fn sweep_hosted_rows(conn: &rusqlite::Connection) -> Vec<ResumableInfo> {
 
 /// App boot (lib.rs setup): load what the previous run left behind.
 pub fn boot(app: &tauri::AppHandle) {
+    // Bind-on-claim needs a handle before any session ever starts a ticker.
+    let _ = app_handle_slot().set(app.clone());
     if let Ok(conn) = crate::agent::open_db(app) {
         let found = sweep_hosted_rows(&conn);
         *resumables().lock().unwrap() = found;
@@ -501,7 +651,7 @@ pub async fn host_resume(
     let session_id = tauri::async_runtime::spawn_blocking(move || {
         let home = std::env::var("HOME").map_err(|_| "no $HOME".to_string())?;
         let cwd = if std::path::Path::new(&info.cwd).is_dir() { info.cwd.clone() } else { home };
-        spawn_hosted(spawn_app, info.task_id, info.task_ref, adapter, argv_tail, cwd, cols, rows)
+        spawn_hosted(spawn_app, Some(info.task_id), info.task_ref, adapter, argv_tail, cwd, cols, rows)
     })
     .await
     .map_err(|e| format!("spawn task failed: {e}"))??;
@@ -601,6 +751,120 @@ fn tick_session(shared: &mut Shared, adapter_id: &str) -> (bool, bool) {
     (true, notify)
 }
 
+/// One ticker visit to one session's unbound lifecycle: anchor `idle_since`
+/// (agents are idle when the classifier says waiting; shells once output has
+/// quiesced — they have no classifier), then derive the stage. Pure over
+/// `Shared` for unit tests. Returns (stage_changed, expire_now).
+fn lifecycle_tick(shared: &mut Shared, adapter_id: &str, unbound: bool) -> (bool, bool) {
+    if shared.exited {
+        return (false, false);
+    }
+    let quiesced = shared.last_byte.is_some_and(|l| l.elapsed() >= QUIESCE);
+    let idle = if adapter_id == "shell" { quiesced } else { shared.waiting };
+    if idle {
+        if shared.idle_since.is_none() {
+            shared.idle_since = Some(Instant::now());
+        }
+    } else {
+        shared.idle_since = None;
+    }
+    if !unbound {
+        let changed = shared.unbound_stage != UnboundStage::Quiet;
+        shared.unbound_stage = UnboundStage::Quiet;
+        return (changed, false);
+    }
+    let stage = unbound_stage(shared.idle_since.map(|s| s.elapsed()));
+    let changed = stage != shared.unbound_stage;
+    shared.unbound_stage = stage;
+    (changed, changed && stage == UnboundStage::Expired)
+}
+
+/// The expiry action: terminate the CLI but keep the table entry — the
+/// reader thread sees EOF and degrades it to the dismissible exited state,
+/// scrollback intact. Never `host_kill` (that would vanish the session).
+fn expire_session(session_id: u64) {
+    if let Some(s) = sessions().lock().unwrap().get_mut(&session_id) {
+        let _ = s.child.kill();
+    }
+}
+
+// -- unbound lifecycle (spec 2026-07-20-shell-escape-hatch-session-first-intake)
+
+/// After this long continuously idle, an unbound session's row shows the
+/// quiet "no card yet" hint.
+const UNBOUND_REMIND: Duration = Duration::from_secs(30 * 60);
+/// From here the hint escalates to the expiry chip (make it a task / keep).
+const UNBOUND_EXPIRE_SOON: Duration = Duration::from_secs(105 * 60);
+/// At two hours unbound + idle the session is expired: the CLI is terminated
+/// and the entry degrades to the dismissible exited state — scrollback
+/// intact, never a silent vanish. Constants, not settings, by design.
+const UNBOUND_EXPIRE: Duration = Duration::from_secs(120 * 60);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UnboundStage {
+    Quiet,
+    Remind,
+    ExpireSoon,
+    Expired,
+}
+
+/// The lifecycle state machine, pure over the idle duration. `None` idle
+/// (output still streaming, or never quiesced) is always Quiet — a session
+/// mid-work is never reminded, expired, or killed.
+fn unbound_stage(idle_for: Option<Duration>) -> UnboundStage {
+    match idle_for {
+        None => UnboundStage::Quiet,
+        Some(d) if d >= UNBOUND_EXPIRE => UnboundStage::Expired,
+        Some(d) if d >= UNBOUND_EXPIRE_SOON => UnboundStage::ExpireSoon,
+        Some(d) if d >= UNBOUND_REMIND => UnboundStage::Remind,
+        Some(_) => UnboundStage::Quiet,
+    }
+}
+
+/// Accumulate the first typed line of an unbound session — the "make it a
+/// task" title hint. Printable bytes only (arrow keys and other escape
+/// sequences would smuggle garbage into a card title); Enter finishes the
+/// line, and only a non-empty line counts as finished.
+fn accumulate_first_input(buf: &mut String, done: &mut bool, data: &[u8]) {
+    if *done {
+        return;
+    }
+    let mut i = 0;
+    while i < data.len() {
+        match data[i] {
+            0x1b => {
+                // Skip the whole sequence: CSI (ESC [ … final 0x40–0x7e), or
+                // ESC + one byte (Alt+key sends ESC f — the f is part of the
+                // sequence, not title text). A keystroke arrives as one
+                // write, so sequences don't split across calls in practice.
+                i += 1;
+                if data.get(i) == Some(&b'[') {
+                    i += 1;
+                    while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                        i += 1;
+                    }
+                }
+            }
+            b'\r' | b'\n' => {
+                if !buf.trim().is_empty() {
+                    *done = true;
+                    return;
+                }
+            }
+            0x7f | 0x08 => {
+                buf.pop();
+            }
+            b @ 0x20..=0x7e => {
+                if buf.len() < 200 {
+                    buf.push(b as char);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
 fn app_handle_slot() -> &'static OnceLock<tauri::AppHandle> {
     static SLOT: OnceLock<tauri::AppHandle> = OnceLock::new();
     &SLOT
@@ -618,18 +882,33 @@ fn ensure_ticker(app: &tauri::AppHandle) {
             let Some(app) = app_handle_slot().get() else { continue };
             // Snapshot under the table lock, classify outside it — the
             // classifier allocates the grid text and must not block writes.
-            let snapshot: Vec<(&'static str, Option<String>, Arc<Mutex<Shared>>)> = sessions()
-                .lock()
-                .unwrap()
-                .values()
-                .map(|s| (s.adapter_id, s.task_ref.clone(), Arc::clone(&s.shared)))
-                .collect();
-            for (adapter_id, task_ref, shared) in snapshot {
-                let (flipped, notify) = {
+            let snapshot: Vec<(u64, &'static str, Option<String>, bool, Arc<Mutex<Shared>>)> =
+                sessions()
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, s)| {
+                        (
+                            *id,
+                            s.adapter_id,
+                            s.task_ref.clone(),
+                            s.task_id.is_none(),
+                            Arc::clone(&s.shared),
+                        )
+                    })
+                    .collect();
+            for (session_id, adapter_id, task_ref, unbound, shared) in snapshot {
+                let (flipped, notify, stage_changed, expire_now) = {
                     let mut shared = shared.lock().unwrap();
-                    tick_session(&mut shared, adapter_id)
+                    let (flipped, notify) = tick_session(&mut shared, adapter_id);
+                    let (stage_changed, expire_now) =
+                        lifecycle_tick(&mut shared, adapter_id, unbound);
+                    (flipped, notify, stage_changed, expire_now)
                 };
-                if flipped {
+                if expire_now {
+                    expire_session(session_id);
+                }
+                if flipped || stage_changed {
                     let _ = app.emit("host-changed", ());
                 }
                 if notify {
@@ -678,10 +957,12 @@ pub async fn host_adapters() -> Result<Vec<AdapterInfo>, String> {
 #[derive(serde::Serialize, Clone)]
 pub struct HostInfo {
     pub id: u64,
-    pub task_id: i64,
+    /// None = unbound (no card yet).
+    pub task_id: Option<i64>,
     pub task_ref: Option<String>,
     pub adapter_id: &'static str,
     pub adapter_name: &'static str,
+    pub cwd: String,
     pub exited: bool,
     /// Waiting-detect's verdict (F2): the session looks idle at a prompt.
     /// Heuristic — the UI must say so, never claim it as fact.
@@ -689,6 +970,16 @@ pub struct HostInfo {
     /// The CLI's session id is captured and the adapter can resume (F3) —
     /// what the quit dialog uses to promise "resumable next launch".
     pub bound: bool,
+    /// Unbound lifecycle stage for the sidebar row: "remind" (quiet "no card
+    /// yet" hint) or "expire-soon" (the make-it-a-task / keep chip). Absent
+    /// while quiet or bound.
+    pub unbound_stage: Option<&'static str>,
+    /// Seconds until expiry, present in the expire-soon stage — the chip's
+    /// countdown.
+    pub expires_in_secs: Option<u64>,
+    /// The first line typed into an unbound session — "make it a task"'s
+    /// title suggestion.
+    pub title_hint: Option<String>,
 }
 
 #[tauri::command]
@@ -699,16 +990,37 @@ pub fn host_list() -> Vec<HostInfo> {
         .iter()
         .map(|(id, s)| {
             let shared = s.shared.lock().unwrap();
+            let (unbound_stage, expires_in_secs) = if s.task_id.is_none() && !shared.exited {
+                match shared.unbound_stage {
+                    UnboundStage::Remind => (Some("remind"), None),
+                    UnboundStage::ExpireSoon => (
+                        Some("expire-soon"),
+                        shared.idle_since.map(|since| {
+                            UNBOUND_EXPIRE.saturating_sub(since.elapsed()).as_secs()
+                        }),
+                    ),
+                    _ => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+            let title_hint = (s.task_id.is_none() && s.first_input_done)
+                .then(|| s.first_input.trim().chars().take(60).collect::<String>())
+                .filter(|t: &String| !t.is_empty());
             HostInfo {
                 id: *id,
                 task_id: s.task_id,
                 task_ref: s.task_ref.clone(),
                 adapter_id: s.adapter_id,
                 adapter_name: adapter(s.adapter_id).map(|a| a.name).unwrap_or(s.adapter_id),
+                cwd: s.cwd.clone(),
                 exited: shared.exited,
                 waiting: shared.waiting && !shared.exited,
                 bound: s.cli_session_id.is_some()
                     && adapter(s.adapter_id).is_some_and(|a| a.resume_args.is_some()),
+                unbound_stage,
+                expires_in_secs,
+                title_hint,
             }
         })
         .collect()
@@ -737,13 +1049,14 @@ fn resolve_cwd(
     home.to_string()
 }
 
-/// Start a session for a task. Spawn only — the caller opens the pane, whose
-/// mount runs the one shared attach path (`host_attach`). Returns the session
-/// id that names it for jumps and kill.
+/// Start a session — for a task, or unbound (task_id None: session-first
+/// intake; bind-on-claim or "make it a task" cards it later). Spawn only —
+/// the caller opens the pane, whose mount runs the one shared attach path
+/// (`host_attach`). Returns the session id that names it for jumps and kill.
 #[tauri::command]
 pub async fn host_start(
     app: tauri::AppHandle,
-    task_id: i64,
+    task_id: Option<i64>,
     task_ref: Option<String>,
     adapter_id: String,
     claim_cwd: Option<String>,
@@ -790,7 +1103,7 @@ pub async fn host_start(
 #[allow(clippy::too_many_arguments)]
 fn spawn_hosted(
     spawn_app: tauri::AppHandle,
-    task_id: i64,
+    task_id: Option<i64>,
     task_ref: Option<String>,
     adapter: &'static Adapter,
     argv_tail: Vec<String>,
@@ -806,6 +1119,9 @@ fn spawn_hosted(
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("openpty failed: {e}"))?;
         let mut cmd = CommandBuilder::new(bin);
+        for arg in adapter.base_args {
+            cmd.arg(arg);
+        }
         for arg in &argv_tail {
             cmd.arg(arg);
         }
@@ -852,6 +1168,8 @@ fn spawn_hosted(
             last_byte: None,
             waiting: false,
             notified: false,
+            idle_since: None,
+            unbound_stage: UnboundStage::Quiet,
         }));
         sessions().lock().unwrap().insert(
             session_id,
@@ -863,6 +1181,8 @@ fn spawn_hosted(
                 cwd,
                 started_at,
                 cli_session_id: None,
+                first_input: String::new(),
+                first_input_done: false,
                 writer,
                 master: pair.master,
                 child,
@@ -897,6 +1217,9 @@ fn spawn_hosted(
                             let cleared = shared.waiting;
                             shared.waiting = false;
                             shared.notified = false;
+                            // Output refutes idleness — the unbound clock
+                            // restarts from the next quiesce.
+                            shared.idle_since = None;
                             if let Some(generation) = shared.attached {
                                 let _ = reader_app.emit(
                                     "pty-data",
@@ -1064,9 +1387,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adapter_table_has_the_three_v1_clis() {
+    fn adapter_table_has_the_three_v1_clis_and_the_shell() {
         let ids: Vec<_> = ADAPTERS.iter().map(|a| a.id).collect();
-        assert_eq!(ids, vec!["claude", "codex", "opencode"]);
+        assert_eq!(ids, vec!["claude", "codex", "opencode", "shell"]);
+    }
+
+    #[test]
+    fn shell_adapter_is_a_login_shell_with_no_resume_contract() {
+        let sh = adapter("shell").unwrap();
+        // No resume args → excluded from resumables by construction
+        // (binding earns persistence, and a shell has no session id at all).
+        assert!(sh.resume_args.is_none());
+        assert!(!sh.prompt_arg, "a shell takes no positional prompt");
+        assert_eq!(sh.base_args, &["-l"], "spawn as a login shell, like a terminal");
+        // And the waiting classifier never has a verdict for it — a shell
+        // prompt is not "waiting for you".
+        assert_eq!(screen_waiting("shell", "~/projects %"), None);
+    }
+
+    #[test]
+    fn unbound_stage_boundaries() {
+        use UnboundStage::*;
+        let m = |mins: u64| Some(Duration::from_secs(mins * 60));
+        assert_eq!(unbound_stage(None), Quiet, "mid-work is never staged");
+        assert_eq!(unbound_stage(m(29)), Quiet);
+        assert_eq!(unbound_stage(m(30)), Remind);
+        assert_eq!(unbound_stage(m(104)), Remind);
+        assert_eq!(unbound_stage(m(105)), ExpireSoon);
+        assert_eq!(unbound_stage(m(119)), ExpireSoon);
+        assert_eq!(unbound_stage(m(120)), Expired);
+    }
+
+    #[test]
+    fn first_input_accumulates_printables_until_enter() {
+        let mut buf = String::new();
+        let mut done = false;
+        // Escape sequences (arrows) and control bytes never land in a title.
+        accumulate_first_input(&mut buf, &mut done, b"\x1b[Afix th");
+        accumulate_first_input(&mut buf, &mut done, b"e\x7f\x7fhe bug\r");
+        assert!(done);
+        assert_eq!(buf, "fix the bug");
+        // Post-Enter bytes are ignored — the hint is the FIRST line.
+        accumulate_first_input(&mut buf, &mut done, b"second line\r");
+        assert_eq!(buf, "fix the bug");
+        // A bare Enter on an empty buffer does not finish the line.
+        let mut buf = String::new();
+        let mut done = false;
+        accumulate_first_input(&mut buf, &mut done, b"\r\r\n");
+        assert!(!done);
+        assert!(buf.is_empty());
+        // Alt+key arrives as ESC + byte — the byte belongs to the sequence
+        // and must not leak into the title (codex-verify finding check,
+        // 2026-07-20: pinned here because the loop's trailing increment is
+        // what consumes it, which is easy to misread).
+        let mut buf = String::new();
+        let mut done = false;
+        accumulate_first_input(&mut buf, &mut done, b"\x1bfhi\r");
+        assert!(done);
+        assert_eq!(buf, "hi");
+    }
+
+    #[test]
+    fn adoption_needs_an_unbound_session_with_the_exact_cli_id() {
+        let sid = "019ebaed-7e23-7e53-8fd5-08fafab4e104";
+        assert!(adoptable(Some(sid), None, sid));
+        assert!(!adoptable(Some(sid), Some(7), sid), "bound sessions never rebind");
+        assert!(!adoptable(None, None, sid), "no captured id, nothing to match");
+        assert!(!adoptable(Some("other"), None, sid));
     }
 
     #[test]
@@ -1157,7 +1544,45 @@ mod tests {
             last_byte: Some(Instant::now() - QUIESCE),
             waiting: false,
             notified: false,
+            idle_since: None,
+            unbound_stage: UnboundStage::Quiet,
         }
+    }
+
+    #[test]
+    fn lifecycle_anchors_idle_on_waiting_for_agents_and_quiesce_for_shells() {
+        // Agent, quiesced but not waiting: no idle anchor.
+        let mut s = idle_shared(None);
+        lifecycle_tick(&mut s, "claude", true);
+        assert!(s.idle_since.is_none());
+        // Waiting flips → the anchor sets.
+        s.waiting = true;
+        lifecycle_tick(&mut s, "claude", true);
+        assert!(s.idle_since.is_some());
+        // A shell anchors on quiescence alone (it has no classifier).
+        let mut s = idle_shared(None);
+        lifecycle_tick(&mut s, "shell", true);
+        assert!(s.idle_since.is_some());
+        // Still-streaming output means no anchor, whatever the adapter.
+        let mut s = idle_shared(None);
+        s.last_byte = Some(Instant::now());
+        lifecycle_tick(&mut s, "shell", true);
+        assert!(s.idle_since.is_none());
+        // Bound sessions never accumulate a stage.
+        let mut s = idle_shared(None);
+        s.waiting = true;
+        s.idle_since = Some(Instant::now() - UNBOUND_EXPIRE);
+        let (_, expire) = lifecycle_tick(&mut s, "claude", false);
+        assert!(!expire);
+        assert_eq!(s.unbound_stage, UnboundStage::Quiet);
+        // An unbound one at the expiry threshold expires exactly once.
+        let mut s = idle_shared(None);
+        s.waiting = true;
+        s.idle_since = Some(Instant::now() - UNBOUND_EXPIRE);
+        let (changed, expire) = lifecycle_tick(&mut s, "claude", true);
+        assert!(changed && expire);
+        let (changed, expire) = lifecycle_tick(&mut s, "claude", true);
+        assert!(!changed && !expire, "the expire action must not repeat");
     }
 
     #[test]
@@ -1235,18 +1660,23 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(include_str!("../migrations/018_hosted_sessions.sql")).unwrap();
+        // 020 relaxes task_id to nullable — production schema is 018 + 020.
+        conn.execute_batch(include_str!("../migrations/020_unbound_sessions.sql")).unwrap();
         conn.execute_batch(
             "INSERT INTO hosted_sessions \
              (task_id, task_ref, adapter_id, cwd, cli_session_id, started_at, live) VALUES \
              (1, 'TIL-1', 'claude',   '/w', 'abc', '2026-07-19T00:00:00.000Z', 1), \
              (2, 'TIL-2', 'claude',   '/w', NULL,  '2026-07-19T00:00:00.000Z', 1), \
              (3, 'TIL-3', 'opencode', '/w', 'zzz', '2026-07-19T00:00:00.000Z', 1), \
-             (4, 'TIL-4', 'codex',    '/w', 'ddd', '2026-07-19T00:00:00.000Z', 0);",
+             (4, 'TIL-4', 'codex',    '/w', 'ddd', '2026-07-19T00:00:00.000Z', 0), \
+             (NULL, NULL, 'claude',   '/w', 'eee', '2026-07-19T00:00:00.000Z', 1), \
+             (NULL, NULL, 'shell',    '/w', NULL,  '2026-07-19T00:00:00.000Z', 1);",
         )
         .unwrap();
         let keep = sweep_hosted_rows(&conn);
-        // Only the live, bound, resume-capable row survives; unbound,
-        // no-resume-adapter and self-exited rows are swept.
+        // Only the live, bound, resume-capable, TASK-BOUND row survives;
+        // unbound-cli, no-resume-adapter, self-exited, and task-less rows
+        // (binding earns persistence) are all swept.
         assert_eq!(keep.len(), 1);
         assert_eq!(keep[0].task_ref.as_deref(), Some("TIL-1"));
         assert_eq!(keep[0].adapter_id, "claude");
