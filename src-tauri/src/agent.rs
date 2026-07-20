@@ -1702,6 +1702,9 @@ impl TildoneAgent {
                         agent,
                         self.beat_pid(session),
                     );
+                    // Bind-on-claim (session-first intake): an unbound hosted
+                    // session whose CLI id matches this claim adopts the card.
+                    crate::host::try_adopt_claim(session, id);
                 }
             }
             Some("done") => Self::release_claims_for_task(&conn, id),
@@ -2530,6 +2533,10 @@ impl TildoneAgent {
                     agent,
                     self.beat_pid(session),
                 );
+                // Bind-on-claim (session-first intake): the create-and-claim
+                // in one write — the canonical "card emerges from the
+                // discussion" moment.
+                crate::host::try_adopt_claim(session, id);
             }
         }
         Self::record_activity(&conn, id, "Task created", agent);
@@ -3881,6 +3888,31 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| e.to_string())?;
     Ok(conn)
+}
+
+/// Distinct cwds of recent claims, newest first — the "+ New session"
+/// picker's suggestions (spec 2026-07-20-shell-escape-hatch-session-first-
+/// intake). Claims are where the board already knows the user's checkouts.
+#[tauri::command]
+pub fn recent_claim_cwds(app: AppHandle) -> Vec<String> {
+    let Ok(conn) = open_db(&app) else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT cwd FROM agent_claims WHERE cwd IS NOT NULL ORDER BY claimed_at DESC",
+    ) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+        for cwd in rows.flatten() {
+            if !out.contains(&cwd) {
+                out.push(cwd);
+            }
+            if out.len() >= 8 {
+                break;
+            }
+        }
+    }
+    out
 }
 
 #[tauri::command]

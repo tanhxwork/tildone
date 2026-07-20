@@ -5470,3 +5470,159 @@ textarea:focus-visible,
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* --------------------------------------------------------------------------
+   Sessions sidebar section (spec 2026-07-20-shell-escape-hatch-session-first-
+   intake, Option A): hosted sessions — bound or unbound — as sidebar rows,
+   with the unbound lifecycle's hint and expiry chip riding under the row. */
+
+.sess-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.sess-glyph {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.sess-label {
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.sess-label small {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sess-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: auto;
+}
+
+.sess-dot--quiet {
+  background: var(--text-faint);
+}
+
+.sess-dot--waiting {
+  background: var(--doing);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--doing) 22%, transparent);
+}
+
+.sess-dot--exited {
+  background: transparent;
+  border: 1.5px solid var(--danger);
+}
+
+/* The unbound lifecycle, inline under the row — never a modal, never a
+   notification. remind = the quiet hint; expire-soon adds the two actions. */
+.sess-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 8px 2px 33px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.sess-hint--expire {
+  color: var(--warn);
+}
+
+.sess-hint-act {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+.sess-hint-act:hover {
+  background: var(--bg-hover);
+}
+
+/* "+ New session": the inline picker — a cwd field and one button per
+   available adapter. Progressive disclosure, not a dialog. */
+.sess-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 8px 4px;
+}
+
+.sess-new-cwd {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.sess-new-adapters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sess-new-adapter {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+.sess-new-adapter:hover {
+  background: var(--bg-hover);
+}
+
+.sess-new-adapter:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.sess-error {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* The pane header's unbound state: a card ref's slot, dashed until the
+   session earns a ref via bind-on-claim or "make it a task". */
+.session-pane-ref--none {
+  color: var(--text-faint);
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  padding: 0 5px;
+}

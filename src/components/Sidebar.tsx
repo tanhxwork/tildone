@@ -25,6 +25,7 @@ import {
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { SessionsSection } from "./SessionsSection";
 
 function isSelected(a: Selection, b: Selection): boolean {
   if (a.type !== b.type) return false;
@@ -189,6 +190,8 @@ export function Sidebar() {
           <p className="sidebar-hint">No projects yet — create one with +</p>
         )}
       </div>
+
+      <SessionsSection />
 
       {tags.length > 0 && (
         <div className="sidebar-section">

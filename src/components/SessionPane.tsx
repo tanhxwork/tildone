@@ -22,6 +22,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { usePaneStore } from "../paneStore";
+import { useHostStore } from "../hostStore";
 import { IconTerminal, IconX, IconMaximize } from "./Icons";
 
 interface PtyEvent {
@@ -53,6 +54,15 @@ export function SessionPane() {
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
+
+  // The ref chip follows the LIVE session, not the open-time snapshot: an
+  // unbound session that binds-on-claim while the pane is up gains its card
+  // ref here without a re-open (spec 2026-07-20).
+  const hostSessions = useHostStore((s) => s.sessions);
+  const liveRef =
+    target?.kind === "hosted"
+      ? (hostSessions.find((s) => s.id === target.hostId)?.task_ref ?? target.taskRef)
+      : (target?.taskRef ?? null);
 
   // One attach per (session, mount). The effect tears the whole terminal
   // down on session change or close — never reuse an xterm across sessions.
@@ -244,7 +254,7 @@ export function SessionPane() {
   }, [target, widthFraction, fullscreen]);
 
   useEffect(() => {
-    if (!target) return;
+    if (!target || target.taskId === null) return;
     document
       .querySelector(`[data-task-id="${target.taskId}"]`)
       ?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
@@ -293,7 +303,13 @@ export function SessionPane() {
       )}
       <header className="session-pane-head">
         <IconTerminal size={13} />
-        {target.taskRef && <span className="session-pane-ref">{target.taskRef}</span>}
+        {liveRef ? (
+          <span className="session-pane-ref">{liveRef}</span>
+        ) : (
+          target.kind === "hosted" && (
+            <span className="session-pane-ref session-pane-ref--none">no card yet</span>
+          )
+        )}
         <span className="session-pane-name">
           {target.name ?? (target.kind === "attach" ? target.shortId : "session")}
         </span>

@@ -13,10 +13,15 @@ import { listen } from "@tauri-apps/api/event";
 
 export interface HostSession {
   id: number;
-  task_id: number;
+  /** null = unbound: no card yet (spec 2026-07-20-shell-escape-hatch-
+   *  session-first-intake). Bind-on-claim or "make it a task" fills it in. */
+  task_id: number | null;
   task_ref: string | null;
   adapter_id: string;
   adapter_name: string;
+  /** Where the CLI runs — the Sessions row's sublabel. Optional because
+   *  locally-constructed HostSession literals predate it. */
+  cwd?: string;
   /** The CLI exited (on its own or killed) but hasn't been dismissed — a
    *  crash must be visible on the board, not a silent vanish. */
   exited: boolean;
@@ -26,6 +31,13 @@ export interface HostSession {
   /** The CLI's session id is captured and the adapter can resume (F3) — what
    *  lets the quit dialog promise "resumable next launch". */
   bound: boolean;
+  /** Unbound lifecycle stage: quiet hint ("remind") or the expiry chip
+   *  ("expire-soon"). Absent while quiet or bound. */
+  unbound_stage?: "remind" | "expire-soon" | null;
+  /** Seconds until expiry, in the expire-soon stage — the chip countdown. */
+  expires_in_secs?: number | null;
+  /** First line typed into an unbound session — "make it a task"'s title. */
+  title_hint?: string | null;
 }
 
 /** A dead-but-resumable session from a previous app run (F3). */
