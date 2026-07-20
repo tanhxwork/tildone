@@ -45,9 +45,14 @@ impl DroppedPaths {
     }
 }
 
-/// Read one image the user just dropped. Errors are strings the UI reports as
-/// "couldn't read" — deliberately distinct from the over-size case, which the
-/// user can act on.
+/// Machine-readable marker for the one failure the UI words differently. Matching
+/// on prose would break the moment the message is reworded, and every unmatched
+/// error is reported to the user as "couldn't read" — so a drifted match silently
+/// mislabels an over-size file.
+pub const ERR_TOO_LARGE: &str = "E_TOO_LARGE";
+
+/// Read one image the user just dropped. Every other error is a string the UI
+/// reports as "couldn't read"; io messages are used as-is and carry no path.
 #[tauri::command]
 pub fn read_dropped_image(
     state: tauri::State<'_, DroppedPaths>,
@@ -64,11 +69,11 @@ pub fn read_dropped_image(
         return Err("not a file".into());
     }
     if meta.len() > MAX_BYTES {
-        return Err("too large".into());
+        return Err(ERR_TOO_LARGE.into());
     }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("too large".into());
+        return Err(ERR_TOO_LARGE.into());
     }
     Ok(tauri::ipc::Response::new(bytes))
 }

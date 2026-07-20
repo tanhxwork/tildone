@@ -123,6 +123,7 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       }
     }
     setSkippedOversize(false);
+    setSkippedUnreadable(false);
     setTitle("");
   }
 

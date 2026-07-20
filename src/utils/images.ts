@@ -112,7 +112,10 @@ export async function imagesFromPaths(paths: string[]): Promise<DroppedImages> {
       const name = path.split("/").pop() || "Dropped image";
       images.push(await toPendingBlob(new Blob([bytes], { type: mime }), name));
     } catch (err) {
-      if (String(err).includes("too large")) oversize += 1;
+      // Matches the ERR_TOO_LARGE sentinel in src-tauri/src/drops.rs. Anything
+      // else — permissions, a missing file, a path we never saw dropped — is
+      // "couldn't read", never silently recoloured as a size problem.
+      if (String(err).includes("E_TOO_LARGE")) oversize += 1;
       else unreadable += 1;
     }
   }

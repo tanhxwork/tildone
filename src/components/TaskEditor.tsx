@@ -170,6 +170,7 @@ export function TaskEditor() {
       setStarting(false);
       setSessionError("");
       setEditingNotes(false);
+      setDropNote(null);
     }
     // Re-sync local fields only when switching to a different task.
     // eslint-disable-next-line react-hooks/exhaustive-deps
