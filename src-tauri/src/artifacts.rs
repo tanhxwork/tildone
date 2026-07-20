@@ -474,18 +474,28 @@ fn cmd_is_cli(cmd: &str, kind: &str) -> bool {
         .is_some_and(|base| base == kind)
 }
 
-/// Does `cmd` prove ownership of `uuid`? A descendant of the shell donates its
-/// id only when its own argv names it: `--session-id <uuid>`, or a `--resume`
-/// target whose file stem is the uuid. Descendant-ness alone is not proof —
-/// every session for one repo writes into the same slug dir, so an unrelated
-/// `claude` elsewhere on the machine can touch a transcript there while a
-/// perfectly innocent bare-argv `claude` runs inside the pane (the TIL-130
-/// regression: a `--fork-session` process outside the shell donated its uuid).
+/// Does this argv prove ownership of `uuid`? A descendant of the shell donates
+/// its id only when its own argv names it: `--session-id <uuid>`, or a
+/// `--resume` target whose file stem is the uuid. Descendant-ness alone is not
+/// proof — every session for one repo writes into the same slug dir, so an
+/// unrelated `claude` elsewhere on the machine can touch a transcript there
+/// while a perfectly innocent bare-argv `claude` runs inside the pane (the
+/// TIL-130 regression: a `--fork-session` process outside the shell donated
+/// its uuid).
 ///
-/// Matching is token-exact, never a substring: a uuid appearing inside some
+/// Takes REAL argv elements (`real_argv`), never a re-split command string:
+/// the ps snapshot's command is whitespace-joined, and re-splitting it made
+/// prompt TEXT containing `--session-id <uuid>` indistinguishable from the
+/// actual flag (TIL-136 #2). As real elements, that whole prompt is one
+/// argument and matches nothing.
+///
+/// Matching is element-exact, never a substring: a uuid appearing inside some
 /// longer argument is not a claim of ownership.
-pub(crate) fn argv_proves_uuid(cmd: &str, uuid: &str) -> bool {
-    let mut tokens = cmd.split_whitespace();
+pub(crate) fn argv_proves_uuid<'a>(
+    argv: impl IntoIterator<Item = &'a str>,
+    uuid: &str,
+) -> bool {
+    let mut tokens = argv.into_iter();
     while let Some(tok) = tokens.next() {
         // Everything after a bare `--` is positional — prompt text, not
         // options. `claude -- --session-id <u>` asserts nothing about <u>,
@@ -537,15 +547,106 @@ fn resume_target_is(arg: &str, uuid: &str) -> bool {
     stem == uuid || stem.strip_suffix(".jsonl") == Some(uuid)
 }
 
+/// `sysctl` name for a process's raw argument block; not exported by the
+/// `libc` crate for this shape, value from `<sys/sysctl.h>`.
+const KERN_PROCARGS2: libc::c_int = 49;
+
+/// Real argv elements of a live process (macOS `KERN_PROCARGS2`). The ps
+/// snapshot's command is a whitespace-JOINED string — only the kernel's
+/// NUL-separated block preserves element boundaries, which is what the argv
+/// proof needs (TIL-136 #2). `None` (dead pid, permission, truncation) proves
+/// nothing: the caller fails closed.
+fn real_argv(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [libc::CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    // First call sizes the buffer. The block can shrink between calls (exec),
+    // so the parse below trusts only the bytes actually returned.
+    unsafe {
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return None;
+        }
+    }
+    let mut buf = vec![0u8; size];
+    unsafe {
+        if libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return None;
+        }
+    }
+    buf.truncate(size);
+    parse_procargs2(&buf)
+}
+
+/// `KERN_PROCARGS2` layout: native-endian i32 argc, the exec path
+/// (NUL-terminated), NUL padding, then argc NUL-terminated argv elements (the
+/// environment follows — never read). Pure for tests.
+fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if argc <= 0 {
+        return None;
+    }
+    let rest = buf.get(4..)?;
+    let mut i = rest.iter().position(|&b| b == 0)?; // end of exec path
+    while rest.get(i) == Some(&0) {
+        i += 1; // padding
+    }
+    let mut out = Vec::with_capacity(argc as usize);
+    let mut start = i;
+    let mut j = i;
+    while out.len() < (argc as usize) {
+        match rest.get(j) {
+            Some(0) => {
+                out.push(String::from_utf8_lossy(&rest[start..j]).into_owned());
+                j += 1;
+                start = j;
+            }
+            Some(_) => j += 1,
+            None => return None, // truncated block — prove nothing
+        }
+    }
+    Some(out)
+}
+
 /// Is a CLI of `kind` running under `ancestor` that *proves* it owns `uuid`?
 /// The tightened shell guard: `has_cli_descendant` answers "is someone home",
 /// which a stranger's artifact can ride; this answers "did the process in this
-/// pane say this id is his".
+/// pane say this id is his". The proof reads the candidate's REAL argv from
+/// the kernel, not the snapshot's joined command string (TIL-136 #2).
 fn descendant_proves_uuid(procs: &[Proc], ancestor: u32, kind: &str, uuid: &str) -> bool {
+    descendant_proves_uuid_with(procs, ancestor, kind, uuid, |pid, uuid| {
+        real_argv(pid).is_some_and(|argv| argv_proves_uuid(argv.iter().map(String::as_str), uuid))
+    })
+}
+
+/// The test seam: fabricated snapshot pids have no live process to read argv
+/// from, so tests supply the prover. Structure (CLI-ness, descendant-ness,
+/// prove-last ordering) stays shared with production.
+fn descendant_proves_uuid_with(
+    procs: &[Proc],
+    ancestor: u32,
+    kind: &str,
+    uuid: &str,
+    prove: impl Fn(u32, &str) -> bool,
+) -> bool {
     procs.iter().any(|p| {
         cmd_is_cli(&p.cmd, kind)
-            && argv_proves_uuid(&p.cmd, uuid)
             && descends_from(procs, p.pid, ancestor)
+            && prove(p.pid, uuid)
     })
 }
 
@@ -1061,6 +1162,19 @@ mod tests {
         assert_eq!(got[1].cmd, "claude bg-pty-host");
     }
 
+    /// The production prover reads live argv from the kernel; fabricated test
+    /// pids have none, so tests mirror it over a pid→argv table.
+    fn prover<'a>(
+        argvs: &'a [(u32, &'a [&'a str])],
+    ) -> impl Fn(u32, &str) -> bool + 'a {
+        |pid, uuid| {
+            argvs
+                .iter()
+                .find(|(p, _)| *p == pid)
+                .is_some_and(|(_, argv)| argv_proves_uuid(argv.iter().copied(), uuid))
+        }
+    }
+
     #[test]
     fn a_cli_binds_a_shell_only_when_it_runs_underneath_that_shell() {
         const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
@@ -1071,10 +1185,19 @@ mod tests {
             (200, 1, "/bin/zsh -l"),  // a stranger's shell
             (201, 200, &owned),       // …with a claude naming the same id
         ]);
-        assert!(descendant_proves_uuid(&table, 100, "claude", U));
-        assert!(descendant_proves_uuid(&table, 200, "claude", U));
-        assert!(!descendant_proves_uuid(&table, 100, "codex", U), "wrong CLI must not bind");
-        assert!(!descendant_proves_uuid(&table, 300, "claude", U), "unknown shell owns nothing");
+        let argv: &[&str] = &["/usr/local/bin/claude", "--session-id", U];
+        let argvs = [(101, argv), (201, argv)];
+        let p = prover(&argvs);
+        assert!(descendant_proves_uuid_with(&table, 100, "claude", U, &p));
+        assert!(descendant_proves_uuid_with(&table, 200, "claude", U, &p));
+        assert!(
+            !descendant_proves_uuid_with(&table, 100, "codex", U, &p),
+            "wrong CLI must not bind"
+        );
+        assert!(
+            !descendant_proves_uuid_with(&table, 300, "claude", U, &p),
+            "unknown shell owns nothing"
+        );
     }
 
     /// The TIL-130 regression, verbatim from the installed app: a foreign
@@ -1092,47 +1215,117 @@ mod tests {
             (16078, 15634, "claude"),      // the real inner CLI — bare argv, proves nothing
             (24027, 1, &stranger),         // the donor, outside the shell entirely
         ]);
+        let stranger_argv: &[&str] =
+            &["claude", "--session-id", U, "--fork-session", "--resume", "/p/1d76953e.jsonl"];
+        let inner_argv: &[&str] = &["claude"];
+        let argvs = [(16078, inner_argv), (24027, stranger_argv)];
+        let p = prover(&argvs);
         assert!(
-            !descendant_proves_uuid(&table, 15634, "claude", U),
+            !descendant_proves_uuid_with(&table, 15634, "claude", U, &p),
             "a non-descendant naming the uuid must never donate it"
         );
         // And the honest consequence: the inner CLI yields no resume key.
-        assert!(!argv_proves_uuid("claude", U), "bare argv proves no id");
+        assert!(!argv_proves_uuid(["claude"], U), "bare argv proves no id");
     }
 
     #[test]
     fn argv_proof_accepts_only_an_explicit_claim_of_the_id() {
         const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
-        assert!(argv_proves_uuid(&format!("claude --session-id {U}"), U));
-        assert!(argv_proves_uuid(&format!("claude --session-id={U}"), U));
-        assert!(argv_proves_uuid(&format!("claude --resume {U}"), U));
-        assert!(argv_proves_uuid(&format!("claude --resume /a/b/{U}.jsonl"), U));
-        assert!(!argv_proves_uuid("claude", U));
-        assert!(!argv_proves_uuid("claude --session-id", U), "a dangling flag proves nothing");
+        let eq = format!("--session-id={U}");
+        let eq_resume = format!("--resume=/a/b/{U}.jsonl");
+        let path = format!("/a/b/{U}.jsonl");
+        assert!(argv_proves_uuid(["claude", "--session-id", U], U));
+        assert!(argv_proves_uuid(["claude", eq.as_str()], U));
+        assert!(argv_proves_uuid(["claude", "--resume", U], U));
+        assert!(argv_proves_uuid(["claude", "--resume", path.as_str()], U));
+        assert!(argv_proves_uuid(["claude", eq_resume.as_str()], U));
+        assert!(!argv_proves_uuid(["claude"], U));
         assert!(
-            !argv_proves_uuid(&format!("claude --session-id 00000000-0000-4000-8000-{U}"), U),
-            "a uuid must be the whole token, never a substring"
+            !argv_proves_uuid(["claude", "--session-id"], U),
+            "a dangling flag proves nothing"
         );
+        let longer = format!("00000000-0000-4000-8000-{U}");
         assert!(
-            !argv_proves_uuid(&format!("claude --add-dir /logs/{U}-notes"), U),
+            !argv_proves_uuid(["claude", "--session-id", longer.as_str()], U),
+            "a uuid must be the whole element, never a substring"
+        );
+        let mention = format!("/logs/{U}-notes");
+        assert!(
+            !argv_proves_uuid(["claude", "--add-dir", mention.as_str()], U),
             "the id must be claimed by an identity flag, not merely appear"
         );
         assert!(
-            !argv_proves_uuid(&format!("claude -- --session-id {U}"), U),
-            "after `--` the tokens are prompt text, not an assertion of ownership"
+            !argv_proves_uuid(["claude", "--", "--session-id", U], U),
+            "after `--` the elements are prompt text, not an assertion of ownership"
         );
+        let sid_path = format!("/p/{U}.jsonl");
         assert!(
-            !argv_proves_uuid(&format!("claude --session-id /p/{U}.jsonl"), U),
+            !argv_proves_uuid(["claude", "--session-id", sid_path.as_str()], U),
             "--session-id takes a bare id; a path there proves nothing"
         );
         assert!(
-            !argv_proves_uuid(&format!("claude --resume -- --session-id {U}"), U),
+            !argv_proves_uuid(["claude", "--resume", "--", "--session-id", U], U),
             "a consumed `--` is still the terminator, not a value"
         );
         assert!(
-            !argv_proves_uuid(&format!("claude --session-id -- {U}"), U),
+            !argv_proves_uuid(["claude", "--session-id", "--", U], U),
             "the flag takes no argument when `--` follows it"
         );
+    }
+
+    /// TIL-136 #2, the reason proof reads REAL argv: over the ps snapshot's
+    /// whitespace-joined command line, prompt TEXT naming the flag re-split
+    /// into `["--session-id", "<uuid>"]` and masqueraded as a claim. As real
+    /// elements the whole prompt is ONE argument, and matches nothing.
+    #[test]
+    fn prompt_text_naming_the_flag_is_one_element_and_proves_nothing() {
+        const U: &str = "16eefe1f-d5a2-469a-ae38-769ae79f175c";
+        let prompt = format!("please debug why --session-id {U} is rejected");
+        assert!(!argv_proves_uuid(["claude", prompt.as_str()], U));
+        assert!(!argv_proves_uuid(["claude", "-p", prompt.as_str()], U));
+        // The lossy joined form is exactly what the old parser saw — pinned
+        // here as the shape that must never be fed to the proof again.
+        let joined = format!("claude {prompt}");
+        assert!(argv_proves_uuid(joined.split_whitespace(), U), "the join is provably lossy");
+    }
+
+    /// Live check against the kernel: our own test process must be readable
+    /// and its argv[0] must name this binary — the sysctl plumbing, not just
+    /// the parser. A dead pid must prove nothing.
+    #[test]
+    fn real_argv_reads_our_own_process_and_fails_closed_on_a_dead_pid() {
+        let argv = real_argv(std::process::id()).expect("own process is always readable");
+        assert!(!argv.is_empty());
+        assert!(argv[0].contains("tildone"), "argv[0] was {:?}", argv[0]);
+        // Pid 0 is the kernel — KERN_PROCARGS2 has no answer for it.
+        assert_eq!(real_argv(0), None);
+    }
+
+    #[test]
+    fn procargs2_parses_argc_exec_path_padding_then_argv() {
+        // argc=3, exec path, NUL padding, argv, then env (must be ignored).
+        let mut buf = 3i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/local/bin/claude\0\0\0");
+        buf.extend_from_slice(b"claude\0--session-id\0abc\0");
+        buf.extend_from_slice(b"HOME=/Users/x\0TERM=xterm\0");
+        assert_eq!(
+            parse_procargs2(&buf),
+            Some(vec!["claude".into(), "--session-id".into(), "abc".into()])
+        );
+        // A prompt with spaces stays one element — the whole point.
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/bin/claude\0");
+        buf.extend_from_slice(b"claude\0fix --session-id abc please\0");
+        assert_eq!(
+            parse_procargs2(&buf),
+            Some(vec!["claude".into(), "fix --session-id abc please".into()])
+        );
+        // Truncated block, zero argc, garbage: prove nothing.
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/bin/claude\0claude\0trunca");
+        assert_eq!(parse_procargs2(&buf), None, "truncated argv must fail closed");
+        assert_eq!(parse_procargs2(&0i32.to_ne_bytes()), None);
+        assert_eq!(parse_procargs2(b"\x01"), None);
     }
 
     /// Pid numbers are recycled. A claim's durable `last_pid` outlives its

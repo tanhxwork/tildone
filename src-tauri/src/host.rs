@@ -480,8 +480,11 @@ fn adoptable(cli_session_id: Option<&str>, task_id: Option<i64>, claim_sid: &str
 }
 
 /// Adopt a card onto an unbound hosted session: set task_id/ref, persist,
-/// announce. The shared tail of bind-on-claim and "make it a task". A bound
-/// session never rebinds.
+/// announce. The shared tail of "make it a task" and the manual bind path.
+/// A bound session never rebinds — and the DATABASE arbitrates that, not
+/// memory: the atomic claim path (`adopt_from_claim`) can commit between a
+/// memory check here and an unconditional write, so this writer uses the same
+/// `task_id IS NULL` guard and yields when it loses (TIL-136 #4).
 fn adopt_task(
     app: &tauri::AppHandle,
     session_id: u64,
@@ -489,28 +492,62 @@ fn adopt_task(
     task_ref: Option<String>,
     claim_sid: Option<&str>,
 ) {
-    let (row_id, claim_sid) = {
-        let mut table = sessions().lock().unwrap();
-        let Some(s) = table.get_mut(&session_id) else { return };
+    let row_id = {
+        let table = sessions().lock().unwrap();
+        let Some(s) = table.get(&session_id) else { return };
         if s.task_id.is_some() {
             return;
         }
+        s.row_id
+    };
+    // row_id -1 = insert failed at spawn: no row to arbitrate with, the table
+    // mutex below guards set-once instead (same contract as `adopt_from_claim`,
+    // TIL-136 #5). A failed open_db keeps the long-standing rule: persistence
+    // failures cost restart survival, never the live session.
+    if row_id >= 0 {
+        if let Ok(conn) = crate::agent::open_db(app) {
+            if !bind_row_if_unbound(&conn, row_id, task_id, task_ref.as_deref(), claim_sid) {
+                // The claim path won the race — its own tail mirrors the DB
+                // into memory and announces. Nothing to apply here.
+                return;
+            }
+        }
+    }
+    {
+        let mut table = sessions().lock().unwrap();
+        let Some(s) = table.get_mut(&session_id) else { return };
+        if s.task_id.is_some() {
+            return; // an in-memory adopt landed while we wrote the row
+        }
         s.task_id = Some(task_id);
-        s.task_ref = task_ref.clone();
+        s.task_ref = task_ref;
         // Who owns the pane, recorded alongside the card it earned. Kept
         // distinct from `cli_session_id`, which stays the resume key.
         if let Some(sid) = claim_sid {
             s.claim_session_id = Some(sid.to_string());
         }
-        (s.row_id, s.claim_session_id.clone())
-    };
-    db_exec(
-        app,
-        "UPDATE hosted_sessions SET task_id = ?1, task_ref = ?2, claim_session_id = ?3 \
-         WHERE id = ?4",
-        &[&task_id, &task_ref, &claim_sid, &row_id],
-    );
+    }
     let _ = app.emit("host-changed", ());
+}
+
+/// The manual-bind row write, atomic against the claim path: the database's
+/// `task_id IS NULL` check is the set-once guard, exactly as in
+/// `adopt_from_claim`. Pure over the connection for tests (TIL-136 #4).
+fn bind_row_if_unbound(
+    conn: &rusqlite::Connection,
+    row_id: i64,
+    task_id: i64,
+    task_ref: Option<&str>,
+    claim_sid: Option<&str>,
+) -> bool {
+    matches!(
+        conn.execute(
+            "UPDATE hosted_sessions SET task_id = ?1, task_ref = ?2, claim_session_id = ?3 \
+             WHERE id = ?4 AND task_id IS NULL",
+            rusqlite::params![task_id, task_ref, claim_sid, row_id],
+        ),
+        Ok(1)
+    )
 }
 
 /// `(session_id, PTY child pid)` for every cardless **shell** session — the
@@ -525,9 +562,19 @@ fn unbound_shell_pty_pids() -> Vec<(u64, u32)> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, s)| s.task_id.is_none() && s.adapter_id == "shell")
+        .filter(|(_, s)| {
+            adoption_candidate(s.task_id, s.adapter_id, s.shared.lock().unwrap().exited)
+        })
         .filter_map(|(id, s)| s.child.process_id().map(|pid| (*id, pid)))
         .collect()
+}
+
+/// The candidate filter, pure for tests. Exited panes keep their table entry
+/// so a crash stays visible on the board — but their pid is back in the OS
+/// pool, and a stranger's process under a recycled pid must never adopt
+/// through a dead pane (TIL-136 #1).
+fn adoption_candidate(task_id: Option<i64>, adapter_id: &str, exited: bool) -> bool {
+    task_id.is_none() && adapter_id == "shell" && !exited
 }
 
 /// Bind-on-claim, claim-first direction (spec 2026-07-20-shell-escape-hatch-
@@ -565,6 +612,19 @@ pub(crate) fn try_adopt_claim(claim_sid: &str, last_pid: Option<u32>) {
     }
 }
 
+/// The card a claim currently names, read fresh. Pure over the connection for
+/// tests (TIL-136 #5).
+fn claimed_card(conn: &rusqlite::Connection, claim_sid: &str) -> Option<(i64, Option<String>)> {
+    conn.query_row(
+        "SELECT c.task_id, t.\"ref\" FROM agent_claims c \
+           JOIN tasks t ON t.id = c.task_id \
+          WHERE c.session_id = ?1",
+        [claim_sid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
+
 /// Adopt whatever card `claim_sid` currently names, in one statement.
 ///
 /// The card is read from `agent_claims` *inside* the write rather than passed
@@ -586,6 +646,29 @@ fn adopt_from_claim(app: &tauri::AppHandle, session_id: u64, claim_sid: &str) {
         s.row_id
     };
     let Ok(conn) = crate::agent::open_db(app) else { return };
+    if row_id < 0 {
+        // Insert failed at spawn (row_id -1): the session still runs, and the
+        // documented contract says it may still adopt — it just won't survive
+        // a restart (TIL-136 #5). With no row the database cannot arbitrate
+        // set-once; the table mutex below guards it instead, and the small
+        // read-then-write window is the price a session that already lost its
+        // durability pays.
+        let landed = claimed_card(&conn, claim_sid);
+        drop(conn);
+        let Some((task_id, task_ref)) = landed else { return };
+        {
+            let mut table = sessions().lock().unwrap();
+            let Some(s) = table.get_mut(&session_id) else { return };
+            if s.task_id.is_some() {
+                return;
+            }
+            s.task_id = Some(task_id);
+            s.task_ref = task_ref;
+            s.claim_session_id = Some(claim_sid.to_string());
+        }
+        let _ = app.emit("host-changed", ());
+        return;
+    }
     let updated = conn.execute(
         "UPDATE hosted_sessions SET \
            task_id = (SELECT task_id FROM agent_claims WHERE session_id = ?1), \
@@ -1621,6 +1704,76 @@ mod tests {
             )
             .unwrap();
         assert_eq!(unowned, 2);
+    }
+
+    #[test]
+    fn exited_panes_are_no_longer_adoption_candidates() {
+        assert!(adoption_candidate(None, "shell", false));
+        assert!(
+            !adoption_candidate(None, "shell", true),
+            "TIL-136 #1: a recycled pid under a dead pane must never adopt"
+        );
+        assert!(!adoption_candidate(Some(7), "shell", false), "bound panes are settled");
+        assert!(
+            !adoption_candidate(None, "claude", false),
+            "adapters bind by id equality, never ancestry"
+        );
+    }
+
+    #[test]
+    fn manual_bind_yields_when_a_row_is_already_bound() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 018 touches task_links; stubbed the same way as the sweep test.
+        conn.execute_batch(
+            "CREATE TABLE task_links (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             task_id INTEGER, kind TEXT, url TEXT);",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("../migrations/018_hosted_sessions.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/020_unbound_sessions.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/021_shell_bind_identity.sql")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO hosted_sessions (task_id, task_ref, adapter_id, cwd, started_at, live) \
+             VALUES (NULL, NULL, 'shell', '/w', '2026-07-20T00:00:00.000Z', 1);",
+        )
+        .unwrap();
+        let row_id = conn.last_insert_rowid();
+        assert!(bind_row_if_unbound(&conn, row_id, 7, Some("TIL-7"), None), "unbound row binds");
+        assert!(
+            !bind_row_if_unbound(&conn, row_id, 8, Some("TIL-8"), Some("sid")),
+            "TIL-136 #4: the database is the set-once arbiter — a bound row never rebinds"
+        );
+        let (tid, tref): (i64, String) = conn
+            .query_row(
+                "SELECT task_id, task_ref FROM hosted_sessions WHERE id = ?1",
+                [row_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((tid, tref.as_str()), (7, "TIL-7"), "the first writer's card stands");
+    }
+
+    #[test]
+    fn a_claims_current_card_is_read_fresh() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // The joined tables, shaped as migrations 011/013 leave them.
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, ref TEXT); \
+             CREATE TABLE agent_claims (session_id TEXT PRIMARY KEY, task_id INTEGER NOT NULL); \
+             INSERT INTO tasks (id, ref) VALUES (7, 'TIL-7'); \
+             INSERT INTO agent_claims (session_id, task_id) VALUES ('sid-1', 7);",
+        )
+        .unwrap();
+        assert_eq!(claimed_card(&conn, "sid-1"), Some((7, Some("TIL-7".into()))));
+        assert_eq!(claimed_card(&conn, "sid-2"), None, "no claim, no card");
+        // TIL-136 #5 rides re-claim honesty: the read follows the claim's
+        // CURRENT card, so a session that re-claimed adopts the new one.
+        conn.execute_batch(
+            "INSERT INTO tasks (id, ref) VALUES (8, 'TIL-8'); \
+             UPDATE agent_claims SET task_id = 8 WHERE session_id = 'sid-1';",
+        )
+        .unwrap();
+        assert_eq!(claimed_card(&conn, "sid-1"), Some((8, Some("TIL-8".into()))));
     }
 
     #[test]

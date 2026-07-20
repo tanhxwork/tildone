@@ -3419,15 +3419,11 @@ async fn heartbeat_handler(
         return axum::http::StatusCode::BAD_REQUEST;
     }
     let now = std::time::Instant::now();
-    let (entering_blocked, pid_is_news) = {
+    let (entering_blocked, pid_teaches) = {
         let mut beats = state.beats.lock().unwrap();
         let prev = beats.get(session);
         let blocked_since = next_blocked_since(prev, &body.state, now);
-        // Persist the pid only when this beat *taught us something*: the session's
-        // first beat of this app run, or a changed pid (which real sessions never
-        // have — it guards test doubles and the impossible). Everything else stays
-        // memory-only, which is the whole heartbeat discipline.
-        let pid_is_news = body.pid.is_some() && prev.and_then(|b| b.pid) != body.pid;
+        let pid_teaches = beat_pid_teaches(prev, body.pid, now);
         beats.insert(
             session.to_string(),
             Beat {
@@ -3438,9 +3434,9 @@ async fn heartbeat_handler(
                 blocked_since,
             },
         );
-        (blocked_since == Some(now), pid_is_news)
+        (blocked_since == Some(now), pid_teaches)
     };
-    if pid_is_news {
+    if pid_teaches {
         if let Some(pid) = body.pid {
             // No claim yet → 0 rows, silently; the claim path copies the pid from
             // the live beat when it lands. No notify(): presence is polled.
@@ -3467,6 +3463,19 @@ async fn heartbeat_handler(
     // board task, and their beats must be free and harmless. That is the common
     // case, not an error — resolve_presence simply never joins them to a card.
     axum::http::StatusCode::OK
+}
+
+/// Should this beat's pid be persisted and pane adoption retried? Yes when the
+/// beat *teaches us something*: the session's first beat of this app run, a
+/// changed pid, or the same pid whose previous beat had gone stale (TIL-136
+/// #3) — a claim that lands against a stale beat copies no pid
+/// (`BIND_PID_FRESH` gates that read), so without the stale arm the beat that
+/// makes the pid usable again would change nothing and only a second claim
+/// could ever bind the pane. A same-pid, still-fresh beat stays memory-only —
+/// the heartbeat discipline.
+fn beat_pid_teaches(prev: Option<&Beat>, pid: Option<u32>, now: std::time::Instant) -> bool {
+    pid.is_some()
+        && !prev.is_some_and(|b| b.pid == pid && now.duration_since(b.at) <= BIND_PID_FRESH)
 }
 
 /// Episode identity for an incoming beat: a fresh block starts an episode
@@ -4592,6 +4601,22 @@ mod tests {
 
     const ALIVE: &dyn Fn(u32) -> bool = &|_| true;
     const DEAD: &dyn Fn(u32) -> bool = &|_| false;
+
+    #[test]
+    fn a_beat_teaches_on_first_sight_new_pid_or_a_stale_refresh() {
+        let now = std::time::Instant::now();
+        let fresh = a_beat("working", std::time::Duration::from_secs(1), Some(42));
+        let stale = a_beat("working", BIND_PID_FRESH * 2, Some(42));
+        assert!(beat_pid_teaches(None, Some(42), now), "first beat of the run");
+        assert!(beat_pid_teaches(Some(&fresh), Some(43), now), "a changed pid");
+        assert!(!beat_pid_teaches(Some(&fresh), Some(42), now), "same fresh pid is old news");
+        // TIL-136 #3: a claim that landed against the stale beat copied no pid
+        // (BIND_PID_FRESH gated it) — the beat that makes the pid usable again
+        // must re-attempt adoption, or only a second claim could ever bind.
+        assert!(beat_pid_teaches(Some(&stale), Some(42), now), "a stale refresh re-teaches");
+        assert!(!beat_pid_teaches(Some(&fresh), None, now), "no pid teaches nothing");
+        assert!(!beat_pid_teaches(None, None, now));
+    }
 
     /// Injected liveness answers *both* questions the same way in most tests:
     /// existence (state) and reachability (the button's rail). Tests that need

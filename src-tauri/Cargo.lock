@@ -5532,6 +5532,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "futures-util",
+ "libc",
  "mac-notification-sys",
  "notify",
  "portable-pty",
