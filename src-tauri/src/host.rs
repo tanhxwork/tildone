@@ -134,6 +134,67 @@ fn lookup_bin(adapter: &Adapter) -> Option<String> {
     (!path.is_empty()).then_some(path)
 }
 
+/// The user's real PATH, asked of their own shell. A GUI app inherits
+/// launchd's minimal PATH, and the spawned CLI passes that on to everything
+/// *it* execs — codex's npm wrapper dies on `#!/usr/bin/env node` even after
+/// `resolve_bin` found the wrapper itself (TIL-108). A login shell is not
+/// enough: zsh users routinely export PATH from ~/.zshrc, which only an
+/// interactive shell reads — so ask `$SHELL -ilc`, sentinel-wrapped so
+/// rc-file noise (banners, prompts) can't corrupt the answer, and killed on
+/// a deadline so a hung rc file can't wedge every spawn. Cache only
+/// successes, same discipline as `resolve_bin`.
+fn shell_path() -> Option<String> {
+    static CACHE: Mutex<Option<String>> = Mutex::new(None);
+    if let Some(hit) = CACHE.lock().unwrap().clone() {
+        return Some(hit);
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let out = run_with_timeout(
+        std::process::Command::new(shell).args(["-ilc", r#"printf '\037%s\037' "$PATH""#]),
+        Duration::from_secs(5),
+    )?;
+    let path = path_between_sentinels(&String::from_utf8_lossy(&out))?;
+    CACHE.lock().unwrap().replace(path.clone());
+    Some(path)
+}
+
+/// The text between the first and last 0x1f sentinel — the only bytes of the
+/// shell's output we trust.
+fn path_between_sentinels(out: &str) -> Option<String> {
+    let start = out.find('\u{1f}')? + 1;
+    let end = out.rfind('\u{1f}')?;
+    (start < end).then(|| out[start..end].to_string())
+}
+
+/// Run a command, killing it once `timeout` elapses. Interactive shells run
+/// arbitrary rc files; a plain `output()` would let one hung rc block a
+/// spawn forever.
+fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    while child.try_wait().ok()?.is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let status = child.wait().ok()?;
+    let mut buf = Vec::new();
+    child.stdout.take()?.read_to_end(&mut buf).ok()?;
+    status.success().then_some(buf)
+}
+
 // ---------------------------------------------------------------------------
 // The session table.
 
@@ -738,6 +799,12 @@ fn spawn_hosted(
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        // The user's shell PATH, not launchd's: the CLI execs tools at
+        // runtime, and codex's wrapper re-execs through `#!/usr/bin/env
+        // node` before it can print a byte (TIL-108).
+        if let Some(path) = shell_path() {
+            cmd.env("PATH", path);
+        }
         cmd.cwd(&cwd);
         let child = pair
             .slave
@@ -999,6 +1066,34 @@ mod tests {
         let codex = adapter("codex").unwrap().resume_args.unwrap()("abc");
         assert_eq!(codex, vec!["resume", "abc"]);
         assert!(adapter("opencode").unwrap().resume_args.is_none());
+    }
+
+    #[test]
+    fn sentinel_parse_survives_rc_noise() {
+        // Banners before, prompt junk after — only the sentinel span counts.
+        assert_eq!(
+            path_between_sentinels("welcome!\n\u{1f}/a/bin:/b/bin\u{1f}\n% "),
+            Some("/a/bin:/b/bin".to_string())
+        );
+        // No sentinels (shell died mid-rc), one sentinel, empty span: all misses.
+        assert_eq!(path_between_sentinels("/a/bin:/b/bin"), None);
+        assert_eq!(path_between_sentinels("noise\u{1f}truncated"), None);
+        assert_eq!(path_between_sentinels("\u{1f}\u{1f}"), None);
+    }
+
+    #[test]
+    fn run_with_timeout_completes_and_kills() {
+        let out = run_with_timeout(
+            std::process::Command::new("/bin/sh").args(["-c", "printf ok"]),
+            Duration::from_secs(5),
+        );
+        assert_eq!(out.as_deref(), Some(b"ok".as_ref()));
+        // A command that outlives the deadline comes back None, not hung.
+        let hung = run_with_timeout(
+            std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]),
+            Duration::from_millis(100),
+        );
+        assert!(hung.is_none());
     }
 
     #[test]
