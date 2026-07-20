@@ -3443,20 +3443,13 @@ async fn heartbeat_handler(
             );
             // The other half of bind-on-claim's race: the claim may have landed
             // before any beat, in which case there was no pid to resolve a pane
-            // with and adoption silently did nothing. Now there is one — retry
-            // for a claim still waiting on a card. `try_adopt_claim` no-ops on
-            // an already-bound session, so a repeat beat is harmless.
-            let pending: Option<i64> = conn
-                .query_row(
-                    "SELECT task_id FROM agent_claims WHERE session_id = ?1",
-                    [session],
-                    |r| r.get(0),
-                )
-                .ok();
+            // with and adoption silently did nothing. Now there is one — retry.
+            // The lock is dropped first (host opens its own connection), and
+            // host re-reads the claim's task there so a card change in that
+            // window cannot adopt the stale one. Already-bound sessions no-op,
+            // so a repeat beat is harmless.
             drop(conn);
-            if let Some(task_id) = pending {
-                crate::host::try_adopt_claim(session, task_id, Some(pid));
-            }
+            crate::host::try_adopt_claim_from_beat(session, pid);
         }
     }
     if entering_blocked {

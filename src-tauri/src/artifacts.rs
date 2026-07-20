@@ -487,33 +487,51 @@ fn cmd_is_cli(cmd: &str, kind: &str) -> bool {
 pub(crate) fn argv_proves_uuid(cmd: &str, uuid: &str) -> bool {
     let mut tokens = cmd.split_whitespace();
     while let Some(tok) = tokens.next() {
+        // Everything after a bare `--` is positional — prompt text, not
+        // options. `claude -- --session-id <u>` asserts nothing about <u>,
+        // and treating it as proof would hand a stranger a way to donate an
+        // id just by naming it in a prompt.
+        if tok == "--" {
+            return false;
+        }
         match tok {
-            "--session-id" | "--resume" => match tokens.next() {
-                // `--resume` takes either a bare id or a transcript path.
-                Some(v) if v == uuid => return true,
+            // Only `--resume` takes a transcript path; `--session-id` is
+            // always a bare id, so a path there proves nothing.
+            "--session-id" => match tokens.next() {
                 Some(v) => {
-                    let stem = v.rsplit('/').next().unwrap_or(v);
-                    let stem = stem.strip_suffix(".jsonl").unwrap_or(stem);
-                    if stem == uuid {
+                    if v == uuid {
                         return true;
                     }
                 }
                 None => return false,
             },
-            _ => {
-                // `--session-id=<uuid>` is the same assertion, spelled joined.
-                for k in ["--session-id=", "--resume="] {
-                    if let Some(v) = tok.strip_prefix(k) {
-                        let stem = v.rsplit('/').next().unwrap_or(v);
-                        if stem.strip_suffix(".jsonl").unwrap_or(stem) == uuid {
-                            return true;
-                        }
+            "--resume" => match tokens.next() {
+                Some(v) => {
+                    if resume_target_is(v, uuid) {
+                        return true;
                     }
+                }
+                None => return false,
+            },
+            // The same assertions, spelled joined.
+            _ => {
+                if tok.strip_prefix("--session-id=").is_some_and(|v| v == uuid) {
+                    return true;
+                }
+                if tok.strip_prefix("--resume=").is_some_and(|v| resume_target_is(v, uuid)) {
+                    return true;
                 }
             }
         }
     }
     false
+}
+
+/// A `--resume` argument names `uuid` when it is the id itself or a transcript
+/// path whose file stem is that id.
+fn resume_target_is(arg: &str, uuid: &str) -> bool {
+    let stem = arg.rsplit('/').next().unwrap_or(arg);
+    stem == uuid || stem.strip_suffix(".jsonl") == Some(uuid)
 }
 
 /// Is a CLI of `kind` running under `ancestor` that *proves* it owns `uuid`?
@@ -543,8 +561,35 @@ pub(crate) fn session_for_claim(
     candidates
         .iter()
         .filter(|(_, pty)| descends_from(procs, last_pid, *pty))
+        .filter(|(_, pty)| cli_on_path(procs, last_pid, *pty))
         .max_by_key(|(_, pty)| depth_of(procs, *pty))
         .map(|(session_id, _)| *session_id)
+}
+
+/// Is there an agent CLI somewhere on the chain from `pid` up to `pty`?
+///
+/// Ancestry alone is a *number* test, and pid numbers are recycled: a claim's
+/// durable `last_pid` outlives its process, so a long-dead session's pid could
+/// be reissued to something running under a pane and adopt that pane's card.
+/// Requiring a `claude`/`codex` on the path restores the ownership proof —
+/// a recycled pid under a shell that is merely sitting at its prompt no longer
+/// qualifies. (A dead pid is already safe: `descends_from` finds no such row.)
+fn cli_on_path(procs: &[Proc], pid: u32, pty: u32) -> bool {
+    let mut cur = pid;
+    for _ in 0..procs.len() {
+        if cur == pty {
+            return false;
+        }
+        let Some(p) = procs.iter().find(|p| p.pid == cur) else { return false };
+        if cmd_is_cli(&p.cmd, "claude") || cmd_is_cli(&p.cmd, "codex") {
+            return true;
+        }
+        if p.ppid == 0 {
+            return false;
+        }
+        cur = p.ppid;
+    }
+    false
 }
 
 /// How far `pid` sits from the process tree's root, for picking the innermost
@@ -1069,6 +1114,39 @@ mod tests {
             !argv_proves_uuid(&format!("claude --add-dir /logs/{U}-notes"), U),
             "the id must be claimed by an identity flag, not merely appear"
         );
+        assert!(
+            !argv_proves_uuid(&format!("claude -- --session-id {U}"), U),
+            "after `--` the tokens are prompt text, not an assertion of ownership"
+        );
+        assert!(
+            !argv_proves_uuid(&format!("claude --session-id /p/{U}.jsonl"), U),
+            "--session-id takes a bare id; a path there proves nothing"
+        );
+    }
+
+    /// Pid numbers are recycled. A claim's durable `last_pid` outlives its
+    /// process, so ancestry alone — a test on a *number* — could hand a card to
+    /// whichever pane happened to inherit that number.
+    #[test]
+    fn a_recycled_pid_under_a_pane_does_not_adopt_its_card() {
+        let idle = procs(&[
+            (100, 1, "/bin/zsh -l"),      // the pane, sitting at its prompt
+            (777, 100, "/usr/bin/vim notes.md"), // …reusing a dead session's pid
+        ]);
+        let panes = [(7u64, 100u32)];
+        assert_eq!(
+            session_for_claim(&idle, &panes, 777),
+            None,
+            "no agent CLI on the path — the pid is a coincidence, not ownership"
+        );
+
+        // The same pid, this time genuinely beneath a claude in that pane.
+        let real = procs(&[
+            (100, 1, "/bin/zsh -l"),
+            (500, 100, "claude"),
+            (777, 500, "/bin/zsh -c ..."),
+        ]);
+        assert_eq!(session_for_claim(&real, &panes, 777), Some(7));
     }
 
     #[test]
@@ -1079,13 +1157,19 @@ mod tests {
             (16078, 15634, "claude"),
             (21264, 16078, "/bin/zsh -c ..."), // the tool shell the hook beats from
             (40000, 82600, "/bin/zsh -l"),     // hosted shell B (session 8)
+            (40002, 40000, "claude"),          // …with its own agent
             (40001, 1, "claude"),              // an agent in no pane at all
         ]);
         let panes = [(7u64, 15634u32), (8, 40000)];
         assert_eq!(session_for_claim(&table, &panes, 21264), Some(7), "deep descendant binds");
         assert_eq!(session_for_claim(&table, &panes, 16078), Some(7));
-        assert_eq!(session_for_claim(&table, &panes, 40000), Some(8));
+        assert_eq!(session_for_claim(&table, &panes, 40002), Some(8));
         assert_eq!(session_for_claim(&table, &panes, 40001), None, "outsider binds nothing");
+        assert_eq!(
+            session_for_claim(&table, &panes, 40000),
+            None,
+            "the pane's own shell is not an agent — a claim never originates there"
+        );
         assert_eq!(session_for_claim(&table, &[], 21264), None);
     }
 

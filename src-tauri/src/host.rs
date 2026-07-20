@@ -528,14 +528,19 @@ fn adopt_task(
     let _ = app.emit("host-changed", ());
 }
 
-/// `(session_id, PTY child pid)` for every hosted session that still has no
-/// card — the candidate set pid-ancestry adoption resolves against.
-fn unbound_pty_pids() -> Vec<(u64, u32)> {
+/// `(session_id, PTY child pid)` for every cardless **shell** session — the
+/// candidate set pid-ancestry adoption resolves against.
+///
+/// Shells only: an adapter session *is* the CLI Tildone launched, so Tildone
+/// assigned its id and plain id-equality already binds it correctly. Widening
+/// ancestry to adapters would add a second, riskier route to a case that has a
+/// working one (the spec keeps adapter sessions untouched).
+fn unbound_shell_pty_pids() -> Vec<(u64, u32)> {
     sessions()
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, s)| s.task_id.is_none())
+        .filter(|(_, s)| s.task_id.is_none() && s.adapter_id == "shell")
         .filter_map(|(id, s)| s.child.process_id().map(|pid| (*id, pid)))
         .collect()
 }
@@ -553,7 +558,7 @@ pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64, last_pid: Option<u3
     // at a shell prompt bindable at all — it publishes no artifact we can
     // attribute (TIL-130).
     let by_pid = last_pid.and_then(|pid| {
-        let candidates = unbound_pty_pids();
+        let candidates = unbound_shell_pty_pids();
         if candidates.is_empty() {
             return None;
         }
@@ -573,6 +578,28 @@ pub(crate) fn try_adopt_claim(claim_sid: &str, task_id: i64, last_pid: Option<u3
     if let Some(session_id) = found {
         let task_ref = task_ref_for(&app, task_id);
         adopt_task(&app, session_id, task_id, task_ref, Some(claim_sid));
+    }
+}
+
+/// Bind-on-claim retried from a heartbeat: the claim may have landed before any
+/// beat reported a pid, leaving nothing to resolve a pane with.
+///
+/// The task is re-read here rather than passed in. The beat handler must drop
+/// the agent DB lock before calling into host (see the lock-ordering note on
+/// `try_adopt_claim`), and a claim can move to another card in that window — a
+/// cached task id would then adopt the *previous* card, permanently, since
+/// adoption is set-once.
+pub(crate) fn try_adopt_claim_from_beat(claim_sid: &str, last_pid: u32) {
+    let Some(app) = app_handle_slot().get().cloned() else { return };
+    let Ok(conn) = crate::agent::open_db(&app) else { return };
+    let task_id: Option<i64> = conn
+        .query_row("SELECT task_id FROM agent_claims WHERE session_id = ?1", [claim_sid], |r| {
+            r.get(0)
+        })
+        .ok();
+    drop(conn);
+    if let Some(task_id) = task_id {
+        try_adopt_claim(claim_sid, task_id, Some(last_pid));
     }
 }
 
