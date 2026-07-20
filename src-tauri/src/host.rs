@@ -180,18 +180,29 @@ fn run_with_timeout(
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    // Drain concurrently with the wait loop: a chatty rc file can emit more
+    // than the pipe holds, and an undrained pipe blocks the child mid-write —
+    // turning every such spawn into a full-deadline stall (codex verify
+    // finding, 2026-07-20).
+    let mut stdout = child.stdout.take()?;
+    let drain = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
     let deadline = Instant::now() + timeout;
     while child.try_wait().ok()?.is_none() {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            // The kill closed the pipe's write end; the drain hits EOF.
+            let _ = drain.join();
             return None;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
     let status = child.wait().ok()?;
-    let mut buf = Vec::new();
-    child.stdout.take()?.read_to_end(&mut buf).ok()?;
+    let buf = drain.join().ok()?;
     status.success().then_some(buf)
 }
 
@@ -1094,6 +1105,22 @@ mod tests {
             Duration::from_millis(100),
         );
         assert!(hung.is_none());
+    }
+
+    #[test]
+    fn run_with_timeout_drains_more_than_a_pipe_holds() {
+        // A chatty rc emits more than the ~64KB pipe buffer before the
+        // sentinel. Without a concurrent drain the child blocks mid-write,
+        // never exits, and burns the whole deadline — this returned None
+        // before the drain thread existed.
+        let out = run_with_timeout(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "head -c 200000 /dev/zero | tr '\\0' x; printf done"]),
+            Duration::from_secs(5),
+        )
+        .expect("large output must complete, not stall to the deadline");
+        assert_eq!(out.len(), 200_000 + 4);
+        assert!(out.ends_with(b"done"));
     }
 
     #[test]
