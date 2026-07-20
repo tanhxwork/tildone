@@ -833,9 +833,10 @@ fn accumulate_first_input(buf: &mut String, done: &mut bool, data: &[u8]) {
     while i < data.len() {
         match data[i] {
             0x1b => {
-                // Skip the whole sequence: CSI (ESC [ … final 0x40–0x7e) or
-                // a single-byte escape. A keystroke arrives as one write, so
-                // sequences don't split across calls in practice.
+                // Skip the whole sequence: CSI (ESC [ … final 0x40–0x7e), or
+                // ESC + one byte (Alt+key sends ESC f — the f is part of the
+                // sequence, not title text). A keystroke arrives as one
+                // write, so sequences don't split across calls in practice.
                 i += 1;
                 if data.get(i) == Some(&b'[') {
                     i += 1;
@@ -1435,6 +1436,15 @@ mod tests {
         accumulate_first_input(&mut buf, &mut done, b"\r\r\n");
         assert!(!done);
         assert!(buf.is_empty());
+        // Alt+key arrives as ESC + byte — the byte belongs to the sequence
+        // and must not leak into the title (codex-verify finding check,
+        // 2026-07-20: pinned here because the loop's trailing increment is
+        // what consumes it, which is easy to misread).
+        let mut buf = String::new();
+        let mut done = false;
+        accumulate_first_input(&mut buf, &mut done, b"\x1bfhi\r");
+        assert!(done);
+        assert_eq!(buf, "hi");
     }
 
     #[test]
