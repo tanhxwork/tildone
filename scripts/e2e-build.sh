@@ -19,7 +19,11 @@ cd "$(dirname "$0")/.."
 root=$(pwd -P)
 slug=$(./scripts/worktree-slug.sh)
 
-overlay=$(mktemp -t "tildone-e2e-$slug").json
+# A temp *directory* with a fixed filename inside: `$(mktemp …).json` created
+# one file and then wrote a second one beside it, leaking both (TIL-150).
+tmpdir=$(mktemp -d -t tildone-e2e)
+trap 'rm -rf "$tmpdir"' EXIT
+overlay="$tmpdir/e2e.conf.json"
 cat > "$overlay" <<EOF
 {
   "\$schema": "https://schema.tauri.app/config/2",

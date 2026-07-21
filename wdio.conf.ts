@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // Which worktree is this? scripts/worktree-slug.sh is the single source of
 // truth — scripts/e2e-build.sh derives the identifier and target dir from the
@@ -127,6 +127,67 @@ function expectedBundle(): string {
   return src.split("/").pop() as string;
 }
 
+/**
+ * Refuse a second concurrent run of *this* worktree.
+ *
+ * Different worktrees are isolated by identifier, port and binary, but two
+ * runs of the same one share all three: onPrepare wipes the data dir out from
+ * under the other, and both may end up driving one app (TIL-148). Same
+ * reasoning as scripts/tauri.sh refusing a second dev instance of a worktree.
+ */
+const LOCK = join("./src-tauri/target-e2e", ".e2e-run.lock");
+
+/** Is `pid` a live process? Never treat 0 as live — `kill(0, 0)` signals the
+ *  whole process group and would always "succeed", turning an unreadable lock
+ *  into a permanent false refusal. */
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function takeRunLock(): void {
+  mkdirSync(dirname(LOCK), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      // "wx" is the whole point: create-or-fail is atomic, so two launchers
+      // starting at the same instant cannot both believe they hold the lock.
+      // Reading first and writing second — which this used to do — is a race
+      // that loses exactly when it matters.
+      writeFileSync(LOCK, String(process.pid), { flag: "wx" });
+      return;
+    } catch {
+      let holder = 0;
+      try {
+        holder = Number(readFileSync(LOCK, "utf8").trim());
+      } catch {
+        holder = 0;
+      }
+      if (pidAlive(holder)) {
+        throw new Error(
+          `Another e2e run for this worktree is already in flight (pid ${holder}). ` +
+            `They share the identifier ${IDENTIFIER}, the data dir and the port, so ` +
+            `running both corrupts each other. Wait for it, or delete ${LOCK} if you ` +
+            `are sure it is dead.`,
+        );
+      }
+      // Left behind by a killed run (or still being written): clear and retry
+      // once. If the retry also loses, the winner is a live run and the next
+      // pass through the loop refuses properly.
+      rmSync(LOCK, { force: true });
+    }
+  }
+  throw new Error(`Could not take the e2e run lock at ${LOCK}`);
+}
+
+function releaseRunLock(): void {
+  rmSync(LOCK, { force: true });
+}
+
 export const config: WebdriverIO.Config = {
   runner: "local",
   specs: ["./tests/e2e/**/*.spec.ts"],
@@ -151,8 +212,13 @@ export const config: WebdriverIO.Config = {
   // delete the board a parallel session's run is in the middle of using —
   // which is exactly what happened during the TIL-136 verify (TIL-140).
   onPrepare: () => {
+    takeRunLock();
     console.log(`[e2e] ${IDENTIFIER} · webdriver port ${WEBDRIVER_PORT}`);
     rmSync(DATA_DIR, { recursive: true, force: true });
+  },
+
+  onComplete: () => {
+    releaseRunLock();
   },
 
   // Prove the app under test is running THIS worktree's frontend before any
@@ -160,6 +226,25 @@ export const config: WebdriverIO.Config = {
   // files changed, so the binary can still embed an older dist/ (TIL-110);
   // e2e-build.sh touches lib.rs to prevent it, and this asserts it worked.
   before: async () => {
+    // Prove the app answering us is the one THIS worktree built. Port
+    // selection probes for a free port but cannot reserve it, so two runs can
+    // in principle pick the same one and the loser would silently drive the
+    // winner's app (TIL-150). The app's own data dir carries the per-worktree
+    // identifier, which makes that impossible to miss.
+    const appDataDir = await browser.executeAsync((done: (v: unknown) => void) => {
+      const tauri = (window as never as { __TAURI__?: { path: { appDataDir: () => Promise<string> } } })
+        .__TAURI__;
+      if (!tauri) return done("(no __TAURI__)");
+      tauri.path.appDataDir().then(done, (e: unknown) => done(`(error: ${String(e)})`));
+    });
+    if (!String(appDataDir).includes(IDENTIFIER)) {
+      throw new Error(
+        `The app answering on port ${WEBDRIVER_PORT} reports its data dir as ` +
+          `"${String(appDataDir)}", which is not ${IDENTIFIER}. This run is driving ` +
+          `another worktree's app — its results would be meaningless.`,
+      );
+    }
+
     const expected = expectedBundle();
     const loaded = await browser.execute(
       () => document.querySelector("script[src]")?.getAttribute("src") ?? "",
