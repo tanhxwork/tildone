@@ -130,9 +130,13 @@ fn is_outcome_signal(text: &str) -> bool {
         .any(|m| lower.contains(m))
 }
 
-/// Tool-result lines bigger than this are not even parsed — a multi-hundred-KB
-/// JSON line costs real CPU every poll and its tail is rarely an outcome.
-const RESULT_PARSE_CAP: usize = 128 * 1024;
+/// Tool-result lines bigger than this are not parsed for outcomes. Equal to
+/// READ_CAP deliberately: lines beyond the read cap never reach the parser
+/// at all (the oversized-line skip consumes them unreturned), so a larger
+/// value here would be dead letter. Accepted limitation: a tool result
+/// bigger than the read cap loses its outcome tail — bounded processing
+/// wins, and the agent's narration usually carries the same signal.
+const RESULT_PARSE_CAP: usize = READ_CAP as usize;
 const OUTCOME_CAP: usize = 200;
 
 /// Candidate events in a chunk of transcript JSONL. Assistant records carry
@@ -415,7 +419,8 @@ fn apply_evidence(
         .unwrap_or("evidence")
         .to_string();
     // Attachment copies carry their original name in the label, not the
-    // hashed filename the store uses.
+    // hashed filename the store uses. Capped like every other secretary
+    // string that reaches the DB.
     let label = match action {
         EvidenceAction::CopyAttach { source } => Path::new(source)
             .file_name()
@@ -424,6 +429,7 @@ fn apply_evidence(
             .to_string(),
         EvidenceAction::LinkDoc { .. } => label,
     };
+    let label = cap(&label, 120);
     if conn
         .execute(
             "INSERT INTO task_links (task_id, url, label, kind, created_at)
@@ -566,14 +572,42 @@ pub(crate) fn parse_reply(reply: &str, tickables: &[Tickable]) -> Vec<Action> {
     out
 }
 
+/// Every secretary-authored activity label is capped, universally — criterion
+/// 5's "derived, length-capped lines" must hold for evidence labels and
+/// subtask-title echoes too, not only model log lines (round-2 codex finding).
+const LABEL_CAP: usize = 300;
+
 /// Record one activity row as the secretary. Mirrors the MCP surface's
 /// attribution stamp (`actor_kind='agent'`), with the secretary's own name.
 fn record_activity(conn: &Connection, task_id: i64, label: &str) {
     let _ = conn.execute(
         "INSERT INTO task_activity (task_id, label, created_at, actor_kind, actor_name)
          VALUES (?1, ?2, ?3, 'agent', ?4)",
-        rusqlite::params![task_id, label, crate::agent::now_iso(), ACTOR],
+        rusqlite::params![task_id, cap(label, LABEL_CAP), crate::agent::now_iso(), ACTOR],
     );
+}
+
+/// Run one write batch atomically against every other connection (the MCP
+/// server writes on its own connection): BEGIN IMMEDIATE takes the write
+/// lock, the claim/enabled guards run INSIDE it, and the writes commit or
+/// nothing does. Closes the round-2 "check-then-write is not a barrier"
+/// window — a claim released between guard and write now rolls back.
+fn guarded_write<T>(
+    conn: &Connection,
+    session_id: &str,
+    task_id: i64,
+    write: impl FnOnce(&Connection) -> T,
+) -> Option<T> {
+    if conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+        return None;
+    }
+    let out = if still_enabled() && claim_intact(conn, session_id, task_id) {
+        Some(write(conn))
+    } else {
+        None
+    };
+    let _ = conn.execute_batch(if out.is_some() { "COMMIT" } else { "ROLLBACK" });
+    out
 }
 
 /// Apply parsed actions to a card. Returns whether the DB changed.
@@ -838,13 +872,25 @@ fn durable_root(cwd: &str, cache: &mut std::collections::HashMap<String, Option<
     if let Some(hit) = cache.get(cwd) {
         return hit.clone();
     }
-    let resolved = main_checkout_root(cwd).or_else(|| {
-        let common = crate::artifacts::git_common_dir(cwd)?;
+    // Git is the authority (any worktree layout, and no false positive on a
+    // repo that merely *lives* at a .claude/worktrees-shaped path); the pure
+    // convention is only the fallback when git can't answer. Cached per cwd
+    // because the authority shells out.
+    let from_git = crate::artifacts::git_common_dir(cwd).and_then(|common| {
         let root = common.parent()?.to_string_lossy().into_owned();
         // The main checkout resolves to itself — that is "no normalization
         // needed", not a mapping.
         (common.file_name().map(|n| n == ".git").unwrap_or(false) && root != cwd)
             .then_some(root)
+    });
+    let resolved = from_git.or_else(|| {
+        // Fallback only when the cwd is not a resolvable git checkout at
+        // all; a plain checkout that DID resolve (to itself) must not be
+        // second-guessed by the textual convention.
+        crate::artifacts::git_common_dir(cwd)
+            .is_none()
+            .then(|| main_checkout_root(cwd))
+            .flatten()
     });
     cache.insert(cwd.to_string(), resolved.clone());
     resolved
@@ -910,6 +956,11 @@ fn run_loop(app: &AppHandle) {
         let cfg = config_cell().lock().unwrap().clone();
         if !cfg.enabled {
             was_enabled = false;
+            // Pending evidence must not survive a disable: re-enable starts
+            // from the current end of every file, and a retry queue that
+            // outlived the gap would backfill exactly the work the user
+            // switched off (round-2 codex finding).
+            pending.clear();
             *status_cell().lock().unwrap() = SecretaryStatus::default();
             std::thread::sleep(IDLE_TICK);
             continue;
@@ -982,23 +1033,23 @@ fn run_loop(app: &AppHandle) {
                                     evidence_action(p, &s.cwd, &home, repo_root.as_deref());
                                 let Some(action) = action else { continue };
                                 let Some(store) = attachments_root.as_deref() else { continue };
-                                // Same write barrier as every other lane:
-                                // enabled and claim re-checked at the write.
-                                if !still_enabled() || !claim_intact(c, &s.session_id, s.task_id)
-                                {
-                                    continue;
-                                }
-                                match apply_evidence(c, store, s.task_id, &action) {
-                                    EvidenceOutcome::Applied => ui_changed = true,
-                                    EvidenceOutcome::Skipped => {}
+                                // The write barrier: enabled + claim checked
+                                // INSIDE the write transaction, atomically.
+                                match guarded_write(c, &s.session_id, s.task_id, |c| {
+                                    apply_evidence(c, store, s.task_id, &action)
+                                }) {
+                                    Some(EvidenceOutcome::Applied) => ui_changed = true,
+                                    Some(EvidenceOutcome::Skipped) | None => {}
                                     // The transcript records the Write call
                                     // before the file exists — retry.
-                                    EvidenceOutcome::FileMissing => pending.push(PendingEvidence {
-                                        task_id: s.task_id,
-                                        action,
-                                        session_id: s.session_id.clone(),
-                                        attempts: 0,
-                                    }),
+                                    Some(EvidenceOutcome::FileMissing) => {
+                                        pending.push(PendingEvidence {
+                                            task_id: s.task_id,
+                                            action,
+                                            session_id: s.session_id.clone(),
+                                            attempts: 0,
+                                        })
+                                    }
                                 }
                             }
                         }
@@ -1014,7 +1065,16 @@ fn run_loop(app: &AppHandle) {
                         // The chunk must not outrun the scan cursor — evidence
                         // for those bytes hasn't been handled yet.
                         let usable = consumed.min(off.scan - off.decide);
-                        if usable > 0 {
+                        if let DecideStep::SkipAhead(n) = decide_step(&chunk, usable) {
+                            // Two shapes of the same wedge (round-2 codex
+                            // finding): the oversized-line skip returned an
+                            // empty chunk, or a mid-line boundary left no
+                            // newline inside `usable`. Either way the scan
+                            // cursor already crossed these bytes — advance;
+                            // an orphaned fragment parses as garbage later
+                            // and is skipped, never misread.
+                            off.decide += n;
+                        } else if usable > 0 {
                             let end = byte_floor_at_newline(&chunk, usable as usize);
                             let cands: Vec<Candidate> = extract_candidates(&chunk[..end])
                                 .into_iter()
@@ -1036,16 +1096,17 @@ fn run_loop(app: &AppHandle) {
                                             let actions = parse_reply(&reply, &ticks);
                                             // The engine call blocked for up to
                                             // minutes; the world may have moved.
-                                            // Enabled and the claim are re-checked
-                                            // HERE, at the write, never trusted
-                                            // from the cycle's snapshot. The
-                                            // cursor still advances — dropped
+                                            // Enabled and the claim are checked
+                                            // inside the write transaction, never
+                                            // trusted from the cycle's snapshot.
+                                            // The cursor still advances — dropped
                                             // work is irrelevant work, and
                                             // re-enable restarts at the end
                                             // anyway.
-                                            if still_enabled()
-                                                && claim_intact(c, &s.session_id, s.task_id)
-                                                && apply_actions(c, s.task_id, &actions)
+                                            if guarded_write(c, &s.session_id, s.task_id, |c| {
+                                                apply_actions(c, s.task_id, &actions)
+                                            })
+                                            .unwrap_or(false)
                                             {
                                                 ui_changed = true;
                                             }
@@ -1061,7 +1122,10 @@ fn run_loop(app: &AppHandle) {
                             }
                         }
                     }
-                } else if !behind.contains(&s.task_id) {
+                } else if fresh && !behind.contains(&s.task_id) {
+                    // Same freshness gate as `watching`: a claimed-but-dead
+                    // session's backlog still drains when the engine returns,
+                    // but its card must not render a live-looking badge.
                     behind.push(s.task_id);
                 }
             }
@@ -1071,16 +1135,17 @@ fn run_loop(app: &AppHandle) {
         // let it go — scratch artifacts are ephemeral by nature.
         if let Some(store) = attachments_root.as_deref() {
             pending.retain_mut(|p| {
-                if !still_enabled() || !claim_intact(c, &p.session_id, p.task_id) {
-                    return false;
-                }
-                match apply_evidence(c, store, p.task_id, &p.action) {
-                    EvidenceOutcome::Applied => {
+                match guarded_write(c, &p.session_id, p.task_id, |c| {
+                    apply_evidence(c, store, p.task_id, &p.action)
+                }) {
+                    Some(EvidenceOutcome::Applied) => {
                         ui_changed = true;
                         false
                     }
-                    EvidenceOutcome::Skipped => false,
-                    EvidenceOutcome::FileMissing => {
+                    // Guard failed (claim gone / disabled) or refused: the
+                    // retry is pointless either way.
+                    Some(EvidenceOutcome::Skipped) | None => false,
+                    Some(EvidenceOutcome::FileMissing) => {
                         p.attempts += 1;
                         p.attempts <= EVIDENCE_RETRIES
                     }
@@ -1101,6 +1166,25 @@ fn run_loop(app: &AppHandle) {
             behind,
         };
         std::thread::sleep(if sessions.is_empty() { IDLE_TICK } else { TICK });
+    }
+}
+
+/// How the decide cursor treats one read against the scan boundary.
+#[derive(Debug, PartialEq)]
+enum DecideStep {
+    /// Bytes to cross WITHOUT parsing: the oversized-line skip returned an
+    /// empty chunk, or a mid-line boundary left no newline inside the usable
+    /// span. Not advancing here is the round-2 wedge.
+    SkipAhead(u64),
+    /// Parse the chunk normally (or there is nothing usable yet).
+    Parse,
+}
+
+fn decide_step(chunk: &str, usable: u64) -> DecideStep {
+    if usable > 0 && (chunk.is_empty() || byte_floor_at_newline(chunk, usable as usize) == 0) {
+        DecideStep::SkipAhead(usable)
+    } else {
+        DecideStep::Parse
     }
 }
 
@@ -1618,6 +1702,69 @@ mod tests {
         std::fs::create_dir_all(src.parent().unwrap()).unwrap();
         std::fs::write(&src, "<h1>late</h1>").unwrap();
         assert_eq!(apply_evidence(&conn, &store, task, &action), EvidenceOutcome::Applied);
+    }
+
+    #[test]
+    fn decide_cursor_crosses_skipped_bytes_instead_of_wedging() {
+        // The oversized-line skip returns an empty chunk with consumed > 0.
+        assert_eq!(decide_step("", 51), DecideStep::SkipAhead(51));
+        // A mid-line boundary (give-up path) leaves no newline in the span.
+        assert_eq!(decide_step("no newline here", 15), DecideStep::SkipAhead(15));
+        // Normal chunks parse; nothing usable also parses (a no-op).
+        assert_eq!(decide_step("a\nb\n", 4), DecideStep::Parse);
+        assert_eq!(decide_step("", 0), DecideStep::Parse);
+    }
+
+    #[test]
+    fn guarded_write_is_a_real_barrier() {
+        let conn = migrated_conn();
+        let task = seed_task(&conn);
+        // The guard also checks the process-wide enabled flag (default off).
+        config_cell().lock().unwrap().enabled = true;
+        // No claim → the guard refuses and the write rolls back.
+        let ran = guarded_write(&conn, "s-1", task, |c| {
+            record_activity(c, task, "must not persist");
+            true
+        });
+        assert_eq!(ran, None);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_activity WHERE task_id = ?1", [task], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0, "a refused guard must leave no trace");
+        // With an intact claim the same write commits.
+        conn.execute(
+            "INSERT INTO agent_claims (session_id, task_id, claimed_at) VALUES ('s-1', ?1, 'now')",
+            [task],
+        )
+        .unwrap();
+        assert_eq!(
+            guarded_write(&conn, "s-1", task, |c| {
+                record_activity(c, task, "persists");
+                true
+            }),
+            Some(true)
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_activity WHERE task_id = ?1", [task], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn secretary_activity_labels_are_always_capped() {
+        let conn = migrated_conn();
+        let task = seed_task(&conn);
+        record_activity(&conn, task, &"x".repeat(LABEL_CAP + 500));
+        let stored: String = conn
+            .query_row("SELECT label FROM task_activity WHERE task_id = ?1", [task], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(stored.chars().count() <= LABEL_CAP + 1); // + ellipsis
     }
 
     #[test]
