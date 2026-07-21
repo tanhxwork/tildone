@@ -74,11 +74,6 @@ const TITLE = "Embed probe task";
 describe("notes image embeds", () => {
   before(async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
     const input = $(".quick-add input");
     await input.waitForExist();
     await input.setValue(TITLE);

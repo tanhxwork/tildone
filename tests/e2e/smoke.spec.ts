@@ -8,14 +8,6 @@ describe("Tildone smoke", () => {
   });
 
   it("adds a task through quick-add", async () => {
-    // Fresh data dir shows the first-run overlay; localStorage may remember a
-    // dismissal across runs, so treat it as optional.
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
-
     const input = $(".quick-add input");
     await input.waitForExist();
     await input.setValue("Smoke test task");

@@ -24,11 +24,6 @@ interface HostSession {
 describe("hosted sessions — shell escape hatch", () => {
   it("spawns an unbound shell from the sidebar Sessions + and shows 'no card yet'", async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
 
     await $('button[aria-label="New session"]').click();
     await $(".sess-new").waitForExist();

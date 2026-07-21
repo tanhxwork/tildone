@@ -106,11 +106,6 @@ describe("board secretary", () => {
 
   it("connects the AI store to the stub engine", async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
     // Sidebar footer's first item is AI Assistant.
     await $(".sidebar-footer button.nav-item").click();
     await $(".ai-modes").waitForExist();

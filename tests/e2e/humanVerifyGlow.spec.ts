@@ -68,13 +68,6 @@ function pinnedTagCount(): number {
 
 describe("human-verify done glow", () => {
   before(async () => {
-    // Fresh data dir shows the first-run overlay; localStorage may remember a
-    // dismissal across runs, so treat it as optional (same as smoke).
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
     seedClosedCards();
     await announceDbChange();
     // The board is where the Done column lives; All Tasks so no due-date filter
@@ -84,11 +77,9 @@ describe("human-verify done glow", () => {
     await $(".board").waitForExist();
   });
 
-  after(async () => {
-    // Leave the app the way later spec files expect to find it.
-    await $('button[aria-label="List view"]').click();
-    await $("button.nav-item*=Today").click();
-  });
+  // No hand-off hook: this spec used to restore List view and Today on the way
+  // out, because the next spec file's app launch inherited its view mode
+  // through localStorage. wdio.conf.ts resets both per spec file now.
 
   it("pins the closed human-verify card above the Done window, under a Verify divider", async () => {
     const divider = $(".col-divider.verify-queue");
@@ -103,6 +94,11 @@ describe("human-verify done glow", () => {
 
     // The untagged done card is on the board but not pinned and not glowing:
     // the queue counts exactly one card, and that card is the tagged one.
+    // Counting across the whole board is deliberate — the per-spec-file reset
+    // means the only cards in existence are the two seeded above, so "exactly
+    // one card glows" is a claim about the app rather than, as it was before
+    // isolation, a claim that no earlier spec happened to leave a human-verify
+    // card lying around.
     await expect($(`.board-card*=${PLAIN}`)).toBeExisting();
     const glowing = await browser.$$(".board-card.state-human-verify");
     expect(glowing.length).toBe(1);

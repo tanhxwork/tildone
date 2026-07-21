@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { resetAppState } from "./tests/e2e/support/reset.js";
 
 // Which worktree is this? scripts/worktree-slug.sh is the single source of
 // truth — scripts/e2e-build.sh derives the identifier and target dir from the
@@ -258,6 +259,18 @@ export const config: WebdriverIO.Config = {
           `about code that is not in your diff.)`,
       );
     }
+
+    // Hand this spec file an empty board and a known screen. This hook runs
+    // once per spec file (each gets its own worker session and its own app
+    // launch), which is exactly the granularity the leak has: the data dir is
+    // wiped once per *run*, but tildone.db outlives every relaunch inside it.
+    // Doing it here rather than in each spec keeps isolation a property of the
+    // harness — a new spec file cannot forget to opt in.
+    // Unconditional on purpose — no env switch to turn isolation off. The
+    // proof that this is load-bearing: seed a stray human-verify done card in a
+    // spec file that sorts earlier, and humanVerifyGlow fails on "Verify · 1"
+    // (it counts 2) without this line, passes with it.
+    await resetAppState();
   },
 
   logLevel: "warn",

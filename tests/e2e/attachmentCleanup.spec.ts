@@ -43,22 +43,14 @@ async function pasteImageInto(selector: string) {
 describe("attachment cleanup on hard delete", () => {
   let baseline: string[] = [];
 
-  // The last-viewed selection is persisted to localStorage and survives into the
-  // next spec file's app launch, so a spec that ends on Completed leaves every
-  // later spec looking at a view with no Quick Add. Always hand the app back on
-  // Today.
-  after(async () => {
-    const today = $(".nav-item*=Today");
-    if (await today.isExisting()) await today.click();
-  });
+  // No hand-off hook: this spec used to have to click back to Today before it
+  // ended, because the nav selection persists to localStorage and the next spec
+  // file's app launch would inherit it — ending on Completed left the next spec
+  // looking at a view with no Quick Add. The per-spec-file reset in wdio.conf.ts
+  // clears localStorage now, so where this spec leaves the UI is its own affair.
 
   before(async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
   });
 
   it("writes an attachment directory when an image is attached", async () => {

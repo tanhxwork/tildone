@@ -34,11 +34,6 @@ async function pasteImageInto(selector: string) {
 describe("task images", () => {
   before(async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
   });
 
   it("declares Quick Add as an OS file-drop target", async () => {

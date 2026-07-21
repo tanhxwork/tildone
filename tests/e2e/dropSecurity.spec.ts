@@ -18,11 +18,6 @@ async function readDropped(path: string): Promise<{ ok: boolean; err: string }> 
 describe("dropped-file read boundary", () => {
   before(async () => {
     await $("#root").waitForExist();
-    const overlay = $(".firstrun-overlay");
-    if (await overlay.isExisting()) {
-      await $(".firstrun-footer button.btn.primary").click();
-      await overlay.waitForExist({ reverse: true });
-    }
   });
 
   it("refuses a readable file the user never dropped", async () => {
