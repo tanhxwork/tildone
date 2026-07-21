@@ -1,5 +1,6 @@
 import { browser, $, expect } from "@wdio/globals";
 import { mkdirSync } from "node:fs";
+import { clickInsertAction } from "./support/imageActions.js";
 
 /** Paste a small generated PNG into an element, the way ⌘V does. A real
  *  clipboard can't be primed from WebDriver, but the app only ever reads
@@ -65,15 +66,9 @@ describe("task images", () => {
 
     const tile = $(".detail-image");
     await tile.waitForExist({ timeout: 10000 });
-    // The actions bar reveals on hover or focus-within. WebDriver's synthetic
-    // pointer move doesn't raise :hover in WKWebView, so take the focus route —
-    // it is the same reveal, and the one a keyboard user gets.
-    await browser.execute(() =>
-      (document.querySelector(".detail-image-thumb") as HTMLElement | null)?.focus(),
-    );
-    const insert = $('.detail-image-actions button[aria-label*="Insert"]');
-    await insert.waitForDisplayed({ timeout: 5000 });
-    await insert.click();
+    // Reveal is hover/focus-driven and WKWebView drops :focus-within when the
+    // window loses OS focus — see tests/e2e/support/imageActions.ts (TIL-147).
+    await clickInsertAction();
 
     // The embed must resolve to a real asset URL, not the tildone:img sentinel.
     const embed = $(".detail-notes-rendered img.md-image");

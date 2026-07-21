@@ -1,10 +1,7 @@
 import { browser, $, expect } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-const DB = join(homedir(), "Library/Application Support/com.tildone.e2e/tildone.db");
+import { E2E_DB as DB } from "./support/dataDir.js";
 
 // Same seeding channel as notesEmbed.spec.ts: the sqlite3 CLI is a second
 // connection to the same file, exactly what the MCP agent server is — these

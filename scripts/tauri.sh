@@ -23,13 +23,7 @@ shift
 root=$(pwd -P)
 
 # --- slug: which worktree is this? ---------------------------------------
-case "$root" in
-  */.claude/worktrees/*) slug=$(basename "$root") ;;
-  *) slug=main ;;
-esac
-slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')
-slug=${slug#-}; slug=${slug%-}
-[ -n "$slug" ] || slug=main
+slug=$(./scripts/worktree-slug.sh)
 
 # --- refuse a second instance of the same worktree ------------------------
 # Two identical windows sharing one dev DB (and two identical tray icons)

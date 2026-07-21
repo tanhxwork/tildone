@@ -1,15 +1,11 @@
 import { browser, $, expect } from "@wdio/globals";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { E2E_ATTACHMENTS as ATTACHMENTS } from "./support/dataDir.js";
 
-/** The e2e build's own app-data dir (identifier com.tildone.e2e). Asserting on
- *  real files here is the whole point: TIL-112 is about bytes on disk, and the
- *  UI cannot show whether they are gone. */
-const ATTACHMENTS = join(
-  homedir(),
-  "Library/Application Support/com.tildone.e2e/attachments",
-);
+/* The e2e build's own app-data dir (identifier com.tildone.e2e.<slug>).
+ * Asserting on real files here is the whole point: TIL-112 is about bytes on
+ * disk, and the UI cannot show whether they are gone. */
 
 function attachmentDirs(): string[] {
   if (!existsSync(ATTACHMENTS)) return [];

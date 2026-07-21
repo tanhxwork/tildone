@@ -1,9 +1,7 @@
 import { browser, $, expect } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-const DB = join(homedir(), "Library/Application Support/com.tildone.e2e/tildone.db");
+import { E2E_DB as DB } from "./support/dataDir.js";
+import { clickInsertAction } from "./support/imageActions.js";
 
 // The wdio runner is node, not bun, so bun:sqlite isn't importable here — drive
 // the sqlite3 CLI instead. A separate connection to the same file is exactly
@@ -94,12 +92,7 @@ describe("notes image embeds", () => {
   });
 
   it("opens the lightbox when the inline embed is clicked", async () => {
-    await browser.execute(() =>
-      (document.querySelector(".detail-image-thumb") as HTMLElement | null)?.focus(),
-    );
-    const insert = $('.detail-image-actions button[aria-label*="Insert"]');
-    await insert.waitForDisplayed({ timeout: 5000 });
-    await insert.click();
+    await clickInsertAction();
 
     const embed = $(".detail-notes-rendered img.md-image");
     await embed.waitForExist({ timeout: 10000 });
