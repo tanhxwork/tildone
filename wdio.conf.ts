@@ -69,26 +69,62 @@ function pickWebdriverPort(): number {
   throw new Error(`No free WebDriver port in ${base}..${base + 49}`);
 }
 
-const WEBDRIVER_PORT = pickWebdriverPort();
+/**
+ * The one port for this whole run.
+ *
+ * This file is imported twice over: once by the launcher, which starts the app
+ * in onPrepare, and again by every spec worker. Choosing independently in each
+ * process is a bug with a very quiet symptom — the launcher takes P and binds
+ * the app there, then each worker re-imports, finds P *occupied by that very
+ * app*, and picks P+1. WebDriver still talks to P (the launcher wrote the
+ * capabilities), but the service's direct-eval channel reads
+ * TAURI_WEBDRIVER_PORT from the worker and so aims at P+1, where nothing is
+ * listening. Every command then logs "Failed to get window states: fetch
+ * failed", the window is never raised, and WKWebView stops matching
+ * :focus-within — which is the Insert-button flake (TIL-147).
+ *
+ * So the launcher decides, and publishes its choice in the environment; the
+ * workers it forks inherit that and take it verbatim, never re-probing.
+ */
+function resolveWebdriverPort(): number {
+  const assigned = process.env.TILDONE_E2E_PORT_ASSIGNED;
+  if (assigned) return Number(assigned);
+  const port = pickWebdriverPort();
+  process.env.TILDONE_E2E_PORT_ASSIGNED = String(port);
+  return port;
+}
+
+const WEBDRIVER_PORT = resolveWebdriverPort();
 
 // The service resolves its *embedded* port from the `embeddedPort` option, but
-// its direct-eval channel (window state, ensureActiveWindowFocus) reads only
-// TAURI_WEBDRIVER_PORT and otherwise defaults to 4445. Leaving them out of sync
-// breaks window management silently — every command logs "Failed to get window
-// states: fetch failed", the app window is never raised, and WKWebView stops
-// matching :focus-within once the window loses key status. That is the whole
-// Insert-button flake (TIL-147): the reveal is focus-driven, and re-focusing
-// does not recover it while the window is unfocused. Keep the two in lockstep.
+// its direct-eval channel reads only TAURI_WEBDRIVER_PORT (default 4445).
 process.env.TAURI_WEBDRIVER_PORT = String(WEBDRIVER_PORT);
 
-/** The hashed entry bundle this worktree's `dist/` currently points at. */
-function expectedBundle(): string | null {
+/**
+ * The hashed entry bundle this worktree's `dist/` currently points at.
+ *
+ * Throws rather than returning null: a guard that quietly disables itself when
+ * it cannot read dist/index.html is worse than no guard, because the run still
+ * reports green and nobody learns the staleness check never ran.
+ */
+function expectedBundle(): string {
+  let html: string;
   try {
-    const html = readFileSync("./dist/index.html", "utf8");
-    return /<script[^>]+src="([^"]+)"/.exec(html)?.[1]?.split("/").pop() ?? null;
-  } catch {
-    return null;
+    html = readFileSync("./dist/index.html", "utf8");
+  } catch (e) {
+    throw new Error(
+      `Cannot read ./dist/index.html, so the stale-frontend check cannot run: ${String(e)}. ` +
+        `Run \`bun run e2e:build\` (which builds dist/ and the binary together).`,
+    );
   }
+  const src = /<script[^>]+src="([^"]+)"/.exec(html)?.[1];
+  if (!src) {
+    throw new Error(
+      "No <script src> found in ./dist/index.html — the stale-frontend check cannot run. " +
+        "If the bundler's output shape changed, update this matcher rather than skipping it.",
+    );
+  }
+  return src.split("/").pop() as string;
 }
 
 export const config: WebdriverIO.Config = {
@@ -125,7 +161,6 @@ export const config: WebdriverIO.Config = {
   // e2e-build.sh touches lib.rs to prevent it, and this asserts it worked.
   before: async () => {
     const expected = expectedBundle();
-    if (!expected) return;
     const loaded = await browser.execute(
       () => document.querySelector("script[src]")?.getAttribute("src") ?? "",
     );

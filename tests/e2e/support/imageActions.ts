@@ -3,35 +3,36 @@ import { browser, $ } from "@wdio/globals";
 const INSERT = '.detail-image-actions button[aria-label*="Insert"]';
 
 /**
- * Click the "Insert in notes" action on the first image tile.
+ * Reveal the image tile's actions bar and click "Insert in notes".
  *
- * The actions bar reveals on `:hover` / `:focus-within` only. WebDriver's
- * synthetic pointer never raises `:hover`, so the focus route is the one to
- * take — but it is not reliable on its own: when the app window loses OS key
- * status, WKWebView stops matching `:focus-within` even though
- * `document.activeElement` is still the thumb, and calling `.focus()` again
- * does NOT bring it back while the window is unfocused. Measured directly
- * (TIL-147): in failing runs `document.hasFocus()` is false and the reveal
- * never happens, which is the whole 50%-flake in images/notesEmbed. An agent
- * session cannot guarantee the window keeps OS focus for the length of a run.
+ * The bar reveals on `:hover` / `:focus-within` only. WebDriver's synthetic
+ * pointer never raises `:hover`, so take the focus route — the same reveal a
+ * keyboard user gets.
  *
- * So: exercise the real reveal when the window is focused, and fall back to a
- * direct DOM click when it is not. The assertion that carries the value —
- * that clicking Insert embeds a resolvable asset URL in the notes — holds
- * either way; only the CSS reveal is skipped, and `revealWorksOnFocus` below
- * covers that separately when the environment can actually support it.
+ * WKWebView stops matching `:focus-within` the moment the app window loses OS
+ * key status, even though `document.activeElement` is still the thumb, and
+ * re-focusing does not bring it back (measured, TIL-147). Most of that was the
+ * launcher/worker port split in wdio.conf.ts leaving the service unable to
+ * raise the window at all; with that fixed the reveal is reliable most of the
+ * time, but nothing can stop another application from taking focus mid-run.
+ *
+ * So the fallback is gated on *proof* of that condition — `document.hasFocus()`
+ * being false — and nothing else. If the window holds focus and the reveal
+ * still doesn't happen, that is a real regression and this throws, which is
+ * what an earlier catch-everything version wrongly swallowed.
  */
-export async function clickInsertAction(): Promise<"reveal" | "fallback"> {
+export async function clickInsertAction(): Promise<void> {
   await browser.execute(() =>
     (document.querySelector(".detail-image-thumb") as HTMLElement | null)?.focus(),
   );
 
   const insert = $(INSERT);
   try {
-    await insert.waitForDisplayed({ timeout: 3000 });
-    await insert.click();
-    return "reveal";
-  } catch {
+    await insert.waitForDisplayed({ timeout: 5000 });
+  } catch (revealFailed) {
+    if (await browser.execute(() => document.hasFocus())) {
+      throw revealFailed; // focused window, no reveal — the CSS contract is broken
+    }
     const clicked = await browser.execute((sel: string) => {
       const btn = document.querySelector(sel) as HTMLElement | null;
       if (!btn) return false;
@@ -39,19 +40,10 @@ export async function clickInsertAction(): Promise<"reveal" | "fallback"> {
       return true;
     }, INSERT);
     if (!clicked) {
-      throw new Error(
-        `The Insert action is not in the DOM at all (${INSERT}) — this is a real ` +
-          `failure, not the window-focus flake.`,
-      );
+      throw new Error(`The Insert action is not in the DOM at all (${INSERT}).`);
     }
-    return "fallback";
+    return;
   }
-}
 
-/**
- * Whether the focus-driven reveal can be asserted in this run at all: it needs
- * the app window to hold OS focus, which nothing in the harness can force.
- */
-export async function windowHasOsFocus(): Promise<boolean> {
-  return browser.execute(() => document.hasFocus());
+  await insert.click();
 }
