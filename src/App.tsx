@@ -98,6 +98,9 @@ function App() {
     if (ai.config.mode === "builtin" && ai.config.autoStart) {
       ai.startEngine().catch(() => {});
     }
+    // Board secretary: the Rust loop starts parked; push the persisted
+    // config so it knows whether (and where) to run.
+    void ai.syncSecretary();
   }, []);
 
   useEffect(() => {
@@ -163,8 +166,12 @@ function App() {
     // 10s: presence is ambient. The pulse appearing a few seconds late costs nothing,
     // while a tighter loop buys nothing a human can perceive.
     void useStore.getState().loadPresence();
+    void useAI.getState().refreshSecretary();
     const presenceTimer = setInterval(() => {
       void useStore.getState().loadPresence();
+      // The secretary's status rides the same ambient cadence — it answers
+      // from memory in Rust, so the extra question is effectively free.
+      void useAI.getState().refreshSecretary();
     }, 10_000);
     // Hosted sessions are event-driven, not polled: Rust emits `host-changed`
     // on every start / exit / kill and the store re-pulls the list.

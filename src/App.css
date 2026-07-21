@@ -1368,6 +1368,33 @@ textarea:focus-visible,
   max-width: 120px;
 }
 
+/* The secretary's slot beside the presence meter: the app's own tilde, in the
+   accent, dimmed to read as ambient machinery rather than a chip. It only
+   *states* — nothing to click. "Behind" (engine off, or draining a backlog)
+   breathes opacity slowly; steady means watched and up to date. Absence means
+   the secretary is off or this card has no watched session — the same
+   absence-is-absence rule the presence meter follows. */
+.card-secretary {
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.card-secretary.behind {
+  animation: secretary-breathe 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes secretary-breathe {
+  from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 0.75;
+  }
+}
+
 /* The mark is now the whole identity — no name beside it — so "running" is shown by
    a breathing pulse, not a spin: the shape stays legible (you can still tell which
    agent it is) while it scales and brightens. Runs only while the agent is actively

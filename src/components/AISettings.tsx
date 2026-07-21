@@ -41,6 +41,8 @@ export function AISettings() {
     disk,
     closeSettings,
     chat,
+    secretary,
+    refreshSecretary,
   } = useAI();
 
   useEffect(() => {
@@ -48,6 +50,7 @@ export function AISettings() {
     void refreshEngine();
     void refreshModels();
     void fetchRam();
+    void refreshSecretary();
     // Scan once when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -406,6 +409,37 @@ export function AISettings() {
               />
               Start the engine when Tildone opens
             </label>
+          </div>
+        )}
+
+        {aiReady(config) && (
+          <div className="ai-panel">
+            <label className="ai-autostart">
+              <input
+                type="checkbox"
+                checked={config.secretaryEnabled}
+                onChange={(e) => setConfig({ secretaryEnabled: e.target.checked })}
+              />
+              Board secretary — tick subtasks and log progress from working
+              sessions' transcripts
+            </label>
+            {config.secretaryEnabled && (
+              <p className="ai-hint">
+                {!secretary?.enabled
+                  ? "Starting…"
+                  : secretary.watching.length === 0
+                    ? "Idle — no working session has claimed a card."
+                    : `Watching ${secretary.watching.length} session${
+                        secretary.watching.length === 1 ? "" : "s"
+                      } · ${
+                        secretary.behind.length > 0
+                          ? secretary.engine_ready
+                            ? `catching up on ${secretary.behind.length}`
+                            : "engine off — will catch up"
+                          : "up to date"
+                      }`}
+              </p>
+            )}
           </div>
         )}
 

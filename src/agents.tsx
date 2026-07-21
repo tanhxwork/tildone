@@ -9,6 +9,7 @@
 // "claude-code", "Claude Code", "claude" all land on Claude.
 
 import type { ReactElement, SVGProps } from "react";
+import { useAI } from "./ai";
 import { useStore } from "./store";
 import { timeAgo } from "./utils/dates";
 import { cardPresence } from "./utils/presence";
@@ -101,6 +102,25 @@ const ShellMark = (p: MarkProps) => (
   </Frame>
 );
 
+// The secretary is Tildone itself — its writes carry the app's own tilde mark
+// (Brand.tsx geometry) in the accent, never a vendor brand.
+const SecretaryMark = ({ size = 14, ...rest }: MarkProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="10.5 27.5 103 51"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={11}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    {...rest}
+  >
+    <path d="M16,60 C24,45 35,45 45,57 C51,64 57,65 64,58 C71,52 76,58 80,73 L108,33" />
+  </svg>
+);
+
 // Fallback: a small spark-in-a-ring, clearly "an agent" without claiming a brand.
 const GenericAgentMark = (p: MarkProps) => (
   <Frame {...p}>
@@ -121,6 +141,9 @@ interface Rule {
 // Order matters only if substrings overlap; these don't. Extend freely — an
 // unmatched agent falls through to the generic identity below.
 const RULES: Rule[] = [
+  // The secretary's writes are the app's own (actor_name in secretary.rs);
+  // its color is the live accent so it follows the theme, not a brand hex.
+  { match: "tildone-ai", label: "Secretary", color: "var(--accent)", Mark: SecretaryMark },
   { match: "claude", label: "Claude", color: "#d97757", Mark: ClaudeMark },
   { match: "codex", label: "Codex", color: "#10a37f", Mark: CodexMark },
   { match: "cursor", label: "Cursor", color: "#6b7cff", Mark: CursorMark },
@@ -168,6 +191,34 @@ export function agentIdentity(rawName: string | null | undefined): AgentIdentity
     return { label: name, ...GENERIC };
   }
   return { label: "Agent", ...GENERIC };
+}
+
+/**
+ * The secretary's slot on a claimed card: a small tilde beside the presence
+ * meter. Steady when the transcript is watched and up to date; a slow breathe
+ * while the engine lane is behind (engine off, or draining a backlog); absent
+ * when the secretary is off or this card has no watched session. The words
+ * live on hover and in the aria-label, as with the presence meter.
+ */
+export function SecretaryBadge({ taskId }: { taskId: number }) {
+  const status = useAI((s) => s.secretary);
+  if (!status?.enabled) return null;
+  const behind = status.behind.includes(taskId);
+  if (!status.watching.includes(taskId) && !behind) return null;
+  const title = behind
+    ? status.engine_ready
+      ? "Secretary · catching up"
+      : "Secretary · engine off — will catch up"
+    : "Secretary · watching · up to date";
+  return (
+    <span
+      className={`card-secretary${behind ? " behind" : ""}`}
+      title={title}
+      aria-label={title}
+    >
+      <SecretaryMark size={13} />
+    </span>
+  );
 }
 
 /**

@@ -56,7 +56,7 @@ import { hostedForTask, resumableForTask, useHostStore } from "../hostStore";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { TaskMeta, reservedState } from "./TaskRow";
-import { AgentPresence } from "../agents";
+import { AgentPresence, SecretaryBadge } from "../agents";
 
 type Columns = Record<Status, number[]>;
 
@@ -994,6 +994,7 @@ function CardProvenance({
           resumable
         </span>
       )}
+      <SecretaryBadge taskId={task.id} />
       <AgentPresence taskId={task.id} />
     </span>
     {revealNames.length > 0 && (

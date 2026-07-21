@@ -749,7 +749,19 @@ struct TildoneAgent {
 // ---------------------------------------------------------------------------
 // Helpers
 
-fn now_iso() -> String {
+/// "verify: …" (case-insensitive, whitespace after the colon) marks a subtask
+/// as the user's review checklist. Crate-level so the secretary's derived
+/// ticks obey the same refusal as the MCP surface; the storage rule lives in
+/// VERIFY_PREFIX (src/types.ts) and must stay in step.
+pub(crate) fn is_verify_title(title: &str) -> bool {
+    let t = title.trim_start();
+    match t.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("verify:") => t[7..].starts_with(char::is_whitespace),
+        _ => false,
+    }
+}
+
+pub(crate) fn now_iso() -> String {
     // Matches the JS side's new Date().toISOString() closely enough for
     // display/sorting (UTC, ISO 8601).
     let now = std::time::SystemTime::now()
@@ -814,7 +826,7 @@ const LINK_KINDS: [&str; 6] = ["pr", "branch", "commit", "worktree", "other", "f
 /// and never an executable or a script. `html`/`htm`/`svg` are attachable but
 /// the UI reveals them in Finder rather than opening them (they would run inline
 /// JS in a browser) — see REVEAL_ONLY_EXTENSIONS in src/utils/links.ts.
-const EVIDENCE_EXTENSIONS: &[&str] = &[
+pub(crate) const EVIDENCE_EXTENSIONS: &[&str] = &[
     "md", "txt", "html", "htm", "png", "jpg", "jpeg", "gif", "svg", "webp", "pdf", "json", "csv",
     "log",
 ];
@@ -1296,15 +1308,10 @@ impl TildoneAgent {
     /// Subtasks titled "verify: …" (case-insensitive, whitespace after the colon)
     /// are the task's review checklist: proposed by the agent that flags
     /// needs-review, walked and ticked by the USER. The prefix IS the storage —
-    /// keep this rule in step with VERIFY_PREFIX in src/types.ts.
+    /// keep this rule in step with VERIFY_PREFIX in src/types.ts. Delegates to
+    /// the crate-level fn so the secretary enforces the same guard.
     fn is_verify_title(title: &str) -> bool {
-        let t = title.trim_start();
-        match t.get(..7) {
-            Some(p) if p.eq_ignore_ascii_case("verify:") => {
-                t[7..].starts_with(char::is_whitespace)
-            }
-            _ => false,
-        }
+        is_verify_title(title)
     }
 
     /// Resolve a subtask to `(parent task id, parent is trashed)`, or None when the
@@ -2598,7 +2605,16 @@ impl TildoneAgent {
     )]
     fn append_note(
         &self,
-        Parameters(AppendNoteParams { id: task_ref, text }): Parameters<AppendNoteParams>,
+        Parameters(p): Parameters<AppendNoteParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.append_note_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn append_note_as(
+        &self,
+        AppendNoteParams { id: task_ref, text }: AppendNoteParams,
+        agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
@@ -2635,6 +2651,9 @@ impl TildoneAgent {
             rusqlite::params![updated, id],
         )
         .map_err(db_err)?;
+        // The one agent write surface that had no attribution stamp — every
+        // other path through this file records who wrote (migration 009).
+        Self::record_activity(&conn, id, "Note appended", agent);
         let mut ack = Self::task_ack(&conn, id).map_err(db_err)?;
         // Size hint instead of the notes themselves — confirms the append
         // landed without shipping the blob back.
@@ -6855,10 +6874,10 @@ mod tests {
 
         let (is_err, ack) = extract(
             &agent
-                .append_note(Parameters(AppendNoteParams {
+                .append_note_as(AppendNoteParams {
                     id: id.into(),
                     text: "- 00:01 started".into(),
-                }))
+                }, Some("test"))
                 .unwrap(),
         );
         assert!(!is_err, "append_note failed: {ack}");
@@ -6868,10 +6887,10 @@ mod tests {
 
         extract(
             &agent
-                .append_note(Parameters(AppendNoteParams {
+                .append_note_as(AppendNoteParams {
                     id: id.into(),
                     text: "- 00:02 done".into(),
-                }))
+                }, Some("test"))
                 .unwrap(),
         );
 
@@ -6884,10 +6903,10 @@ mod tests {
         // Unknown and trashed ids are tool errors, not silent no-ops.
         let (is_err, msg) = extract(
             &agent
-                .append_note(Parameters(AppendNoteParams {
+                .append_note_as(AppendNoteParams {
                     id: 9999_i64.into(),
                     text: "x".into(),
-                }))
+                }, Some("test"))
                 .unwrap(),
         );
         assert!(is_err, "unknown id must error: {msg}");
@@ -6895,7 +6914,7 @@ mod tests {
         extract(&agent.delete_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         let (is_err, msg) = extract(
             &agent
-                .append_note(Parameters(AppendNoteParams { id: id.into(), text: "x".into() }))
+                .append_note_as(AppendNoteParams { id: id.into(), text: "x".into() }, Some("test"))
                 .unwrap(),
         );
         assert!(is_err && msg.as_str().unwrap().contains("trash"), "{msg}");
@@ -7142,10 +7161,10 @@ mod tests {
 
         extract(
             &agent
-                .append_note(Parameters(AppendNoteParams {
+                .append_note_as(AppendNoteParams {
                     id: id.into(),
                     text: "- 14:32 tests written (RED, 5 failing)".into(),
-                }))
+                }, Some("test"))
                 .unwrap(),
         );
 

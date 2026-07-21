@@ -61,7 +61,7 @@ pub fn artifact_facts() -> Vec<ArtifactFacts> {
 /// and /Users/…/.claude/jobs/x/tmp/y → -Users-…--claude-jobs-x-tmp-y ('.' and
 /// '/' both map to '-'). '_' is unobserved and pinned to '-' by test — verify
 /// against a real session if a claimed cwd ever contains one.
-fn transcript_slug(cwd: &str) -> String {
+pub(crate) fn transcript_slug(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()

@@ -35,6 +35,10 @@ export interface AIConfig {
   model: string;
   engineModel: EngineModelId;
   autoStart: boolean;
+  /** The board secretary: derive card progress from claimed sessions'
+   *  transcripts via the local engine. On by default — it only acts when
+   *  AI is set up (`aiReady`) and a claimed session is live. */
+  secretaryEnabled: boolean;
 }
 
 export interface DetectedServer {
@@ -71,6 +75,16 @@ export interface DiskUsage {
   free_bytes: number;
 }
 
+/** Mirror of `SecretaryStatus` in secretary.rs — the loop's live answer. */
+export interface SecretaryStatus {
+  enabled: boolean;
+  engine_ready: boolean;
+  /** Task ids with a watched live transcript. */
+  watching: number[];
+  /** Task ids whose engine lane is behind (catching up / waiting on engine). */
+  behind: number[];
+}
+
 const CONFIG_KEY = "tildone-ai-config";
 
 const CONFIG_DEFAULTS: AIConfig = {
@@ -79,6 +93,7 @@ const CONFIG_DEFAULTS: AIConfig = {
   model: "",
   engineModel: "default",
   autoStart: false,
+  secretaryEnabled: true,
 };
 
 function loadConfig(): AIConfig {
@@ -108,6 +123,7 @@ interface AIStore {
   settingsOpen: boolean;
   diskModels: DiskModel[];
   disk: DiskUsage | null;
+  secretary: SecretaryStatus | null;
 
   openSettings: () => void;
   closeSettings: () => void;
@@ -123,6 +139,9 @@ interface AIStore {
   deleteModel: (file: string) => Promise<void>;
   useModel: (id: EngineModelId) => Promise<void>;
   chat: (system: string, prompt: string) => Promise<string>;
+  /** Push the current config down to the Rust secretary loop. */
+  syncSecretary: () => Promise<void>;
+  refreshSecretary: () => Promise<void>;
 }
 
 export const useAI = create<AIStore>()((set, get) => ({
@@ -137,6 +156,7 @@ export const useAI = create<AIStore>()((set, get) => ({
   settingsOpen: false,
   diskModels: [],
   disk: null,
+  secretary: null,
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
@@ -152,6 +172,8 @@ export const useAI = create<AIStore>()((set, get) => ({
     if (patch.engineModel && patch.engineModel !== prevModel) {
       void get().refreshEngine();
     }
+    // Any config change may change where (or whether) the secretary runs.
+    void get().syncSecretary();
   },
 
   probe: async () => {
@@ -271,5 +293,32 @@ export const useAI = create<AIStore>()((set, get) => ({
       });
     }
     throw new Error("AI is not set up — open AI Assistant in the sidebar");
+  },
+
+  syncSecretary: async () => {
+    const { config } = get();
+    const enabled = config.secretaryEnabled && aiReady(config);
+    // Mirror chat()'s routing exactly, so the secretary talks to the same
+    // server the visible AI features do.
+    const builtin = config.mode === "builtin";
+    const port = get().engine?.port ?? 11500;
+    try {
+      await invoke("secretary_configure", {
+        enabled,
+        baseUrl: builtin ? `http://127.0.0.1:${port}` : config.baseUrl,
+        model: builtin ? "local" : config.model,
+        disableThinking: builtin,
+      });
+    } catch {
+      // The loop keeps its previous config; the next sync retries.
+    }
+  },
+
+  refreshSecretary: async () => {
+    try {
+      set({ secretary: await invoke<SecretaryStatus>("secretary_status") });
+    } catch {
+      // Status is ambient UI; keep last known.
+    }
   },
 }));

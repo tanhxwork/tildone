@@ -7,6 +7,7 @@ mod hookinstall;
 mod host;
 mod icons;
 mod pty;
+mod secretary;
 mod settingsfile;
 
 use tauri::Manager;
@@ -175,6 +176,12 @@ pub fn run() {
             sql: include_str!("../migrations/021_shell_bind_identity.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 22,
+            description: "secretary_offsets",
+            sql: include_str!("../migrations/022_secretary.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
@@ -237,6 +244,9 @@ pub fn run() {
                 }
             });
             artifacts::init(app.handle());
+            // The board secretary: parked until the frontend pushes a config
+            // (secretary_configure), so a disabled setting costs nothing.
+            secretary::init(app.handle());
             // Restart survival (F3): load what the previous run left behind
             // before any UI asks for resumables.
             host::boot(app.handle());
@@ -305,6 +315,8 @@ pub fn run() {
             agent::agent_presence,
             agent::focus_session,
             agent::agent_set_notify,
+            secretary::secretary_configure,
+            secretary::secretary_status,
             pty::attach_target,
             pty::pty_open,
             pty::pty_write,
