@@ -863,11 +863,11 @@ fn still_enabled() -> bool {
 /// a file that isn't growing produces no work either way.
 const WATCH_FRESH: Duration = Duration::from_secs(15 * 60);
 
-/// Where a repo doc's durable path is rooted for this cwd. The pure
-/// convention (`<root>/.claude/worktrees/<name>`) answers instantly; any
-/// other worktree layout is resolved by asking git for the common dir (a
-/// linked worktree's refs live under the MAIN checkout's `.git`), cached per
-/// cwd because it shells out.
+/// Where a repo doc's durable path is rooted for this cwd. Git is asked
+/// first (a linked worktree's refs live under the MAIN checkout's `.git`,
+/// whatever the layout); the pure `<root>/.claude/worktrees/<name>`
+/// convention is only the fallback when git can't answer. Cached per cwd
+/// because the authority shells out.
 fn durable_root(cwd: &str, cache: &mut std::collections::HashMap<String, Option<String>>) -> Option<String> {
     if let Some(hit) = cache.get(cwd) {
         return hit.clone();
