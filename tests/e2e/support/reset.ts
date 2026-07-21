@@ -1,6 +1,7 @@
-import { browser } from "@wdio/globals";
+import { $, browser } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
-import { E2E_DB } from "./dataDir.js";
+import { rmSync } from "node:fs";
+import { E2E_ATTACHMENTS, E2E_DB } from "./dataDir.js";
 
 /**
  * Per-spec-file state reset.
@@ -8,8 +9,8 @@ import { E2E_DB } from "./dataDir.js";
  * The data dir is wiped once per run (wdio.conf.ts onPrepare), but the app
  * relaunches for every spec file and tildone.db is a file on disk — so without
  * this, spec file N opens on the accumulated output of specs 1..N-1. That was
- * true for the whole suite's life: a full run used to end with six tasks from
- * five different spec files sitting in the board.
+ * true for the whole suite's life: a full run used to end with seven tasks from
+ * six different spec files sitting in the board.
  *
  * The cost was not merely a cluttered board. Assertions quietly became
  * order-dependent: humanVerifyGlow counted glowing cards across the *entire*
@@ -21,35 +22,54 @@ import { E2E_DB } from "./dataDir.js";
  * exactly like a real regression in the code under test.
  */
 
-/**
- * Every table holding test-visible state, ordered so that no delete fires a
- * trigger that repopulates a table already emptied.
- *
- * `changes` is last on purpose and must stay there: task_tags and task_images
- * carry AFTER DELETE triggers (changes_task_untagged, changes_task_image_delete)
- * that insert into it, so emptying `changes` first would leave rows behind and
- * the app would open its Activity feed on the previous spec's ghosts.
- *
- * `_sqlx_migrations` is deliberately absent — clearing it would make the app
- * re-run every migration against a live schema on next launch.
- */
-const DATA_TABLES = [
-  "task_activity",
-  "task_links",
-  "task_images",
-  "task_tags",
-  "subtasks",
-  "comments",
-  "agent_claims",
-  "hosted_sessions",
-  "tasks",
-  "projects",
-  "tags",
-  "changes",
-];
+/** Tables that must survive the wipe. */
+const KEEP = new Set(["_sqlx_migrations"]);
 
 /**
- * Empty the database the app is sitting on.
+ * Every table holding test-visible state, read from the live schema.
+ *
+ * Deliberately *not* a hardcoded list. The first version of this file carried
+ * one, transcribed from a `.tables` dump — of a database belonging to an older
+ * worktree, which predated migration 022. The result shipped with
+ * `secretary_offsets` missing from the wipe, so the board secretary's
+ * per-session transcript cursors still leaked between spec files. A literal
+ * list is a standing invitation for the next migration to reopen that hole in
+ * silence; asking the database what tables exist cannot go stale.
+ *
+ * `changes` is forced last and must stay there: task_tags and task_images carry
+ * AFTER DELETE triggers (changes_task_untagged in 015_task_tags_changes.sql,
+ * changes_task_image_delete in 019_task_images.sql) that insert into it, so
+ * emptying it earlier would leave rows behind and the app would open its
+ * Activity feed on the previous spec's ghosts.
+ */
+function dataTables(): string[] {
+  const raw = sqlite(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;`,
+  );
+  const tables = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((name) => name && !KEEP.has(name));
+
+  if (tables.length === 0) {
+    throw new Error(
+      `No data tables found in ${E2E_DB}. Either the app has not created its ` +
+        `schema yet or the query is wrong — wiping nothing while reporting ` +
+        `success is exactly the silent failure this reset exists to prevent.`,
+    );
+  }
+
+  return [...tables.filter((t) => t !== "changes"), ...tables.filter((t) => t === "changes")];
+}
+
+function sqlite(statement: string): string {
+  return execFileSync("sqlite3", ["-cmd", ".timeout 5000", E2E_DB, statement], {
+    encoding: "utf8",
+  }).trim();
+}
+
+/**
+ * Empty the database the app is sitting on, and drop its attachment files.
  *
  * Goes through the sqlite3 CLI rather than the app's own delete paths for the
  * same reason the seeding helpers do: it is a second connection to the same
@@ -57,17 +77,32 @@ const DATA_TABLES = [
  * believes is on screen.
  */
 export function wipeDatabase(): void {
-  const deletes = DATA_TABLES.map((t) => `DELETE FROM ${t};`).join(" ");
+  const deletes = dataTables()
+    .map((t) => `DELETE FROM ${t};`)
+    .join(" ");
   // One transaction, so a spec can never observe a half-cleared board. Foreign
   // keys off because the delete order above is chosen for triggers, not for FK
   // parentage, and the two orders disagree.
-  const script = `PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE; ${deletes} DELETE FROM sqlite_sequence; COMMIT;`;
-  execFileSync("sqlite3", ["-cmd", ".timeout 5000", E2E_DB, script], {
-    encoding: "utf8",
-  });
+  //
+  // sqlite_sequence is unguarded on purpose: 001_init.sql creates AUTOINCREMENT
+  // tables, so SQLite has always materialised it by the time a spec runs. (On a
+  // schema with no AUTOINCREMENT table at all this would fail loudly, which is
+  // the right outcome — it would mean the schema is not the one we think.)
+  sqlite(`PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE; ${deletes} DELETE FROM sqlite_sequence; COMMIT;`);
+
+  // Attachment blobs live on disk beside the DB, so row-only wiping would leave
+  // orphans piling up across spec files. attachmentCleanup.spec.ts is immune
+  // either way (it counts relative to a baseline it captures itself), but
+  // "isolated" should mean the filesystem too, not just sqlite.
+  rmSync(E2E_ATTACHMENTS, { recursive: true, force: true });
 }
 
-/** localStorage keys the app persists UI state under (grepped from src/). */
+/**
+ * The localStorage key FirstRun.tsx reads to decide whether to show the
+ * onboarding overlay. Duplicated from src/components/FirstRun.tsx — if that
+ * constant is ever renamed this copy goes stale, so resetUiState() asserts the
+ * overlay is actually gone rather than trusting the write to have worked.
+ */
 const FIRST_RUN_DISMISSED = "tildone-first-run-dismissed";
 
 /**
@@ -80,7 +115,7 @@ const FIRST_RUN_DISMISSED = "tildone-first-run-dismissed";
  *
  * The first-run dismissal is then set back deliberately rather than left
  * cleared. A truly empty localStorage means every spec file opens on the
- * first-run overlay, which would force all seven of them to carry a dismissal
+ * first-run overlay, which would force all eight of them to carry a dismissal
  * dance in before(); pinning it dismissed gives every spec the same known
  * starting screen instead — Today, list view, no overlay.
  */
@@ -88,40 +123,62 @@ export async function resetUiState(): Promise<void> {
   await browser.execute((dismissKey: string) => {
     localStorage.clear();
     localStorage.setItem(dismissKey, "1");
+    // Marks THIS document. It cannot survive a reload — a fresh document gets a
+    // fresh global — so its absence is positive proof the navigation happened,
+    // which "#root has children" is not: that is already true right now, before
+    // the reload, and a poll racing the deferred navigation below could
+    // otherwise satisfy itself against the pre-reload page and return having
+    // applied nothing at all.
+    (window as unknown as Record<string, unknown>).__tildoneAwaitingReload = true;
+    // Deferred by a tick so the navigation starts *after* this command has
+    // returned its result. Reloading synchronously tears the document down
+    // while the WebDriver command is still in flight, which surfaces as an
+    // intermittent "target closed"-class error rather than a clean reload.
+    setTimeout(() => location.reload(), 0);
   }, FIRST_RUN_DISMISSED);
 
-  // The store read localStorage and loaded the tasks at mount, so both are
-  // stale now; a reload is what actually applies the reset to what is on
-  // screen. (Emitting agent-db-changed would refresh the data but leave the
-  // nav state as the previous spec file left it.)
-  //
-  // Deferred by a tick so the navigation starts *after* this command has
-  // returned its result. Calling location.reload() synchronously tears the
-  // document down while the WebDriver command is still in flight, which
-  // surfaces as an intermittent "target closed"-class error rather than a
-  // clean reload.
-  await browser.execute(() => {
-    setTimeout(() => location.reload(), 0);
-  });
+  let lastError: unknown = null;
+  try {
+    await browser.waitUntil(
+      async () => {
+        try {
+          // Re-query each poll rather than reusing a handle: the element from
+          // before the reload belongs to a document that no longer exists.
+          return (
+            (await browser.execute(() => {
+              const reloaded = !(window as unknown as Record<string, unknown>)
+                .__tildoneAwaitingReload;
+              return reloaded && !!document.querySelector("#root")?.firstElementChild;
+            })) === true
+          );
+        } catch (e) {
+          // The command genuinely does fail while the navigation is in flight,
+          // so this cannot simply rethrow. But swallowing outright would let a
+          // real fault (dead session, script error) masquerade as "app did not
+          // re-mount", so the last one is kept and reported if we time out.
+          lastError = e;
+          return false;
+        }
+      },
+      { timeout: 20000, timeoutMsg: "app did not re-mount after the per-spec reset" },
+    );
+  } catch (e) {
+    throw new Error(
+      `${String(e)}${lastError ? `\nLast error while polling: ${String(lastError)}` : ""}`,
+    );
+  }
 
-  await browser.waitUntil(
-    async () => {
-      try {
-        // Re-query each poll rather than reusing a handle: the element from
-        // before the reload belongs to a document that no longer exists. While
-        // the navigation is mid-flight the command itself can fail, and that
-        // is an expected state to poll through, not a failure to report — so
-        // it counts as "not ready yet" instead of aborting the wait.
-        return (
-          (await browser.execute(() => !!document.querySelector("#root")?.firstElementChild)) ===
-          true
-        );
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 20000, timeoutMsg: "app did not re-mount after the per-spec reset" },
-  );
+  // Prove the dismissal key actually suppressed onboarding. Every spec dropped
+  // its own overlay-dismissal block on the strength of this, so if the constant
+  // in FirstRun.tsx is renamed the specs must fail *here*, naming the cause,
+  // rather than eight files away with "element not found".
+  if (await $(".firstrun-overlay").isExisting()) {
+    throw new Error(
+      `The first-run overlay is showing after the reset, so "${FIRST_RUN_DISMISSED}" is no ` +
+        `longer the key src/components/FirstRun.tsx reads. Update the copy in this file — ` +
+        `every spec relies on it to open on a usable screen.`,
+    );
+  }
 }
 
 /** Empty database + clean UI state, for a spec file to start from. */
