@@ -113,18 +113,41 @@ pub(crate) enum Candidate {
     Narration(String),
     /// A Bash tool call's command line.
     Command(String),
+    /// The tail of a tool result that reads like a verification outcome
+    /// ("259 passed", "build failed") — the pass/fail signal the spec names,
+    /// which commands and narration alone don't reliably carry.
+    Outcome(String),
     /// A file the session wrote (Write/Edit tools) — the evidence lane's input.
     FileWrite(String),
 }
 
-/// Candidate events in a chunk of transcript JSONL. Only assistant records
-/// are read — tool RESULTS are unbounded (whole file dumps) and never needed:
-/// the command that produced them plus the agent's own narration carry the
-/// signal. Unparseable lines are skipped, not errors: the transcript is
-/// another program's append log and owes us nothing.
+/// A tool-result excerpt is only a candidate when it smells like an outcome —
+/// anything else (file dumps, listings) is bulk the model doesn't need.
+fn is_outcome_signal(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["pass", "fail", "error", "warning", "test result", "exit code", "✓", "✗", "ok."]
+        .iter()
+        .any(|m| lower.contains(m))
+}
+
+/// Tool-result lines bigger than this are not even parsed — a multi-hundred-KB
+/// JSON line costs real CPU every poll and its tail is rarely an outcome.
+const RESULT_PARSE_CAP: usize = 128 * 1024;
+const OUTCOME_CAP: usize = 200;
+
+/// Candidate events in a chunk of transcript JSONL. Assistant records carry
+/// narration, commands and file writes; tool-result records contribute only
+/// a capped outcome tail, and only when it reads like a verification signal
+/// (results are otherwise unbounded bulk — whole file dumps). Unparseable
+/// lines are skipped, not errors: the transcript is another program's append
+/// log and owes us nothing.
 pub(crate) fn extract_candidates(chunk: &str) -> Vec<Candidate> {
     let mut out = Vec::new();
     for line in chunk.lines() {
+        if line.contains("\"type\":\"tool_result\"") && line.len() <= RESULT_PARSE_CAP {
+            extract_outcome(&mut out, line);
+            continue;
+        }
         if !line.contains("\"type\":\"assistant\"") {
             continue;
         }
@@ -180,6 +203,48 @@ pub(crate) fn extract_candidates(chunk: &str) -> Vec<Candidate> {
     out
 }
 
+/// Pull the outcome tail out of a user-side tool_result line. The result
+/// body may be a plain string or text blocks; either way only the last
+/// OUTCOME_CAP chars are kept, and only when they carry an outcome marker.
+fn extract_outcome(out: &mut Vec<Candidate>, line: &str) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let Some(blocks) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return;
+    };
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let text = match b.get("content") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(inner)) => inner
+                .iter()
+                .filter(|x| x.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|x| x.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let tail: String = {
+            let chars: Vec<char> = text.chars().collect();
+            chars[chars.len().saturating_sub(OUTCOME_CAP)..].iter().collect()
+        };
+        if is_outcome_signal(&tail) {
+            out.push(Candidate::Outcome(tail.trim().to_string()));
+        }
+    }
+}
+
 fn push_narration(out: &mut Vec<Candidate>, text: &str) {
     let text = text.trim();
     if !text.is_empty() {
@@ -227,8 +292,15 @@ const SCRATCH_ROOTS: &[&str] = &["/tmp/", "/private/tmp/", "/var/folders/"];
 const DOC_DIRS: &[&str] = &["docs/specs/", "docs/plans/", "docs/decisions/"];
 
 /// What, if anything, to do about a file the session wrote. Pure — the
-/// filesystem is only consulted at apply time.
-pub(crate) fn evidence_action(path: &str, cwd: &str, home: &str) -> Option<EvidenceAction> {
+/// filesystem is only consulted at apply time. `root` is the durable
+/// (main-checkout) root when `cwd` is a worktree of any layout — resolved by
+/// the caller (`durable_root`), so this stays a pure decision.
+pub(crate) fn evidence_action(
+    path: &str,
+    cwd: &str,
+    home: &str,
+    root: Option<&str>,
+) -> Option<EvidenceAction> {
     if !path.starts_with('/') {
         return None;
     }
@@ -236,15 +308,14 @@ pub(crate) fn evidence_action(path: &str, cwd: &str, home: &str) -> Option<Evide
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())?;
-    let root = main_checkout_root(cwd);
     // In-repo writes: docs are evidence at their durable path; everything
     // else in the repo is code, not evidence. Checked against both the
     // claim's cwd (usually a worktree) and the main checkout, since sessions
     // legitimately write docs to either.
-    for base in [Some(cwd), root.as_deref()].into_iter().flatten() {
+    for base in [Some(cwd), root].into_iter().flatten() {
         if let Some(rel) = path.strip_prefix(&format!("{base}/")) {
             if ext == "md" && DOC_DIRS.iter().any(|d| rel.starts_with(d)) {
-                let durable = root.as_deref().unwrap_or(cwd);
+                let durable = root.unwrap_or(cwd);
                 return Some(EvidenceAction::LinkDoc {
                     path: format!("{durable}/{rel}"),
                 });
@@ -288,32 +359,42 @@ fn attachment_dest(attachments_root: &Path, task_id: i64, source: &str) -> PathB
         .join(format!("sec-{:08x}-{name}", path_hash(source) as u32))
 }
 
+/// One evidence application's outcome. `FileMissing` is the retryable case:
+/// the transcript records the Write tool call before the file exists on
+/// disk, so the first sighting can legitimately be too early.
+#[derive(Debug, PartialEq)]
+enum EvidenceOutcome {
+    Applied,
+    Skipped,
+    FileMissing,
+}
+
 /// Attach one evidence action to a card. Deduped by stored URL — the same
-/// doc saved twice is one chip. Returns whether the DB changed.
+/// doc saved twice is one chip.
 fn apply_evidence(
     conn: &Connection,
     attachments_root: &Path,
     task_id: i64,
     action: &EvidenceAction,
-) -> bool {
+) -> EvidenceOutcome {
     let stored = match action {
         EvidenceAction::LinkDoc { path } => path.clone(),
         EvidenceAction::CopyAttach { source } => {
             let src = Path::new(source);
             let Ok(meta) = std::fs::metadata(src) else {
-                return false; // gone already — scratch files are ephemeral
+                return EvidenceOutcome::FileMissing; // not on disk (yet)
             };
             if meta.len() > COPY_CAP {
-                return false;
+                return EvidenceOutcome::Skipped;
             }
             let dest = attachment_dest(attachments_root, task_id, source);
             if let Some(dir) = dest.parent() {
                 if std::fs::create_dir_all(dir).is_err() {
-                    return false;
+                    return EvidenceOutcome::Skipped;
                 }
             }
             if std::fs::copy(src, &dest).is_err() {
-                return false;
+                return EvidenceOutcome::Skipped;
             }
             dest.to_string_lossy().into_owned()
         }
@@ -326,7 +407,7 @@ fn apply_evidence(
         )
         .unwrap_or(true);
     if dup {
-        return false;
+        return EvidenceOutcome::Skipped;
     }
     let label = Path::new(&stored)
         .file_name()
@@ -351,10 +432,10 @@ fn apply_evidence(
         )
         .is_err()
     {
-        return false;
+        return EvidenceOutcome::Skipped;
     }
     record_activity(conn, task_id, &format!("Evidence attached: {label}"));
-    true
+    EvidenceOutcome::Applied
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +497,14 @@ pub(crate) fn build_prompt(tickables: &[Tickable], candidates: &[Candidate]) -> 
             Candidate::Command(cmd) => {
                 log.push_str("- ran: ");
                 log.push_str(cmd);
+                log.push('\n');
+            }
+            Candidate::Outcome(tail) => {
+                log.push_str("- result: ");
+                for line in tail.lines().filter(|l| !l.trim().is_empty()) {
+                    log.push_str(line.trim());
+                    log.push(' ');
+                }
                 log.push('\n');
             }
             Candidate::FileWrite(_) => {}
@@ -597,9 +686,21 @@ pub(crate) fn reconcile_offsets(stored: Option<Offsets>, file_len: u64) -> Offse
     }
 }
 
+/// How far past the cap a single oversized line is scanned for its newline
+/// before giving up and consuming mid-line (progress beats completeness — a
+/// consumed fragment parses as garbage and is skipped, never misread).
+const OVERSIZE_SCAN_CAP: u64 = 8 * 1024 * 1024;
+
 /// A complete-lines chunk of the transcript from `from`, capped. Returns the
 /// chunk and how many bytes it consumed (up to and including the last
 /// newline) — a partial trailing line stays unconsumed for the next cycle.
+///
+/// A single line longer than the cap must not wedge the cursor forever
+/// (tool-result lines are unbounded): when a cap-full read holds no newline,
+/// the line's end is searched for beyond the cap and the whole line is
+/// consumed *without being returned* — it was never going to be parsed at
+/// that size. Only a line that genuinely has no newline yet (still being
+/// written, EOF reached) consumes nothing and waits.
 fn read_chunk(path: &Path, from: u64, cap: u64) -> Option<(String, u64)> {
     let mut f = std::fs::File::open(path).ok()?;
     f.seek(SeekFrom::Start(from)).ok()?;
@@ -615,10 +716,54 @@ fn read_chunk(path: &Path, from: u64, cap: u64) -> Option<(String, u64)> {
     buf.truncate(read);
     let consumed = match buf.iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
-        None => return Some((String::new(), 0)),
+        None => {
+            if (read as u64) < cap {
+                // Short read: the trailing line simply isn't finished yet.
+                return Some((String::new(), 0));
+            }
+            // The cap-full prefix is the head of one oversized line; its
+            // remainder is scanned for the terminating newline just ahead.
+            return match scan_for_newline(&mut f)? {
+                ScanOutcome::Found(k) | ScanOutcome::GaveUp(k) => {
+                    Some((String::new(), read as u64 + k))
+                }
+                ScanOutcome::Eof => Some((String::new(), 0)),
+            };
+        }
     };
     let chunk = String::from_utf8_lossy(&buf[..consumed]).into_owned();
     Some((chunk, consumed as u64))
+}
+
+enum ScanOutcome {
+    /// Newline found `k` bytes ahead (inclusive) — consume the whole line.
+    Found(u64),
+    /// Even OVERSIZE_SCAN_CAP wasn't enough: consume the scanned span
+    /// mid-line. Progress is guaranteed; the orphaned tail parses as garbage
+    /// on a later cycle and is skipped, never misread.
+    GaveUp(u64),
+    /// EOF before any newline — the line is still being written; wait.
+    Eof,
+}
+
+/// Continue reading from the file's current position, looking for the
+/// newline that ends an oversized line.
+fn scan_for_newline(f: &mut std::fs::File) -> Option<ScanOutcome> {
+    let mut scanned = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            return Some(ScanOutcome::Eof);
+        }
+        if let Some(i) = buf[..n].iter().position(|&b| b == b'\n') {
+            return Some(ScanOutcome::Found(scanned + i as u64 + 1));
+        }
+        scanned += n as u64;
+        if scanned >= OVERSIZE_SCAN_CAP {
+            return Some(ScanOutcome::GaveUp(scanned));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +796,71 @@ fn watched_sessions(conn: &Connection) -> Vec<WatchedSession> {
         Err(_) => Vec::new(),
     }
 }
+
+/// Is this session STILL claiming this task, on a task still on the board?
+///
+/// Re-checked immediately before every write, because the loop's snapshot
+/// goes stale across the blocking engine call: the claim can be released,
+/// retargeted, or the card completed while the model thinks. A write on a
+/// snapshot alone would land on a card the session no longer owns — the
+/// exact thing the secretary must never do.
+fn claim_intact(conn: &Connection, session_id: &str, task_id: i64) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM agent_claims c JOIN tasks t ON t.id = c.task_id
+             WHERE c.session_id = ?1 AND c.task_id = ?2
+               AND t.deleted_at IS NULL AND t.status != 'done')",
+        rusqlite::params![session_id, task_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// The write barrier the toggle needs: enabled is re-read at write time, not
+/// trusted from the cycle's snapshot — turning the secretary off mid-flight
+/// must stop even a write whose engine call was already in the air
+/// (acceptance criterion 4).
+fn still_enabled() -> bool {
+    config_cell().lock().unwrap().enabled
+}
+
+/// A transcript this stale is history, not presence: the session may still
+/// hold its claim, but "watching" would overclaim. Processing is unaffected —
+/// a file that isn't growing produces no work either way.
+const WATCH_FRESH: Duration = Duration::from_secs(15 * 60);
+
+/// Where a repo doc's durable path is rooted for this cwd. The pure
+/// convention (`<root>/.claude/worktrees/<name>`) answers instantly; any
+/// other worktree layout is resolved by asking git for the common dir (a
+/// linked worktree's refs live under the MAIN checkout's `.git`), cached per
+/// cwd because it shells out.
+fn durable_root(cwd: &str, cache: &mut std::collections::HashMap<String, Option<String>>) -> Option<String> {
+    if let Some(hit) = cache.get(cwd) {
+        return hit.clone();
+    }
+    let resolved = main_checkout_root(cwd).or_else(|| {
+        let common = crate::artifacts::git_common_dir(cwd)?;
+        let root = common.parent()?.to_string_lossy().into_owned();
+        // The main checkout resolves to itself — that is "no normalization
+        // needed", not a mapping.
+        (common.file_name().map(|n| n == ".git").unwrap_or(false) && root != cwd)
+            .then_some(root)
+    });
+    cache.insert(cwd.to_string(), resolved.clone());
+    resolved
+}
+
+/// Evidence whose file wasn't on disk yet — the natural transcript order
+/// records the Write tool call before the file exists. Retried for a few
+/// cycles instead of being dropped the one time it was seen.
+struct PendingEvidence {
+    task_id: i64,
+    action: EvidenceAction,
+    session_id: String,
+    attempts: u8,
+}
+
+const EVIDENCE_RETRIES: u8 = 5;
 
 /// Rows for sessions no longer claimed — dead bookkeeping, swept in passing.
 fn sweep_dead_offsets(conn: &Connection) {
@@ -694,6 +904,8 @@ fn run_loop(app: &AppHandle) {
     let mut was_enabled = false;
     let mut probe: Option<(Instant, bool)> = None;
     let mut swept = Instant::now();
+    let mut root_cache: std::collections::HashMap<String, Option<String>> = Default::default();
+    let mut pending: Vec<PendingEvidence> = Vec::new();
     loop {
         let cfg = config_cell().lock().unwrap().clone();
         if !cfg.enabled {
@@ -740,7 +952,17 @@ fn run_loop(app: &AppHandle) {
             ));
             let Ok(meta) = std::fs::metadata(&path) else { continue };
             let len = meta.len();
-            if !watching.contains(&s.task_id) {
+            // "Watching" is presence, and presence must not overclaim: a
+            // claimed-but-dead session's transcript stops moving, and after
+            // WATCH_FRESH it is history. Processing is unaffected — a file
+            // that isn't growing produces no work either way.
+            let fresh = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .map(|age| age < WATCH_FRESH)
+                .unwrap_or(false);
+            if fresh && !watching.contains(&s.task_id) {
                 watching.push(s.task_id);
             }
             let mut off = if just_enabled {
@@ -753,14 +975,30 @@ fn run_loop(app: &AppHandle) {
             if len > off.scan {
                 if let Some((chunk, consumed)) = read_chunk(&path, off.scan, READ_CAP) {
                     if consumed > 0 {
+                        let repo_root = durable_root(&s.cwd, &mut root_cache);
                         for cand in extract_candidates(&chunk) {
                             if let Candidate::FileWrite(p) = &cand {
-                                if let Some(action) = evidence_action(p, &s.cwd, &home) {
-                                    if let Some(root) = attachments_root.as_deref() {
-                                        if apply_evidence(c, root, s.task_id, &action) {
-                                            ui_changed = true;
-                                        }
-                                    }
+                                let action =
+                                    evidence_action(p, &s.cwd, &home, repo_root.as_deref());
+                                let Some(action) = action else { continue };
+                                let Some(store) = attachments_root.as_deref() else { continue };
+                                // Same write barrier as every other lane:
+                                // enabled and claim re-checked at the write.
+                                if !still_enabled() || !claim_intact(c, &s.session_id, s.task_id)
+                                {
+                                    continue;
+                                }
+                                match apply_evidence(c, store, s.task_id, &action) {
+                                    EvidenceOutcome::Applied => ui_changed = true,
+                                    EvidenceOutcome::Skipped => {}
+                                    // The transcript records the Write call
+                                    // before the file exists — retry.
+                                    EvidenceOutcome::FileMissing => pending.push(PendingEvidence {
+                                        task_id: s.task_id,
+                                        action,
+                                        session_id: s.session_id.clone(),
+                                        attempts: 0,
+                                    }),
                                 }
                             }
                         }
@@ -796,7 +1034,19 @@ fn run_loop(app: &AppHandle) {
                                     match reply {
                                         Ok(reply) => {
                                             let actions = parse_reply(&reply, &ticks);
-                                            if apply_actions(c, s.task_id, &actions) {
+                                            // The engine call blocked for up to
+                                            // minutes; the world may have moved.
+                                            // Enabled and the claim are re-checked
+                                            // HERE, at the write, never trusted
+                                            // from the cycle's snapshot. The
+                                            // cursor still advances — dropped
+                                            // work is irrelevant work, and
+                                            // re-enable restarts at the end
+                                            // anyway.
+                                            if still_enabled()
+                                                && claim_intact(c, &s.session_id, s.task_id)
+                                                && apply_actions(c, s.task_id, &actions)
+                                            {
                                                 ui_changed = true;
                                             }
                                             off.decide += end as u64;
@@ -816,6 +1066,26 @@ fn run_loop(app: &AppHandle) {
                 }
             }
             save_offsets(c, &s.session_id, off);
+        }
+        // Evidence whose file wasn't on disk yet: retry a few cycles, then
+        // let it go — scratch artifacts are ephemeral by nature.
+        if let Some(store) = attachments_root.as_deref() {
+            pending.retain_mut(|p| {
+                if !still_enabled() || !claim_intact(c, &p.session_id, p.task_id) {
+                    return false;
+                }
+                match apply_evidence(c, store, p.task_id, &p.action) {
+                    EvidenceOutcome::Applied => {
+                        ui_changed = true;
+                        false
+                    }
+                    EvidenceOutcome::Skipped => false,
+                    EvidenceOutcome::FileMissing => {
+                        p.attempts += 1;
+                        p.attempts <= EVIDENCE_RETRIES
+                    }
+                }
+            });
         }
         if ui_changed {
             let _ = app.emit("agent-db-changed", ());
@@ -943,6 +1213,7 @@ mod tests {
             "/Users/u/projects/app/.claude/worktrees/feature/docs/specs/2026-01-01-x.md",
             cwd,
             "/Users/u",
+            main_checkout_root(cwd).as_deref(),
         );
         assert_eq!(
             got,
@@ -956,19 +1227,19 @@ mod tests {
     fn main_checkout_doc_links_as_is_and_code_files_are_ignored() {
         let cwd = "/Users/u/projects/app";
         assert_eq!(
-            evidence_action("/Users/u/projects/app/docs/plans/p.md", cwd, "/Users/u"),
+            evidence_action("/Users/u/projects/app/docs/plans/p.md", cwd, "/Users/u", None),
             Some(EvidenceAction::LinkDoc {
                 path: "/Users/u/projects/app/docs/plans/p.md".into()
             })
         );
         // In-repo, not docs → code, never evidence.
         assert_eq!(
-            evidence_action("/Users/u/projects/app/src/main.rs", cwd, "/Users/u"),
+            evidence_action("/Users/u/projects/app/src/main.rs", cwd, "/Users/u", None),
             None
         );
         // In-repo markdown outside the doc dirs is still not evidence.
         assert_eq!(
-            evidence_action("/Users/u/projects/app/README.md", cwd, "/Users/u"),
+            evidence_action("/Users/u/projects/app/README.md", cwd, "/Users/u", None),
             None
         );
     }
@@ -977,7 +1248,7 @@ mod tests {
     fn docs_written_in_main_checkout_from_a_worktree_session_link_durably() {
         let cwd = "/Users/u/projects/app/.claude/worktrees/feature";
         assert_eq!(
-            evidence_action("/Users/u/projects/app/docs/decisions/d.md", cwd, "/Users/u"),
+            evidence_action("/Users/u/projects/app/docs/decisions/d.md", cwd, "/Users/u", main_checkout_root(cwd).as_deref()),
             Some(EvidenceAction::LinkDoc {
                 path: "/Users/u/projects/app/docs/decisions/d.md".into()
             })
@@ -988,25 +1259,25 @@ mod tests {
     fn scratch_artifacts_copy_and_the_rest_is_refused() {
         let cwd = "/Users/u/projects/app";
         assert_eq!(
-            evidence_action("/private/tmp/scratch/report.html", cwd, "/Users/u"),
+            evidence_action("/private/tmp/scratch/report.html", cwd, "/Users/u", None),
             Some(EvidenceAction::CopyAttach {
                 source: "/private/tmp/scratch/report.html".into()
             })
         );
         // Harness bookkeeping is not evidence.
         assert_eq!(
-            evidence_action("/Users/u/.claude/projects/x/memory/note.md", cwd, "/Users/u"),
+            evidence_action("/Users/u/.claude/projects/x/memory/note.md", cwd, "/Users/u", None),
             None
         );
         // Executables/scripts have no evidence extension.
-        assert_eq!(evidence_action("/private/tmp/run.sh", cwd, "/Users/u"), None);
+        assert_eq!(evidence_action("/private/tmp/run.sh", cwd, "/Users/u", None), None);
         // Files elsewhere on disk are not scratch output.
         assert_eq!(
-            evidence_action("/Users/u/Documents/other.md", cwd, "/Users/u"),
+            evidence_action("/Users/u/Documents/other.md", cwd, "/Users/u", None),
             None
         );
         // Relative paths are refused outright.
-        assert_eq!(evidence_action("docs/specs/x.md", cwd, "/Users/u"), None);
+        assert_eq!(evidence_action("docs/specs/x.md", cwd, "/Users/u", None), None);
     }
 
     #[test]
@@ -1017,8 +1288,8 @@ mod tests {
         let action = EvidenceAction::LinkDoc {
             path: "/Users/u/projects/app/docs/specs/x.md".into(),
         };
-        assert!(apply_evidence(&conn, &tmp, task, &action));
-        assert!(!apply_evidence(&conn, &tmp, task, &action), "second attach must dedupe");
+        assert_eq!(apply_evidence(&conn, &tmp, task, &action), EvidenceOutcome::Applied);
+        assert_eq!(apply_evidence(&conn, &tmp, task, &action), EvidenceOutcome::Skipped, "second attach must dedupe");
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM task_links WHERE task_id = ?1", [task], |r| r.get(0))
             .unwrap();
@@ -1041,7 +1312,7 @@ mod tests {
         let action = EvidenceAction::CopyAttach {
             source: src.to_string_lossy().into_owned(),
         };
-        assert!(apply_evidence(&conn, &store, task, &action));
+        assert_eq!(apply_evidence(&conn, &store, task, &action), EvidenceOutcome::Applied);
         let url: String = conn
             .query_row("SELECT url FROM task_links WHERE task_id = ?1", [task], |r| r.get(0))
             .unwrap();
@@ -1243,6 +1514,125 @@ mod tests {
         assert_eq!(byte_floor_at_newline("ab\ncd\nef", 6), 6);
         assert_eq!(byte_floor_at_newline("abcdef", 6), 0);
         assert_eq!(byte_floor_at_newline("ab\n", 99), 3);
+    }
+
+    // --- codex fix-forward coverage (verdict on 548b6bf) ---
+
+    #[test]
+    fn oversized_line_is_skipped_not_wedging_the_cursor() {
+        let dir = std::env::temp_dir().join("sec-test-oversize");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.jsonl");
+        // One 50-byte line with its newline, then a normal line: with a
+        // 10-byte cap the first read window holds no newline at all.
+        let long = "x".repeat(50);
+        std::fs::write(&p, format!("{long}\nnormal\n")).unwrap();
+        let (chunk, consumed) = read_chunk(&p, 0, 10).unwrap();
+        assert_eq!(chunk, "", "an oversized line is consumed but never returned");
+        assert_eq!(consumed, 51, "consumed through the oversized line's newline");
+        let (chunk, consumed) = read_chunk(&p, 51, 10).unwrap();
+        assert_eq!(chunk, "normal\n");
+        assert_eq!(consumed, 7);
+        // An oversized line with NO newline yet (still being written) waits.
+        let p2 = dir.join("t2.jsonl");
+        std::fs::write(&p2, "y".repeat(50)).unwrap();
+        let (_, consumed) = read_chunk(&p2, 0, 10).unwrap();
+        assert_eq!(consumed, 0, "an unterminated line is waited on, not consumed");
+    }
+
+    #[test]
+    fn claim_intact_detects_release_retarget_and_completion() {
+        let conn = migrated_conn();
+        let task = seed_task(&conn);
+        conn.execute(
+            "INSERT INTO agent_claims (session_id, task_id, claimed_at) VALUES ('s-1', ?1, 'now')",
+            [task],
+        )
+        .unwrap();
+        assert!(claim_intact(&conn, "s-1", task));
+        // Retarget: the session moved to another card mid-engine-call.
+        let other = seed_task(&conn);
+        conn.execute("UPDATE agent_claims SET task_id = ?1 WHERE session_id = 's-1'", [other])
+            .unwrap();
+        assert!(!claim_intact(&conn, "s-1", task), "retargeted claim must not write the old card");
+        // Completion: done cards are never written.
+        conn.execute("UPDATE agent_claims SET task_id = ?1 WHERE session_id = 's-1'", [task])
+            .unwrap();
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?1", [task]).unwrap();
+        assert!(!claim_intact(&conn, "s-1", task));
+        // Release: no claim row, no writes.
+        conn.execute("DELETE FROM agent_claims WHERE session_id = 's-1'", []).unwrap();
+        conn.execute("UPDATE tasks SET status = 'doing' WHERE id = ?1", [task]).unwrap();
+        assert!(!claim_intact(&conn, "s-1", task));
+    }
+
+    #[test]
+    fn tool_result_tails_become_outcome_candidates_only_with_signal() {
+        let result_line = |text: &str| {
+            format!(
+                r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","content":"{text}"}}]}}}}"#
+            )
+        };
+        // A test summary tail is a candidate…
+        let got = extract_candidates(&result_line("test result: ok. 259 passed; 0 failed"));
+        assert_eq!(
+            got,
+            vec![Candidate::Outcome("test result: ok. 259 passed; 0 failed".into())]
+        );
+        // …a plain file dump is not.
+        assert!(extract_candidates(&result_line("fn main() {} // just code")).is_empty());
+        // Block-shaped result content also parses.
+        let block_line = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"BUILD FAILED: 2 errors"}]}]}}"#;
+        assert_eq!(
+            extract_candidates(block_line),
+            vec![Candidate::Outcome("BUILD FAILED: 2 errors".into())]
+        );
+    }
+
+    #[test]
+    fn outcome_reaches_the_prompt() {
+        let t = ticks(&[("write tests", 1)]);
+        let p = build_prompt(&t, &[Candidate::Outcome("259 passed; 0 failed".into())]).unwrap();
+        assert!(p.contains("- result: 259 passed; 0 failed"));
+    }
+
+    #[test]
+    fn missing_scratch_file_is_retryable_not_dropped() {
+        let conn = migrated_conn();
+        let task = seed_task(&conn);
+        let store = std::env::temp_dir().join("sec-test-retry-store");
+        let src = std::env::temp_dir().join("sec-test-retry").join("late.html");
+        // The temp path is shared across runs — a previous run's file would
+        // fake an instant Applied and mask the retry path under test.
+        let _ = std::fs::remove_file(&src);
+        let action = EvidenceAction::CopyAttach {
+            source: src.to_string_lossy().into_owned(),
+        };
+        // File not there yet: retryable, and nothing was linked.
+        assert_eq!(apply_evidence(&conn, &store, task, &action), EvidenceOutcome::FileMissing);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_links WHERE task_id = ?1", [task], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        // The file appears (the transcript's natural order) — the retry lands.
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, "<h1>late</h1>").unwrap();
+        assert_eq!(apply_evidence(&conn, &store, task, &action), EvidenceOutcome::Applied);
+    }
+
+    #[test]
+    fn nonconventional_worktree_root_normalizes_docs_durably() {
+        // A worktree living OUTSIDE <root>/.claude/worktrees — the resolved
+        // root arrives from git via durable_root; the pure decision must use
+        // it for both the match and the durable path.
+        let cwd = "/Users/u/scratch/wt-feature";
+        let root = Some("/Users/u/projects/app");
+        assert_eq!(
+            evidence_action("/Users/u/scratch/wt-feature/docs/specs/s.md", cwd, "/Users/u", root),
+            Some(EvidenceAction::LinkDoc {
+                path: "/Users/u/projects/app/docs/specs/s.md".into()
+            })
+        );
     }
 
     #[test]

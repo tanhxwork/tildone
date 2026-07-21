@@ -123,7 +123,7 @@ fn enumerate(app: &tauri::AppHandle, home: &str) -> Vec<Target> {
 /// Where this checkout's refs actually live. `--git-common-dir` (not
 /// `--git-dir`) because worktree checkouts keep branch refs in the main
 /// repo's gitdir; watching the worktree's private gitdir would miss commits.
-fn git_common_dir(cwd: &str) -> Option<PathBuf> {
+pub(crate) fn git_common_dir(cwd: &str) -> Option<PathBuf> {
     let out = std::process::Command::new("git")
         .args(["-C", cwd, "rev-parse", "--git-common-dir"])
         .output()

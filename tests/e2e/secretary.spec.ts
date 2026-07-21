@@ -152,9 +152,11 @@ describe("board secretary", () => {
       "the secretary to register the claimed session",
     );
 
-    // Now the session "works": narration + a test run + two artifacts.
+    // Now the session "works": narration + a test run + two artifacts. The
+    // scratch report's Write record lands in the transcript BEFORE the file
+    // exists on disk — the real transcript order — so this also proves the
+    // evidence retry (the first sighting is legitimately too early).
     const scratchReport = join(SCRATCH, "report.html");
-    writeFileSync(scratchReport, "<h1>e2e evidence</h1>");
     appendFileSync(
       TRANSCRIPT,
       [
@@ -168,6 +170,8 @@ describe("board secretary", () => {
         ),
       ].join("\n") + "\n",
     );
+    // The file appears a few seconds after its record was scanned.
+    setTimeout(() => writeFileSync(scratchReport, "<h1>e2e evidence</h1>"), 4000);
 
     // Criterion 1: the build subtask ticks and the log line lands — with no
     // MCP call from any agent — attributed to tildone-ai.
