@@ -227,8 +227,10 @@ export function TaskEditor() {
   const taskSubtasks = subtasks.filter((s) => s.task_id === task.id);
   // Verify steps split out of the build checklist only while the task is in
   // review — same rule and reason as the board card (Kanban.tsx): the tag coming
-  // off must fold them back into plain subtasks, not orphan them.
-  const inReview = reservedState(task, tags) === "needs-review";
+  // off must fold them back into plain subtasks, not orphan them. Both review
+  // states count: needs-review (doing) and human-verify (done).
+  const state = reservedState(task, tags);
+  const inReview = state === "needs-review" || state === "human-verify";
   const verifySteps = inReview ? taskSubtasks.filter(isVerifyStep) : [];
   const buildSubtasks = inReview
     ? taskSubtasks.filter((s) => !isVerifyStep(s))

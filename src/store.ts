@@ -16,7 +16,13 @@ import type {
   TaskLink,
   ViewMode,
 } from "./types";
-import { COLOR_CHOICES, DONE_CLEARED_TAGS, PRIORITY_LABELS, STATUS_LABELS } from "./types";
+import {
+  COLOR_CHOICES,
+  DONE_CLEARED_TAGS,
+  isVerifyStep,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+} from "./types";
 import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
@@ -818,9 +824,32 @@ export const useStore = create<Store>()((set, get) => ({
   toggleSubtask: async (id) => {
     const sub = get().subtasks.find((s) => s.id === id);
     if (!sub) return;
-    await db.updateSubtask(id, { done: !sub.done });
+    const nowDone = !sub.done;
+    await db.updateSubtask(id, { done: nowDone });
     set((s) => ({
-      subtasks: s.subtasks.map((x) => (x.id === id ? { ...x, done: !sub.done } : x)),
+      subtasks: s.subtasks.map((x) => (x.id === id ? { ...x, done: nowDone } : x)),
+    }));
+    // Ticking the last `verify:` step on a done human-verify card is the user
+    // saying "checked" — retire the tag in the same gesture, so the card stops
+    // glowing without a second trip to the tag list (spec
+    // 2026-07-21-human-verify-done-glow). Only this direction: unticking never
+    // re-adds the tag.
+    if (!nowDone || !isVerifyStep(sub)) return;
+    const { tasks, tags, subtasks } = get();
+    const task = tasks.find((t) => t.id === sub.task_id);
+    if (!task || task.status !== "done") return;
+    const hv = tags.find(
+      (t) => t.name.toLowerCase() === "human-verify" && task.tag_ids.includes(t.id),
+    );
+    if (!hv) return;
+    const allTicked = subtasks
+      .filter((s) => s.task_id === task.id && isVerifyStep(s))
+      .every((s) => s.done);
+    if (!allTicked) return;
+    const kept = task.tag_ids.filter((x) => x !== hv.id);
+    await db.setTaskTags(task.id, kept);
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === task.id ? { ...t, tag_ids: kept } : t)),
     }));
   },
 

@@ -906,7 +906,10 @@ textarea:focus-visible,
   background: color-mix(in srgb, var(--blocked) 10%, transparent);
 }
 
-.state-pill.needs-review {
+/* human-verify shares the review hue: both mean "your eyes needed", they just
+   sit on different statuses (doing vs done) and so never meet on one card. */
+.state-pill.needs-review,
+.state-pill.human-verify {
   color: var(--review);
   border: 1px solid color-mix(in srgb, var(--review) 45%, transparent);
   background: color-mix(in srgb, var(--review) 10%, transparent);
@@ -1220,12 +1223,15 @@ textarea:focus-visible,
   border-color: color-mix(in srgb, var(--blocked) 55%, var(--border));
 }
 
-/* No .board-card.state-needs-review tint, deliberately. The board groups these
-   under a "Needs review" divider, and a heading that names the state plus a
-   tinted card plus a pill inside it is the same fact three times — the loudest
-   card on a board whose whole idea is hairlines over fills. The section carries
-   it now; the card is just a card. `blocked` keeps its tint above: it is an
-   alarm that can surface in any column, with no heading to explain it. */
+/* No .board-card.state-needs-review tint, deliberately — and none for
+   .state-human-verify either. The board groups both under a divider that names
+   the state ("Needs review" in Doing, "Verify" in Done), and a heading that
+   names the state plus a tinted card plus a pill inside it is the same fact
+   three times — the loudest card on a board whose whole idea is hairlines over
+   fills. The section carries it now; the card is just a card (its verify
+   counter, in the review colour, is the one accent it keeps). `blocked` keeps
+   its tint above: it is an alarm that can surface in any column, with no
+   heading to explain it. */
 
 .card-title {
   font-weight: 500;
@@ -1761,12 +1767,17 @@ textarea:focus-visible,
    Review view, further down this file) and sets `flex-direction: column`. A
    divider marked `.col-divider.review` matched both, silently turned into a
    column, and stacked its own rule under centred text. `.needs-review` is taken
-   too. Modifiers on a shared block need a name nobody else could want. */
-.col-divider.review-queue {
+   too. Modifiers on a shared block need a name nobody else could want.
+
+   `verify-queue` heads the Done column's pinned human-verify cards — the same
+   "your eyes needed" hue, one divider per state. */
+.col-divider.review-queue,
+.col-divider.verify-queue {
   color: var(--review);
 }
 
-.col-divider.review-queue::after {
+.col-divider.review-queue::after,
+.col-divider.verify-queue::after {
   background: color-mix(in srgb, var(--review) 30%, var(--border));
 }
 

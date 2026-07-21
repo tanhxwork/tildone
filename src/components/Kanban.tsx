@@ -65,6 +65,8 @@ interface BoardModel {
   /** Where the "Working" divider falls inside In Progress: the number of
    * needs-review cards grouped above it. 0 means no review section. */
   doingReviewCount: number;
+  /** Pinned human-verify cards at the top of Done — awaiting the user's check. */
+  doneVerifyCount: number;
   /** Where the "Earlier" divider falls inside the Done column. */
   doneTodayCount: number;
   /** Done tasks not on the board — the count behind the "in Completed" link. */
@@ -90,13 +92,28 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
   const review = doing.filter((t) => reservedState(t, tags) === "needs-review");
   const working = doing.filter((t) => reservedState(t, tags) !== "needs-review");
   columns.doing = [...review, ...working].map((t) => t.id);
-  // Done is not the whole pile: it is the recent window (today + backfill to the
-  // limit), newest first. The rest lives in Completed.
-  const w = doneBoardWindow(tasks.filter((t) => t.status === "done"), today);
-  columns.done = [...w.today, ...w.earlier].map((t) => t.id);
+  // Done pins the verify queue first: cards the agent closed with their
+  // `verify:` checklist still unticked stay on the board regardless of the
+  // window — out of sight is the failure mode this state exists to prevent.
+  // Same split-index shape as the review section above.
+  const doneTasks = tasks.filter((t) => t.status === "done");
+  const verifyQueue = doneTasks
+    .filter((t) => reservedState(t, tags) === "human-verify")
+    .sort((a, b) => {
+      const ca = a.completed_at ?? "";
+      const cb = b.completed_at ?? "";
+      if (ca !== cb) return ca < cb ? 1 : -1;
+      return b.id - a.id;
+    });
+  const verifyIds = new Set(verifyQueue.map((t) => t.id));
+  // The rest is the recent window (today + backfill to the limit), newest
+  // first. Everything beyond it lives in Completed.
+  const w = doneBoardWindow(doneTasks.filter((t) => !verifyIds.has(t.id)), today);
+  columns.done = [...verifyQueue, ...w.today, ...w.earlier].map((t) => t.id);
   return {
     columns,
     doingReviewCount: review.length,
+    doneVerifyCount: verifyQueue.length,
     doneTodayCount: w.today.length,
     doneHidden: w.hiddenCount,
   };
@@ -132,7 +149,12 @@ export function Kanban() {
 
   const [columns, setColumns] = useState<Columns>({ todo: [], doing: [], done: [] });
   const [reviewCount, setReviewCount] = useState(0);
-  const [doneMeta, setDoneMeta] = useState<{ today: number; hidden: number }>({
+  const [doneMeta, setDoneMeta] = useState<{
+    verify: number;
+    today: number;
+    hidden: number;
+  }>({
+    verify: 0,
     today: 0,
     hidden: 0,
   });
@@ -153,7 +175,11 @@ export function Kanban() {
       const model = computeColumns(visible, tags, todayStr());
       setColumns(model.columns);
       setReviewCount(model.doingReviewCount);
-      setDoneMeta({ today: model.doneTodayCount, hidden: model.doneHidden });
+      setDoneMeta({
+        verify: model.doneVerifyCount,
+        today: model.doneTodayCount,
+        hidden: model.doneHidden,
+      });
     }
   }, [visible, tags, activeId]);
 
@@ -243,10 +269,12 @@ export function Kanban() {
   }
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;
-  // Keep the drag overlay in the same form as the resting card: today's done
-  // cards (the first `doneMeta.today` in the Done column) drag as full, not compact.
+  // Keep the drag overlay in the same form as the resting card: the pinned
+  // verify queue and today's done cards (the first `verify + today` in the Done
+  // column) drag as full, not compact.
   const activeFull =
-    activeId !== null && columns.done.slice(0, doneMeta.today).includes(activeId);
+    activeId !== null &&
+    columns.done.slice(0, doneMeta.verify + doneMeta.today).includes(activeId);
 
   return (
     <DndContext
@@ -270,6 +298,7 @@ export function Kanban() {
             settle={settle}
             onSettleDone={() => setSettle(null)}
             reviewCount={reviewCount}
+            doneVerifyCount={doneMeta.verify}
             doneTodayCount={doneMeta.today}
             doneHidden={doneMeta.hidden}
             onSeeAll={() => select({ type: "completed" })}
@@ -293,6 +322,7 @@ function Column({
   settle,
   onSettleDone,
   reviewCount,
+  doneVerifyCount,
   doneTodayCount,
   doneHidden,
   onSeeAll,
@@ -306,6 +336,7 @@ function Column({
   settle: { id: number; key: number } | null;
   onSettleDone: () => void;
   reviewCount: number;
+  doneVerifyCount: number;
   doneTodayCount: number;
   doneHidden: number;
   onSeeAll: () => void;
@@ -333,10 +364,11 @@ function Column({
     ) : null;
   };
 
-  // The Done column groups its window into Today / Earlier; the split index is where
-  // the backfilled older cards begin. Other columns render a flat list.
-  const todayCount = Math.min(doneTodayCount, ids.length);
-  const hasEarlier = isDone && ids.length > todayCount;
+  // The Done column stacks its splits: the pinned verify queue first, then the
+  // window grouped into Today / Earlier. Other columns render a flat list.
+  const verifyCount = Math.min(doneVerifyCount, ids.length);
+  const todayCount = Math.min(doneTodayCount, ids.length - verifyCount);
+  const hasEarlier = isDone && ids.length > verifyCount + todayCount;
 
   // In Progress groups the review queue above the rest, on the same split-index
   // shape. The dividers only appear when there is something on both sides: a
@@ -363,15 +395,22 @@ function Column({
         <div ref={setNodeRef} className="column-body">
           {isDone ? (
             <>
+              {/* The verify queue: shipped, AI-verified, awaiting your check.
+                  Full cards, so the verify counter and its popover are in reach
+                  without opening the editor. */}
+              {verifyCount > 0 && (
+                <div className="col-divider verify-queue">Verify · {verifyCount}</div>
+              )}
+              {ids.slice(0, verifyCount).map((id) => card(id, true, true))}
               {todayCount > 0 && <div className="col-divider">Today</div>}
-              {ids.slice(0, todayCount).map((id) => card(id, true))}
+              {ids.slice(verifyCount, verifyCount + todayCount).map((id) => card(id, true))}
               {hasEarlier && (
                 <div className="col-divider">
                   Earlier
                   <span className="backfill-tag">fills to {DONE_WINDOW_LIMIT}</span>
                 </div>
               )}
-              {ids.slice(todayCount).map((id) => card(id))}
+              {ids.slice(verifyCount + todayCount).map((id) => card(id))}
             </>
           ) : hasReview ? (
             <>
@@ -584,8 +623,10 @@ function CardContent({
   const state = reservedState(task, tags);
   // Verify steps ("verify: …" subtasks) leave the build checklist only while the
   // task is actually in review — the tag coming off mid-flight folds them back
-  // into plain subtasks rather than orphaning them out of every count.
-  const inReview = state === "needs-review";
+  // into plain subtasks rather than orphaning them out of every count. Both
+  // review states count: needs-review (doing, pre-hand-off) and human-verify
+  // (done, awaiting the user's check).
+  const inReview = state === "needs-review" || state === "human-verify";
   const verifySteps = inReview ? mine.filter(isVerifyStep) : [];
   const build = inReview ? mine.filter((s) => !isVerifyStep(s)) : mine;
   const done = build.filter((s) => s.done).length;
