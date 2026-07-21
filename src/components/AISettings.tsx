@@ -413,7 +413,7 @@ export function AISettings() {
         )}
 
         {aiReady(config) && (
-          <div className="ai-panel">
+          <div className="ai-panel ai-secretary">
             <label className="ai-autostart">
               <input
                 type="checkbox"
