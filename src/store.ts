@@ -1048,6 +1048,17 @@ export const useStore = create<Store>()((set, get) => ({
       for (const rawName of t.tags ?? []) {
         const name = rawName.trim();
         if (!name) continue;
+        // A row that arrives already in Done never crosses the transition that
+        // tagIdsAfterDone guards, so the strip has to happen here too — otherwise
+        // restoring a backup resurrects "Needs review" on long-finished cards
+        // (TIL-98). Filtering by name, before the id is resolved, also keeps the
+        // import from conjuring a `blocked` tag into a board that had none.
+        if (
+          status === "done" &&
+          (DONE_CLEARED_TAGS as readonly string[]).includes(name.toLowerCase())
+        ) {
+          continue;
+        }
         let tagId = tagIdByName.get(name.toLowerCase());
         if (tagId === undefined) {
           tagId = await db.insertTag(name, colorForName(name));
