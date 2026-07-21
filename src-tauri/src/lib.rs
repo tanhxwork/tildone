@@ -7,6 +7,7 @@ mod hookinstall;
 mod host;
 mod icons;
 mod pty;
+mod settingsfile;
 
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -284,6 +285,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             drops::read_dropped_image,
+            settingsfile::export_settings_file,
+            settingsfile::import_settings_file,
             ai::ai_probe,
             ai::ai_identify,
             ai::ai_chat,

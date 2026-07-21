@@ -19,8 +19,6 @@
     "sql:allow-execute",
     "dialog:default",
     "fs:default",
-    "fs:allow-write-text-file",
-    "fs:allow-read-text-file",
     {
       "identifier": "fs:allow-mkdir",
       "allow": [{ "path": "$APPDATA/attachments" }, { "path": "$APPDATA/attachments/**" }]

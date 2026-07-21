@@ -1,6 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import { useSettings, type Theme, type WeekStart } from "../settings";
 import { useStore, type ImportedTask } from "../store";
@@ -103,11 +101,6 @@ export function SettingsDialog() {
 
   async function doExport(format: ExportFormat) {
     setMessage(null);
-    const path = await saveDialog({
-      defaultPath: `tildone-export.${EXT[format]}`,
-      filters: [{ name: format.toUpperCase(), extensions: [EXT[format]] }],
-    });
-    if (!path) return;
     const snapshot = { projects, tasks, tags };
     const content =
       format === "json"
@@ -115,20 +108,24 @@ export function SettingsDialog() {
         : format === "csv"
           ? toCSV(snapshot)
           : toMarkdown(snapshot);
-    await writeTextFile(path, content);
+    // Rust owns both the panel and the write, so the renderer never names a
+    // path — that is what let the fs text-file permissions go (TIL-141).
+    const path = await invoke<string | null>("export_settings_file", {
+      defaultName: `tildone-export.${EXT[format]}`,
+      extension: EXT[format],
+      content,
+    });
+    if (!path) return;
     setMessage(`Exported to ${path}`);
   }
 
   async function doImport() {
     setMessage(null);
-    const path = await openDialog({
-      multiple: false,
-      filters: [{ name: "Tildone import", extensions: ["json", "csv"] }],
-    });
-    if (typeof path !== "string") return;
+    const picked = await invoke<[string, string] | null>("import_settings_file");
+    if (!picked) return;
+    const [path, text] = picked;
     setBusy(true);
     try {
-      const text = await readTextFile(path);
       let payload: { projects?: { name: string; color?: string }[]; tasks: ImportedTask[] };
       if (path.toLowerCase().endsWith(".json")) {
         const parsed = JSON.parse(text);
