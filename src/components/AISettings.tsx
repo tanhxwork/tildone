@@ -162,136 +162,50 @@ export function AISettings() {
           machine.
         </p>
 
-        <div className="ai-modes">
-          <label className={`ai-mode ${config.mode === "off" ? "selected" : ""}`}>
-            <input
-              type="radio"
-              name="ai-mode"
-              checked={config.mode === "off"}
-              onChange={() => pickMode("off")}
-            />
-            <div>
-              <div className="ai-mode-title">Off</div>
-              <div className="ai-mode-desc">No AI features.</div>
-            </div>
-          </label>
+        {/* Lane 1 — the board secretary. Always local, app-native: it leads.
+            Shown whenever AI is on (aiReady); it owns the engine picker. */}
+        {aiReady(config) && (
+          <section className="ai-lane ai-secretary">
+            <h3 className="ai-lane-title">Board secretary</h3>
+            <p className="ai-lane-sub">
+              A local watcher that keeps your board cards current while agents
+              work — separate from chat, and always on the built-in engine.
+            </p>
+            <ul className="ai-explain">
+              <li>
+                Reads your claimed working sessions' transcripts and derives
+                progress from them.
+              </li>
+              <li>
+                Auto-ticks subtasks and logs to the Activity feed — no agent MCP
+                call needed.
+              </li>
+              <li>
+                Low-stakes and regenerable: it only fills in what an agent would
+                have logged anyway.
+              </li>
+              <li>
+                Never ticks <code>verify:</code> steps — those stay yours.
+              </li>
+            </ul>
 
-          <label
-            className={`ai-mode ${config.mode === "external" ? "selected" : ""}`}
-          >
-            <input
-              type="radio"
-              name="ai-mode"
-              checked={config.mode === "external"}
-              onChange={() => pickMode("external")}
-            />
-            <div>
-              <div className="ai-mode-title">My own local AI</div>
-              <div className="ai-mode-desc">
-                Use Ollama, LM Studio or any local server you already run.
-              </div>
-            </div>
-          </label>
-
-          <label
-            className={`ai-mode ${config.mode === "builtin" ? "selected" : ""}`}
-          >
-            <input
-              type="radio"
-              name="ai-mode"
-              checked={config.mode === "builtin"}
-              onChange={() => pickMode("builtin")}
-            />
-            <div>
-              <div className="ai-mode-title">Built-in engine</div>
-              <div className="ai-mode-desc">
-                Tildone runs its own model on port 11500 — it won't touch your
-                other AI apps.
-              </div>
-            </div>
-          </label>
-        </div>
-
-        {config.mode === "external" && (
-          <div className="ai-panel">
-            <div className="ai-panel-header">
-              <span>Detected on this computer</span>
-              <button className="btn small" disabled={probing} onClick={() => void probe()}>
-                {probing ? "Scanning…" : "Rescan"}
-              </button>
-            </div>
-
-            {detected.length === 0 && !probing && (
-              <p className="ai-hint">
-                Nothing found on the usual ports (11434, 1234, 8080). Start your
-                AI app, or enter its address below.
-              </p>
-            )}
-
-            {detected.map((server) => (
-              <div key={server.base_url}>
-                <label
-                  className={`ai-server ${config.baseUrl === server.base_url ? "selected" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name="ai-server"
-                    checked={config.baseUrl === server.base_url}
-                    onChange={() => pickServer(server.base_url, server.models)}
-                  />
-                  <span className="ai-server-name">{server.name}</span>
-                  <span className="ai-server-url">{server.base_url}</span>
-                  <span className="ai-server-count">
-                    {server.models.length} model{server.models.length === 1 ? "" : "s"}
-                  </span>
-                </label>
-                {config.baseUrl === server.base_url && server.models.length > 0 && (
-                  <label className="field ai-model-field">
-                    <span className="field-label">Model</span>
-                    <select
-                      value={config.model}
-                      onChange={(e) => setConfig({ model: e.target.value })}
-                    >
-                      {server.models.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-              </div>
-            ))}
-
-            {selected === undefined && config.baseUrl && (
-              <p className="ai-hint">
-                Currently set to {config.baseUrl} ({config.model || "no model"}).
-              </p>
-            )}
-
-            <div className="ai-custom">
+            <label className="ai-autostart ai-secretary-enable">
               <input
-                value={customUrl}
-                placeholder="Custom address, e.g. localhost:8080"
-                aria-label="Custom server address"
-                onChange={(e) => setCustomUrl(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && customUrl.trim() && void connectCustom()}
+                type="checkbox"
+                checked={config.secretaryEnabled}
+                onChange={(e) => setConfig({ secretaryEnabled: e.target.checked })}
               />
-              <button
-                className="btn"
-                disabled={!customUrl.trim() || customBusy}
-                onClick={() => void connectCustom()}
-              >
-                {customBusy ? "Connecting…" : "Connect"}
-              </button>
-            </div>
-          </div>
-        )}
+              Enable the board secretary
+            </label>
 
-        {config.mode === "builtin" && (
-          <div className="ai-panel">
-            <div className="ai-models">
-              {MODEL_TIERS.map((tier) => {
+            {/* The engine — the secretary's swappable model. Reachable here on
+                any chat mode; chat=built-in reuses whatever is running. */}
+            <div className="ai-engine">
+              <div className="ai-panel-header">
+                <span>Secretary engine</span>
+              </div>
+              <div className="ai-models">
+                {MODEL_TIERS.map((tier) => {
                 const onDisk = diskModels.find((m) => m.tier === tier.id);
                 const rec = ramBytes !== null && recommendedTier(ramBytes) === tier.id;
                 const lowRam = ramBytes !== null && tier.minRamGB > ramBytes / 1024 ** 3;
@@ -409,25 +323,10 @@ export function AISettings() {
               />
               Start the engine when Tildone opens
             </label>
-          </div>
-        )}
+            </div>
 
-        {aiReady(config) && (
-          <div className="ai-panel ai-secretary">
-            <label className="ai-autostart">
-              <input
-                type="checkbox"
-                checked={config.secretaryEnabled}
-                onChange={(e) => setConfig({ secretaryEnabled: e.target.checked })}
-              />
-              Board secretary — tick subtasks and log progress from working
-              sessions' transcripts
-            </label>
-            {config.secretaryEnabled && engine?.installed && config.mode === "external" && (
-              <p className="ai-hint">Runs on the built-in engine, not your chat model.</p>
-            )}
             {config.secretaryEnabled && (
-              <p className="ai-hint">
+              <p className="ai-hint ai-secretary-status">
                 {!secretary?.enabled
                   ? "Starting…"
                   : secretary.watching.length === 0
@@ -443,8 +342,149 @@ export function AISettings() {
                       }`}
               </p>
             )}
-          </div>
+          </section>
         )}
+
+        {/* Lane 2 — chat & AI features. Bring-your-own; follows the secretary. */}
+        <section className="ai-lane">
+          <h3 className="ai-lane-title">Chat &amp; AI features</h3>
+          <p className="ai-lane-sub">
+            Powers the “Test it” chat and any in-app AI replies. Pick where those
+            run.
+          </p>
+
+          <div className="ai-modes">
+            <label className={`ai-mode ${config.mode === "off" ? "selected" : ""}`}>
+              <input
+                type="radio"
+                name="ai-mode"
+                checked={config.mode === "off"}
+                onChange={() => pickMode("off")}
+              />
+              <div>
+                <div className="ai-mode-title">Off</div>
+                <div className="ai-mode-desc">No AI features.</div>
+              </div>
+            </label>
+
+            <label
+              className={`ai-mode ${config.mode === "external" ? "selected" : ""}`}
+            >
+              <input
+                type="radio"
+                name="ai-mode"
+                checked={config.mode === "external"}
+                onChange={() => pickMode("external")}
+              />
+              <div>
+                <div className="ai-mode-title">My own local AI</div>
+                <div className="ai-mode-desc">
+                  Use Ollama, LM Studio or any local server you already run.
+                </div>
+              </div>
+            </label>
+
+            <label
+              className={`ai-mode ${config.mode === "builtin" ? "selected" : ""}`}
+            >
+              <input
+                type="radio"
+                name="ai-mode"
+                checked={config.mode === "builtin"}
+                onChange={() => pickMode("builtin")}
+              />
+              <div>
+                <div className="ai-mode-title">Built-in engine</div>
+                <div className="ai-mode-desc">
+                  Reuse the secretary's own local model — no other AI app needed.
+                </div>
+              </div>
+            </label>
+          </div>
+
+          {config.mode === "external" && (
+            <div className="ai-panel">
+              <div className="ai-panel-header">
+                <span>Detected on this computer</span>
+                <button className="btn small" disabled={probing} onClick={() => void probe()}>
+                  {probing ? "Scanning…" : "Rescan"}
+                </button>
+              </div>
+
+              {detected.length === 0 && !probing && (
+                <p className="ai-hint">
+                  Nothing found on the usual ports (11434, 1234, 8080). Start your
+                  AI app, or enter its address below.
+                </p>
+              )}
+
+              {detected.map((server) => (
+                <div key={server.base_url}>
+                  <label
+                    className={`ai-server ${config.baseUrl === server.base_url ? "selected" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="ai-server"
+                      checked={config.baseUrl === server.base_url}
+                      onChange={() => pickServer(server.base_url, server.models)}
+                    />
+                    <span className="ai-server-name">{server.name}</span>
+                    <span className="ai-server-url">{server.base_url}</span>
+                    <span className="ai-server-count">
+                      {server.models.length} model{server.models.length === 1 ? "" : "s"}
+                    </span>
+                  </label>
+                  {config.baseUrl === server.base_url && server.models.length > 0 && (
+                    <label className="field ai-model-field">
+                      <span className="field-label">Model</span>
+                      <select
+                        value={config.model}
+                        onChange={(e) => setConfig({ model: e.target.value })}
+                      >
+                        {server.models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              ))}
+
+              {selected === undefined && config.baseUrl && (
+                <p className="ai-hint">
+                  Currently set to {config.baseUrl} ({config.model || "no model"}).
+                </p>
+              )}
+
+              <div className="ai-custom">
+                <input
+                  value={customUrl}
+                  placeholder="Custom address, e.g. localhost:8080"
+                  aria-label="Custom server address"
+                  onChange={(e) => setCustomUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && customUrl.trim() && void connectCustom()}
+                />
+                <button
+                  className="btn"
+                  disabled={!customUrl.trim() || customBusy}
+                  onClick={() => void connectCustom()}
+                >
+                  {customBusy ? "Connecting…" : "Connect"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {config.mode === "builtin" && (
+            <p className="ai-hint">
+              Chat replies use the secretary's built-in engine, managed above — no
+              separate model to set up.
+            </p>
+          )}
+        </section>
 
         {error && <p className="ai-error">{error}</p>}
         {testResult && (

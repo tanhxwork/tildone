@@ -1,4 +1,4 @@
-import { browser, $, expect } from "@wdio/globals";
+import { browser, $, $$, expect } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, appendFileSync, writeFileSync, rmSync } from "node:fs";
@@ -125,9 +125,17 @@ describe("board secretary", () => {
     // Connected: the server row appears selected with the model picked, and
     // the secretary section (aiReady) shows its toggle checked by default.
     await $(".ai-server.selected").waitForExist();
-    const toggle = $(".ai-secretary .ai-autostart input");
+    const toggle = $(".ai-secretary-enable input");
     await toggle.waitForExist();
     expect(await toggle.isSelected()).toBe(true);
+    // TIL-154: chat runs on the external stub, yet the Board secretary lane
+    // still owns the engine tier picker — reachable without switching chat to
+    // "Built-in engine". No engine is installed here, so the tiers render
+    // their Download affordance rather than Use/Stop.
+    await $(".ai-secretary .ai-models").waitForExist();
+    const tiers = await $$(".ai-secretary .ai-models .ai-model");
+    expect(tiers.length).toBeGreaterThan(0);
+    await $(".ai-secretary .ai-models .ai-model .ai-model-actions .btn").waitForExist();
     await $(".modal-footer button.btn.primary").click();
   });
 
@@ -228,7 +236,7 @@ describe("board secretary", () => {
 
   it("shows the watching status in AI settings", async () => {
     await $(".sidebar-footer button.nav-item").click();
-    const hint = $(".ai-secretary .ai-hint");
+    const hint = $(".ai-secretary-status");
     await hint.waitForExist();
     await browser.waitUntil(
       async () => (await hint.getText()).includes("Watching"),
