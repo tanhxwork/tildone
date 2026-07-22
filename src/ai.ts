@@ -144,6 +144,13 @@ interface AIStore {
   refreshSecretary: () => Promise<void>;
 }
 
+// Monotonic generation for syncSecretary: each call claims the next number,
+// and only the latest-numbered call may write the loop's config. syncSecretary
+// awaits an engine probe (and can await a ~60s engine start), so without this
+// an older, slower call could resume and clobber a newer intent — e.g. re-enable
+// the secretary after the user has just switched AI mode off (TIL-153 codex).
+let secretarySyncSeq = 0;
+
 export const useAI = create<AIStore>()((set, get) => ({
   config: loadConfig(),
   detected: [],
@@ -221,6 +228,10 @@ export const useAI = create<AIStore>()((set, get) => ({
     try {
       await invoke("engine_install", { model: get().config.engineModel });
       await get().refreshEngine();
+      // Installing the engine flips the secretary's routing from fallback to
+      // pinned — re-sync so it repoints (and starts the engine) now, not on
+      // the next unrelated config change or relaunch.
+      await get().syncSecretary();
     } finally {
       unlisten();
       set({ installing: false, progress: null });
@@ -259,6 +270,10 @@ export const useAI = create<AIStore>()((set, get) => ({
     await invoke("engine_delete", { file });
     await get().refreshModels();
     await get().refreshEngine();
+    // Deleting the selected tier's model flips routing from pinned back to
+    // fallback — re-sync so the secretary stops pointing at an engine that is
+    // no longer installed.
+    await get().syncSecretary();
   },
 
   useModel: async (id) => {
@@ -296,6 +311,7 @@ export const useAI = create<AIStore>()((set, get) => ({
   },
 
   syncSecretary: async () => {
+    const seq = ++secretarySyncSeq;
     const { config } = get();
     const enabled = config.secretaryEnabled && aiReady(config);
     // The secretary defaults to the built-in engine whenever it is installed
@@ -304,19 +320,22 @@ export const useAI = create<AIStore>()((set, get) => ({
     // follows the external server only as a fallback, when no engine is
     // installed (preserves the zero-engine path and the e2e stub).
     //
-    // Read fresh engine state: `engine` is null until something refreshes it,
-    // and a null status must fall back, not pin to a dead port. refreshEngine
-    // is a cheap idempotent status probe.
+    // Always probe fresh: `engine` may be null (never probed) OR stale from a
+    // previously-selected tier — setConfig kicks off refreshEngine and this
+    // sync without ordering them, so a cached hit for the *old* tier could
+    // otherwise pin a new, uninstalled tier to a dead port. engine_status is a
+    // cheap local probe against the tier in config.
+    await get().refreshEngine();
     let engine = get().engine;
-    if (!engine) {
-      await get().refreshEngine();
-      engine = get().engine;
-    }
     const pinBuiltin = !!engine?.installed;
     // Liveness: the secretary's need overrides `autoStart` — when it is
     // enabled and pinned to the engine, make sure the engine is running.
     // engine_start is idempotent against a healthy server on the port.
     if (enabled && pinBuiltin && !engine?.running) {
+      // A newer sync may have superseded this one during the probe above
+      // (e.g. the user just switched AI mode off) — don't start an engine the
+      // latest intent no longer wants.
+      if (seq !== secretarySyncSeq) return;
       try {
         await get().startEngine();
         engine = get().engine;
@@ -326,6 +345,10 @@ export const useAI = create<AIStore>()((set, get) => ({
         // model — configure the pinned endpoint anyway below.
       }
     }
+    // startEngine can await the native loader for up to a minute; a later sync
+    // (mode off, tier change) may have run to completion meanwhile. The latest
+    // intent wins — a stale sync must never overwrite it.
+    if (seq !== secretarySyncSeq) return;
     const port = engine?.port ?? 11500;
     try {
       await invoke("secretary_configure", {
