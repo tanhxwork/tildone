@@ -106,36 +106,42 @@ export function wipeDatabase(): void {
 const FIRST_RUN_DISMISSED = "tildone-first-run-dismissed";
 
 /**
- * Reset the webview's own state and re-mount the app on the empty database.
+ * Mutate localStorage, reload, and wait until the *loaded* app has re-mounted.
  *
- * localStorage is the *second* leakage channel and the one onPrepare cannot
- * reach: WKWebView keeps it outside the app-data directory, so the nav
- * selection, view mode and first-run dismissal survive not just spec files but
- * whole runs. Clearing it here is what lets the two hand-off after() hooks go.
+ * Shared by resetUiState() here and firstRun.spec.ts — the two need opposite
+ * localStorage edits (clear-and-pin vs. remove the dismissal) but the same
+ * hardened reload dance, and a copy in the spec had already drifted back into
+ * round 1's error-masking bug. One implementation, no divergence.
  *
- * The first-run dismissal is then set back deliberately rather than left
- * cleared. A truly empty localStorage means every spec file opens on the
- * first-run overlay, which would force all eight of them to carry a dismissal
- * dance in before(); pinning it dismissed gives every spec the same known
- * starting screen instead — Today, list view, no overlay.
+ * `prep` runs *in the browser* on the pre-reload document; its args are
+ * forwarded by browser.execute, so it must not close over anything (WDIO
+ * serializes the function source, not its scope).
+ *
+ * Two things this gets right that a naive reload does not:
+ *  - A sentinel global marks THIS document. A fresh document gets a fresh
+ *    global, so its *absence* is positive proof the navigation happened —
+ *    unlike "#root has a child", which is already true before the reload and
+ *    would let a poll racing the deferred navigation return having done nothing.
+ *  - It waits for `.app`, the loaded root, not merely any `#root` child. While
+ *    `loaded === false` the app renders `.app-loading` (which has children) and
+ *    FirstRun cannot mount yet (src/App.tsx) — so a poll satisfied by the
+ *    loading screen could run the caller's overlay check before onboarding has
+ *    even had its chance to render, passing vacuously. `.app` is a distinct
+ *    class token from `.app-loading`, present only once the store has loaded.
  */
-export async function resetUiState(): Promise<void> {
-  await browser.execute((dismissKey: string) => {
-    localStorage.clear();
-    localStorage.setItem(dismissKey, "1");
-    // Marks THIS document. It cannot survive a reload — a fresh document gets a
-    // fresh global — so its absence is positive proof the navigation happened,
-    // which "#root has children" is not: that is already true right now, before
-    // the reload, and a poll racing the deferred navigation below could
-    // otherwise satisfy itself against the pre-reload page and return having
-    // applied nothing at all.
+export async function remount(
+  prep: (...args: unknown[]) => void,
+  ...prepArgs: unknown[]
+): Promise<void> {
+  await browser.execute(prep, ...prepArgs);
+  await browser.execute(() => {
     (window as unknown as Record<string, unknown>).__tildoneAwaitingReload = true;
     // Deferred by a tick so the navigation starts *after* this command has
-    // returned its result. Reloading synchronously tears the document down
-    // while the WebDriver command is still in flight, which surfaces as an
-    // intermittent "target closed"-class error rather than a clean reload.
+    // returned. Reloading synchronously tears the document down while the
+    // WebDriver command is still in flight, which surfaces as an intermittent
+    // "target closed"-class error rather than a clean reload.
     setTimeout(() => location.reload(), 0);
-  }, FIRST_RUN_DISMISSED);
+  });
 
   let lastError: unknown = null;
   try {
@@ -148,7 +154,7 @@ export async function resetUiState(): Promise<void> {
             (await browser.execute(() => {
               const reloaded = !(window as unknown as Record<string, unknown>)
                 .__tildoneAwaitingReload;
-              return reloaded && !!document.querySelector("#root")?.firstElementChild;
+              return reloaded && !!document.querySelector(".app");
             })) === true
           );
         } catch (e) {
@@ -167,11 +173,34 @@ export async function resetUiState(): Promise<void> {
       `${String(e)}${lastError ? `\nLast error while polling: ${String(lastError)}` : ""}`,
     );
   }
+}
+
+/**
+ * Reset the webview's own state and re-mount the app on the empty database.
+ *
+ * localStorage is the *second* leakage channel and the one onPrepare cannot
+ * reach: WKWebView keeps it outside the app-data directory, so the nav
+ * selection, view mode and first-run dismissal survive not just spec files but
+ * whole runs. Clearing it here is what lets the two hand-off after() hooks go.
+ *
+ * The first-run dismissal is then set back deliberately rather than left
+ * cleared. A truly empty localStorage means every spec file opens on the
+ * first-run overlay, which would force all eight of them to carry a dismissal
+ * dance in before(); pinning it dismissed gives every spec the same known
+ * starting screen instead — Today, list view, no overlay.
+ */
+export async function resetUiState(): Promise<void> {
+  await remount((dismissKey: unknown) => {
+    localStorage.clear();
+    localStorage.setItem(dismissKey as string, "1");
+  }, FIRST_RUN_DISMISSED);
 
   // Prove the dismissal key actually suppressed onboarding. Every spec dropped
   // its own overlay-dismissal block on the strength of this, so if the constant
   // in FirstRun.tsx is renamed the specs must fail *here*, naming the cause,
-  // rather than eight files away with "element not found".
+  // rather than eight files away with "element not found". remount() has waited
+  // for `.app` (loaded), so the FirstRun render decision has already been made —
+  // this check no longer races the loading screen.
   if (await $(".firstrun-overlay").isExisting()) {
     throw new Error(
       `The first-run overlay is showing after the reset, so "${FIRST_RUN_DISMISSED}" is no ` +

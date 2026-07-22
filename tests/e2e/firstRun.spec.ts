@@ -1,4 +1,5 @@
 import { browser, $, expect } from "@wdio/globals";
+import { remount } from "./support/reset.js";
 
 /**
  * Onboarding coverage.
@@ -16,35 +17,12 @@ import { browser, $, expect } from "@wdio/globals";
  */
 const DISMISS_KEY = "tildone-first-run-dismissed";
 
-/** Drop the dismissal and re-mount, so the app boots as it does on a fresh install. */
-async function bootAsFirstRun(): Promise<void> {
-  await browser.execute((key: string) => {
-    localStorage.removeItem(key);
-    (window as unknown as Record<string, unknown>).__tildoneAwaitingReload = true;
-    setTimeout(() => location.reload(), 0);
-  }, DISMISS_KEY);
-
-  await browser.waitUntil(
-    async () => {
-      try {
-        return (
-          (await browser.execute(() => {
-            const reloaded = !(window as unknown as Record<string, unknown>)
-              .__tildoneAwaitingReload;
-            return reloaded && !!document.querySelector("#root")?.firstElementChild;
-          })) === true
-        );
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 20000, timeoutMsg: "app did not re-mount into the first-run state" },
-  );
-}
-
 describe("first run", () => {
   it("shows the onboarding overlay on a fresh install and dismisses it", async () => {
-    await bootAsFirstRun();
+    // Same hardened reload as the reset uses — deliberately shared, not copied,
+    // so this spec cannot drift back into the error-masking / loading-screen
+    // races that the shared helper fixes.
+    await remount((key: unknown) => localStorage.removeItem(key as string), DISMISS_KEY);
 
     const overlay = $(".firstrun-overlay");
     await overlay.waitForExist({ timeout: 10000 });
