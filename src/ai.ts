@@ -131,7 +131,7 @@ interface AIStore {
   probe: () => Promise<void>;
   identify: (baseUrl: string) => Promise<DetectedServer>;
   fetchRam: () => Promise<void>;
-  refreshEngine: () => Promise<void>;
+  refreshEngine: () => Promise<EngineStatus | null>;
   installEngine: () => Promise<void>;
   startEngine: () => Promise<void>;
   stopEngine: () => Promise<void>;
@@ -214,9 +214,15 @@ export const useAI = create<AIStore>()((set, get) => ({
   refreshEngine: async () => {
     try {
       const model = get().config.engineModel;
-      set({ engine: await invoke<EngineStatus>("engine_status", { model }) });
+      const engine = await invoke<EngineStatus>("engine_status", { model });
+      set({ engine });
+      return engine;
     } catch {
-      // status probe failing is not fatal; leave last known state
+      // Status probe failing is not fatal for the UI: leave the last-known
+      // status on the badge. Return null so callers that must NOT act on a
+      // possibly-stale (previous-tier) value — syncSecretary's pin decision —
+      // can fall back instead of reading the retained store state.
+      return null;
     }
   },
 
@@ -320,13 +326,15 @@ export const useAI = create<AIStore>()((set, get) => ({
     // follows the external server only as a fallback, when no engine is
     // installed (preserves the zero-engine path and the e2e stub).
     //
-    // Always probe fresh: `engine` may be null (never probed) OR stale from a
-    // previously-selected tier — setConfig kicks off refreshEngine and this
-    // sync without ordering them, so a cached hit for the *old* tier could
-    // otherwise pin a new, uninstalled tier to a dead port. engine_status is a
-    // cheap local probe against the tier in config.
-    await get().refreshEngine();
-    let engine = get().engine;
+    // Always probe fresh, and decide the pin from the probe's OWN result — not
+    // from the store. `engine` may be null (never probed) OR stale from a
+    // previously-selected tier (setConfig kicks off refreshEngine and this sync
+    // without ordering them), and refreshEngine deliberately leaves the stale
+    // value on the badge when a probe fails. Reading that retained value could
+    // pin a new, uninstalled tier to a dead port; a null return (never probed /
+    // probe failed) must fall back instead. engine_status is a cheap local probe
+    // against the tier in config.
+    let engine = await get().refreshEngine();
     const pinBuiltin = !!engine?.installed;
     // Liveness: the secretary's need overrides `autoStart` — when it is
     // enabled and pinned to the engine, make sure the engine is running.
