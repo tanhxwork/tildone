@@ -10,7 +10,14 @@ import { E2E_DB as DB, E2E_ATTACHMENTS as ATTACHMENTS } from "./support/dataDir.
  * with the engine stubbed: a Node HTTP server plays the OpenAI-shaped local
  * server, the spec seeds a claim + transcript exactly where the Rust loop
  * looks, and the assertions read the same DB the board renders. No real
- * model anywhere — the engine's judgment is canned, the plumbing is real. */
+ * model anywhere — the engine's judgment is canned, the plumbing is real.
+ *
+ * This is also the TIL-153 fallback guard: the e2e app has no built-in engine
+ * installed, so the secretary MUST follow the external server (this stub), not
+ * pin to the engine. If the builtin pin ever fired here it would route ticks
+ * at a dead 127.0.0.1:<engine port>, the stub would never be called, and the
+ * tick/log assertions below would time out. So these assertions passing IS the
+ * proof that the pin did not break the engine-less path. */
 
 // Same seeding channel as notesEmbed.spec.ts: the sqlite3 CLI is a second
 // connection to the same file, which is exactly what an external writer is.

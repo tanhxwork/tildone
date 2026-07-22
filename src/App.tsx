@@ -93,13 +93,15 @@ function App() {
   }, [init]);
 
   useEffect(() => {
-    // Warm the built-in engine on launch when the user opted in.
+    // Warm the built-in engine on launch when the user opted in for chat.
     const ai = useAI.getState();
     if (ai.config.mode === "builtin" && ai.config.autoStart) {
       ai.startEngine().catch(() => {});
     }
-    // Board secretary: the Rust loop starts parked; push the persisted
-    // config so it knows whether (and where) to run.
+    // Board secretary: the Rust loop starts parked; push the persisted config
+    // so it knows whether (and where) to run. When the secretary is pinned to
+    // the engine (installed), syncSecretary also starts it — so an
+    // engine-backed secretary comes up on launch even with autoStart off.
     void ai.syncSecretary();
   }, []);
 

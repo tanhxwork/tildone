@@ -298,16 +298,41 @@ export const useAI = create<AIStore>()((set, get) => ({
   syncSecretary: async () => {
     const { config } = get();
     const enabled = config.secretaryEnabled && aiReady(config);
-    // Mirror chat()'s routing exactly, so the secretary talks to the same
-    // server the visible AI features do.
-    const builtin = config.mode === "builtin";
-    const port = get().engine?.port ?? 11500;
+    // The secretary defaults to the built-in engine whenever it is installed
+    // for the selected tier — a near-multiple-choice task should not ride a
+    // heavy external model just because chat points at one (TIL-153). It
+    // follows the external server only as a fallback, when no engine is
+    // installed (preserves the zero-engine path and the e2e stub).
+    //
+    // Read fresh engine state: `engine` is null until something refreshes it,
+    // and a null status must fall back, not pin to a dead port. refreshEngine
+    // is a cheap idempotent status probe.
+    let engine = get().engine;
+    if (!engine) {
+      await get().refreshEngine();
+      engine = get().engine;
+    }
+    const pinBuiltin = !!engine?.installed;
+    // Liveness: the secretary's need overrides `autoStart` — when it is
+    // enabled and pinned to the engine, make sure the engine is running.
+    // engine_start is idempotent against a healthy server on the port.
+    if (enabled && pinBuiltin && !engine?.running) {
+      try {
+        await get().startEngine();
+        engine = get().engine;
+      } catch {
+        // Frozen-lane degraded state: the badge breathes, the backlog drains
+        // when the engine returns. Never silently fall back to a different
+        // model — configure the pinned endpoint anyway below.
+      }
+    }
+    const port = engine?.port ?? 11500;
     try {
       await invoke("secretary_configure", {
         enabled,
-        baseUrl: builtin ? `http://127.0.0.1:${port}` : config.baseUrl,
-        model: builtin ? "local" : config.model,
-        disableThinking: builtin,
+        baseUrl: pinBuiltin ? `http://127.0.0.1:${port}` : config.baseUrl,
+        model: pinBuiltin ? "local" : config.model,
+        disableThinking: pinBuiltin,
       });
     } catch {
       // The loop keeps its previous config; the next sync retries.

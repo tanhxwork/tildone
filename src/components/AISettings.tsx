@@ -423,6 +423,9 @@ export function AISettings() {
               Board secretary — tick subtasks and log progress from working
               sessions' transcripts
             </label>
+            {config.secretaryEnabled && engine?.installed && config.mode === "external" && (
+              <p className="ai-hint">Runs on the built-in engine, not your chat model.</p>
+            )}
             {config.secretaryEnabled && (
               <p className="ai-hint">
                 {!secretary?.enabled
