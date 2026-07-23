@@ -332,6 +332,11 @@ function App() {
 
   const paneOpen = paneTarget !== null && !paneFullscreen && !paneCollapsed;
   const railVisible = paneOpen && !paneRailCollapsed;
+  // Any non-collapsed pane (rail, focus, OR fullscreen) covers the board, so the
+  // quick-add has nothing to add to on screen — hide it in all three, show it
+  // only when the pane is collapsed or absent. (paneOpen excludes fullscreen,
+  // where QuickAdd would otherwise stay mounted behind the pane — Codex TIL-159.)
+  const paneActive = paneTarget !== null && !paneCollapsed;
 
   let content;
   if (railVisible) {
@@ -360,7 +365,7 @@ function App() {
       <Sidebar />
       <main className="main">
         <Header searchRef={searchRef} />
-        {!paneOpen && (!isPage || selection.type === "week") && (
+        {!paneActive && (!isPage || selection.type === "week") && (
           <QuickAdd inputRef={quickAddRef} />
         )}
         <div className="content">{content}</div>

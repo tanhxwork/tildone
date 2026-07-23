@@ -155,7 +155,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
         )}
       </div>
 
-      {!isPage && activeTags.length > 0 && (
+      {!isPage && !railActive && activeTags.length > 0 && (
         <div className="active-filters">
           <span className="filters-label">Filtered by</span>
           {activeTags.map((tag) => (
