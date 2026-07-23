@@ -4,11 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "overrides": {
-    "@wdio/native-utils": "2.5.0"
+    "@wdio/native-utils": "2.5.0",
+    "vite": "npm:rolldown-vite@^7"
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "oxlint src && tsc && vite build",
+    "lint": "oxlint src",
+    "lint:strict": "oxlint src --deny-warnings",
+    "check:fast": "tsgo --noEmit",
     "test": "bun test",
     "preview": "vite preview",
     "tauri": "./scripts/tauri.sh",
@@ -43,14 +47,19 @@
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "@vitejs/plugin-react-swc": "^4.3.2",
     "@wdio/cli": "^9.29.1",
     "@wdio/local-runner": "^9.29.1",
     "@wdio/mocha-framework": "^9.29.1",
     "@wdio/spec-reporter": "^9.29.1",
     "@wdio/tauri-plugin": "^1.2.0",
     "@wdio/tauri-service": "^1.2.0",
+    "oxlint": "^1.75.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
-  }
+  },
+  "trustedDependencies": [
+    "@swc/core"
+  ]
 }
