@@ -52,6 +52,10 @@ describe("session context rail", () => {
     await $(".task-title*=Rail target task").waitForExist();
     const ref = await $(".task-id").getText();
 
+    // Board view, so the collapse-shows-full-board check below has columns to
+    // count. The toggle is only reachable now, before the pane hides the chrome.
+    await $('button[aria-label="Board view"]').click();
+
     // Open an UNBOUND shell: the middle becomes the minimal (no-card-yet) rail,
     // never the board and never an error.
     await spawnShell("/tmp");
@@ -109,6 +113,14 @@ describe("session context rail", () => {
     await browser.keys(["Meta", "Shift", "t"]); // collapse → original board
     await expect($(".session-pane-peek")).toBeExisting();
     await expect($(".quick-add")).toBeExisting();
+    // The collapsed board is the FULL board — all three status columns, not the
+    // single narrowed column of the parked session's card (TIL-159 follow-up:
+    // the pane-focus narrowing must not survive into the docked-rail state).
+    await expect($(".board")).not.toHaveElementClass("pane-focus");
+    const cols = await $$(".board-column");
+    let shown = 0;
+    for (const c of cols) if (await c.isDisplayed()) shown += 1;
+    expect(shown).toBe(3);
     await browser.keys(["Meta", "Shift", "t"]); // reopen for the rest
     await expect($(".session-pane-peek")).not.toBeExisting();
 

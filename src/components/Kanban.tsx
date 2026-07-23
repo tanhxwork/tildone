@@ -120,7 +120,11 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
 }
 
 export function Kanban() {
-  const paneOpenTaskId = usePaneStore((s) => s.target?.taskId ?? null);
+  // Only narrow the board to the attached card's column while the terminal is
+  // actually taking horizontal space. A collapsed pane is just the slim docked
+  // rail, so the middle shows the original full board — all three columns, not
+  // only the parked session's column (TIL-159 follow-up).
+  const paneOpenTaskId = usePaneStore((s) => (s.collapsed ? null : (s.target?.taskId ?? null)));
   const {
     tasks,
     tags,
