@@ -276,6 +276,14 @@ export function SessionPane() {
       term.dispose();
       termRef.current = null;
     };
+    // sessionId is the pane's stable identity (claim UUID for attach,
+    // `hosted-<id>` for hosted): kind/shortId/hostId are fixed for a given
+    // sessionId, so they never need to retrigger this. Depending on the whole
+    // `target` would tear the terminal down and re-attach whenever an
+    // identity-irrelevant field changes (name/taskRef/taskId flip on
+    // bind-on-claim), losing the live session — exactly what this one-attach-
+    // per-session effect must not do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.sessionId]);
 
   // Re-click on the same card, or fullscreen/width changes: hand focus back
@@ -321,6 +329,10 @@ export function SessionPane() {
     document
       .querySelector(`[data-task-id="${target.taskId}"]`)
       ?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    // Only the bound card changing should re-scroll; keying on the whole
+    // `target` would re-run (and re-animate the smooth scroll) on every
+    // unrelated target field change while pointing at the same card.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.taskId]);
 
   if (!target) return null;
