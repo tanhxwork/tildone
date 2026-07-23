@@ -60,8 +60,12 @@ describe("terminal divider — show/hide handle", () => {
     const peek = $(".session-pane-peek");
     await expect(peek).toBeExisting();
     await expect(peek).toHaveAttribute("aria-expanded", "false");
-    // Task strip reclaims the width, reserving only the slim docked-rail footprint.
-    expect(await paneInset()).toBe("34px");
+    // The board reclaims the FULL width on collapse: the reopen control is a
+    // compact tab floating over the right edge (TIL-159/160, made a floating
+    // tab in 964f73e/e41dfe6), so it reserves no gutter — inset is 0px, not the
+    // old 34px docked-rail footprint. (This assertion had gone stale against
+    // that redesign and was failing on main; TIL-166.)
+    expect(await paneInset()).toBe("0px");
     // The pane actually slides off the right edge (not just reclassed): once
     // the 340ms transition settles, its left edge has cleared the viewport.
     // A single post-settle check, not a polled waitUntil, avoids the WebDriver
