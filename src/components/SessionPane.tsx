@@ -213,7 +213,9 @@ export function SessionPane() {
         }).catch(() => {});
       });
       if (bodyRef.current) observer.observe(bodyRef.current);
-      term.focus();
+      // A slow attach can resolve after the pane was collapsed; don't yank
+      // focus back into the hidden pane when it does.
+      if (!usePaneStore.getState().collapsed) term.focus();
     };
     const turn = openQueue;
     openQueue = (async () => {
@@ -237,10 +239,10 @@ export function SessionPane() {
   // Re-click on the same card, or fullscreen/width changes: hand focus back
   // to the terminal so typing continues without a click.
   useEffect(() => {
-    if (collapsed) {
-      // Don't strand focus inside the hidden, aria-hidden pane: that keeps
+    if (collapsed && !fullscreen) {
+      // Don't strand focus inside the hidden, inert pane: that keeps
       // paneHasFocus() true (swallowing board shortcuts) and traps keyboard
-      // focus in aria-hidden content. Hand it to the peek tab — the reopen
+      // focus in hidden content. Hand it to the peek tab — the reopen
       // control, which is rendered by the time this effect runs.
       termRef.current?.blur();
       document.querySelector<HTMLElement>(".session-pane-peek")?.focus();
@@ -330,6 +332,9 @@ export function SessionPane() {
         style={fullscreen ? undefined : { width: `${widthFraction * 100}%` }}
         aria-label="Attached session terminal"
         aria-hidden={collapsed && !fullscreen}
+        // inert removes the hidden pane from the tab order and blocks
+        // interaction — aria-hidden alone leaves its buttons/xterm tabbable.
+        inert={collapsed && !fullscreen}
         onKeyDown={onPaneKeyDown}
       >
         {!fullscreen && (

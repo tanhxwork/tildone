@@ -247,14 +247,17 @@ function App() {
   // Inert unless a session is open.
   useEffect(() => {
     function onToggleKey(e: KeyboardEvent) {
-      // Cmd only (macOS-native, per spec) — not Ctrl. The capture phase means
-      // this fires while the terminal is focused, so accepting Ctrl+Shift+T
-      // here would rob that chord from the TUI.
-      if (e.metaKey && !e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "t") {
-        if (!usePaneStore.getState().target) return;
+      // Exactly Cmd+Shift+T (macOS-native, per spec) — not Ctrl, not Option.
+      // The capture phase means this fires while the terminal is focused, so a
+      // looser match would rob a chord (Ctrl/Opt+Shift+T) from the TUI.
+      if (e.metaKey && !e.ctrlKey && !e.altKey && e.shiftKey && e.key.toLowerCase() === "t") {
+        const s = usePaneStore.getState();
+        // No session open, or fullscreen (where collapse has no UI and would
+        // strand a latent collapsed state) → leave the chord alone.
+        if (!s.target || s.fullscreen) return;
         e.preventDefault();
         e.stopPropagation();
-        usePaneStore.getState().toggleCollapsed();
+        s.toggleCollapsed();
       }
     }
     window.addEventListener("keydown", onToggleKey, { capture: true });

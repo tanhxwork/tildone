@@ -55,6 +55,8 @@ describe("terminal divider — show/hide handle", () => {
     await toggle.click();
     await expect(pane).toHaveElementClass("session-pane--collapsed");
     await expect(pane).toHaveAttribute("aria-hidden", "true");
+    // inert keeps the hidden pane's buttons/terminal out of the tab order.
+    await expect(pane).toHaveAttribute("inert");
     const peek = $(".session-pane-peek");
     await expect(peek).toBeExisting();
     await expect(peek).toHaveAttribute("aria-expanded", "false");
@@ -90,8 +92,11 @@ describe("terminal divider — show/hide handle", () => {
     await browser.keys(["Meta", "Shift", "t"]);
     await expect(pane).not.toHaveElementClass("session-pane--collapsed");
 
-    // Ctrl+Shift+T is NOT the toggle (Cmd only) — it must be left for the TUI.
+    // Neither Ctrl+Shift+T nor Option+Cmd+Shift+T is the toggle (exactly
+    // Cmd+Shift+T) — those chords must be left for the TUI.
     await browser.keys(["Control", "Shift", "t"]);
+    await expect(pane).not.toHaveElementClass("session-pane--collapsed");
+    await browser.keys(["Alt", "Meta", "Shift", "t"]);
     await expect(pane).not.toHaveElementClass("session-pane--collapsed");
 
     // Teardown: don't leave a live pty behind the next spec.
