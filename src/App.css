@@ -5793,6 +5793,119 @@ textarea:focus-visible,
   border: 1.5px solid var(--danger);
 }
 
+/* The sidebar Sessions row's status + close, scoped to .sess-row so the pane
+   tabs and context rail keep their own dot treatment. The tail is a fixed
+   two-slot strip at the right edge: the status dot rests in the right slot;
+   on hover it slides into the left slot (pushed inward) and the close (X)
+   eases in from the right into the slot it vacated. Both animate transform /
+   opacity only — no layout thrash. */
+.sess-tail {
+  flex: none;
+  margin-left: auto;
+  position: relative;
+  width: 36px;
+  height: 18px;
+}
+.sess-tail .sess-dot {
+  margin: 0;
+}
+.sess-status {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  transition: transform 160ms ease;
+}
+.sess-row:hover .sess-status,
+.sess-row:focus-within .sess-status {
+  transform: translateX(-18px);
+}
+.sess-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(8px);
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 160ms ease,
+    background 120ms ease,
+    color 120ms ease;
+}
+.sess-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.sess-row:hover .sess-close,
+.sess-row:focus-within .sess-close {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* Running: a soft breathing pulse — the busy signal the flat grey dot never
+   gave. Idle: a calm hollow ring, present but at rest. Exited keeps the
+   shared red ring. Sidebar-scoped so tabs/rail are untouched. */
+.sess-row .sess-dot--quiet {
+  background: var(--success);
+  animation: sess-pulse 1.8s ease-out infinite;
+}
+@keyframes sess-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 50%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent);
+  }
+}
+.sess-row .sess-dot--waiting {
+  width: 8px;
+  height: 8px;
+  background: transparent;
+  border: 1.5px solid var(--text-faint);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sess-row .sess-dot--quiet {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent);
+  }
+  /* No slide: the dot fades out and the X fades in over the same slot. */
+  .sess-status,
+  .sess-close {
+    transition:
+      opacity 120ms ease,
+      background 120ms ease,
+      color 120ms ease;
+  }
+  .sess-row:hover .sess-status,
+  .sess-row:focus-within .sess-status {
+    transform: none;
+    opacity: 0;
+  }
+  .sess-close {
+    transform: none;
+  }
+}
+
 /* The unbound lifecycle, inline under the row — never a modal, never a
    notification. remind = the quiet hint; expire-soon adds the two actions. */
 .sess-hint {

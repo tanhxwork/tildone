@@ -95,7 +95,10 @@ export function SessionsSection() {
     void refresh();
   }
 
-  async function dismiss(s: HostSession) {
+  /** Close (kill) the session — a live CLI we own is terminated, an exited row
+   *  is dismissed. One host_kill covers both: killing an already-dead session
+   *  just removes its row. The sidebar X and the exited-row dismiss share it. */
+  async function closeSession(s: HostSession) {
     await invoke("host_kill", { sessionId: s.id }).catch(() => {});
     void refresh();
   }
@@ -129,20 +132,24 @@ export function SessionsSection() {
                 {m.label}
                 {m.sublabel && <small>{m.sublabel}</small>}
               </span>
-              {s.exited && (
+              {/* Status dot at rest; on hover it slides inward and the close
+                  (X) eases in from the right to take the far-right slot. */}
+              <span className="sess-tail">
                 <button
-                  className="icon-btn row-action"
-                  aria-label="Dismiss exited session"
-                  title="Dismiss"
+                  className="sess-close"
+                  aria-label={s.exited ? "Dismiss exited session" : "Close session"}
+                  title={s.exited ? "Dismiss" : "Close session"}
                   onClick={(e) => {
                     e.stopPropagation();
-                    void dismiss(s);
+                    void closeSession(s);
                   }}
                 >
                   <IconX size={12} />
                 </button>
-              )}
-              <span className={`sess-dot sess-dot--${m.state}`} />
+                <span className="sess-status">
+                  <span className={`sess-dot sess-dot--${m.state}`} />
+                </span>
+              </span>
             </div>
             {m.unbound?.kind === "remind" && <div className="sess-hint">no card yet</div>}
             {m.unbound?.kind === "expire-soon" && (

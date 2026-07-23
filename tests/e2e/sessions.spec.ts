@@ -88,4 +88,61 @@ describe("hosted sessions — shell escape hatch", () => {
     // Teardown: don't leave a live pty behind the next spec.
     await invoke("host_kill", { sessionId: shell!.id });
   });
+
+  it("reveals the close X on hover and kills the session when clicked", async () => {
+    await $("#root").waitForExist();
+
+    // Clean slate so exactly one row exists and the selectors are unambiguous,
+    // whatever the prior specs left behind.
+    for (const s of await invoke<HostSession[]>("host_list")) {
+      await invoke("host_kill", { sessionId: s.id });
+    }
+    await browser.waitUntil(async () => (await invoke<HostSession[]>("host_list")).length === 0, {
+      timeout: 5000,
+      timeoutMsg: "sessions did not drain",
+    });
+
+    // Spawn one live shell from the sidebar +.
+    await $('button[aria-label="New session"]').click();
+    await $(".sess-new").waitForExist();
+    await $(".sess-new-cwd").setValue("/tmp");
+    const shellAdapter = $(".sess-new-adapter*=Shell");
+    await shellAdapter.waitForExist();
+    await shellAdapter.click();
+
+    const row = $(".sess-row");
+    await row.waitForExist();
+    const close = $(".sess-close");
+    await close.waitForExist();
+
+    // At rest the close control is hidden (opacity 0). The reveal fires on
+    // `:hover, :focus-within`; WebDriver's synthetic moveTo can't drive CSS
+    // :hover in this webview (real mouse hover works for users), so assert the
+    // reveal through the shared focus-within path — same declarations, and it
+    // exercises the keyboard-a11y route too.
+    const opacityOf = () =>
+      browser.execute(() => {
+        const el = document.querySelector(".sess-close");
+        return el ? getComputedStyle(el).opacity : null;
+      });
+    await expect(await opacityOf()).toBe("0");
+    mkdirSync("./tests/e2e/artifacts", { recursive: true });
+    await browser.saveScreenshot("./tests/e2e/artifacts/session-row-rest.png");
+    await browser.execute(() => (document.querySelector(".sess-close") as HTMLElement | null)?.focus());
+    await browser.waitUntil(async () => (await opacityOf()) === "1", {
+      timeout: 2000,
+      timeoutMsg: "close X did not reveal on focus-within",
+    });
+    await browser.saveScreenshot("./tests/e2e/artifacts/session-row-reveal.png");
+
+    // Clicking it kills the live shell (host_kill) and the row disappears.
+    const before = await invoke<HostSession[]>("host_list");
+    expect(before.some((s) => s.adapter_id === "shell" && !s.exited)).toBe(true);
+    await close.click();
+    await browser.waitUntil(
+      async () => (await invoke<HostSession[]>("host_list")).every((s) => s.exited),
+      { timeout: 5000, timeoutMsg: "the shell was not killed by the close X" },
+    );
+    await expect($(".sess-row")).not.toBeExisting();
+  });
 });
