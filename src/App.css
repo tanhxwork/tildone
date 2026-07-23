@@ -5138,41 +5138,43 @@ textarea:focus-visible,
   color: var(--accent-contrast);
 }
 
-/* Collapsed state's reopen control: a vertical tab pinned to the window edge,
-   labelled with the session's card ref so it is never a mystery panel. */
-/* Docked session rail: the collapsed-terminal reopen control. Flush on the
-   surface layer with a hairline — no pop shadow — so it belongs to the window
-   edge instead of floating off it. Carries the parked session's status dot and
-   ref (spec 2026-07-23-session-context-rail, replacing the floating peek tab). */
+/* Collapsed state's reopen control: a compact tab sized to its content and
+   vertically centered on the window's right edge — NOT a full-height rail
+   (the rail spanned the whole height and reserved a gutter; the board now
+   reclaims that width and this tab floats over the edge). It mirrors the
+   expanded-state collapse handle (.session-pane-toggle, top:50%): a floating
+   card with a hairline and card shadow, carrying the parked session's status
+   dot + ref + chevron so it is never a mystery panel. */
 .session-pane-peek {
   position: fixed;
-  top: 0;
-  bottom: 0;
+  top: 50%;
   right: 0;
-  transform: none;
-  width: 34px;
+  transform: translateY(-50%);
+  width: 30px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 14px 0;
-  border: none;
-  border-left: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg-sidebar);
-  box-shadow: none;
+  padding: 12px 0;
+  border: 1px solid var(--border-strong);
+  border-right: none;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
   color: var(--text-muted);
   cursor: pointer;
   z-index: 41;
   transition:
     color 150ms,
-    background 150ms;
+    background 150ms,
+    border-color 150ms;
 }
 
 .session-pane-peek:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .session-pane-peek .sess-dot {

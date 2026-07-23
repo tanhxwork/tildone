@@ -301,9 +301,10 @@ export function SessionPane() {
     if (target && !fullscreen && !collapsed && !railCollapsed) {
       root.style.setProperty("--pane-inset", `${widthFraction * 100}vw`);
     } else if (target && collapsed && !fullscreen) {
-      // Collapsed: the task column reclaims the width, reserving only the
-      // slim docked-rail footprint (keep in sync with .session-pane-peek).
-      root.style.setProperty("--pane-inset", "34px");
+      // Collapsed: the board reclaims the full width. The reopen control is a
+      // compact tab floating over the right edge (not a full-height rail), so
+      // it reserves no gutter.
+      root.style.setProperty("--pane-inset", "0px");
     } else {
       // Focus mode (rail collapsed) covers the content with the widened
       // terminal, and fullscreen covers everything — either way the board
