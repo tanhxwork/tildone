@@ -60,8 +60,8 @@ describe("terminal divider — show/hide handle", () => {
     const peek = $(".session-pane-peek");
     await expect(peek).toBeExisting();
     await expect(peek).toHaveAttribute("aria-expanded", "false");
-    // Task strip reclaims the width, reserving only the slim tab's footprint.
-    expect(await paneInset()).toBe("30px");
+    // Task strip reclaims the width, reserving only the slim docked-rail footprint.
+    expect(await paneInset()).toBe("34px");
     // The pane actually slides off the right edge (not just reclassed): once
     // the 340ms transition settles, its left edge has cleared the viewport.
     // A single post-settle check, not a polled waitUntil, avoids the WebDriver

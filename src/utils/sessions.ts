@@ -78,3 +78,75 @@ export function sessionRowModel(s: SessionLike): SessionRowModel {
     unbound,
   };
 }
+
+// The session switcher (spec 2026-07-23-session-context-rail). The pane stays
+// single — one visible terminal — but the switcher makes re-targeting it
+// visible: every live session as a tab/roster entry, clicking one hands the
+// one pane to that session (the existing openPane re-attach + buffer replay).
+// Kept pure here so the list model — order, active-marking, the foreign attach
+// entry, and ⌘[/⌘] cycling — is unit-testable, same seam as sessionRowModel.
+
+/** A hosted session carrying the id the pane target keys on. */
+export interface SwitchableSession extends SessionLike {
+  id: number;
+}
+
+/** One entry in the switcher (a terminal tab and a roster row are the same
+ *  model, rendered twice). */
+export interface SwitchTab {
+  /** Matches PaneTarget.sessionId — `hosted-<id>` for hosted sessions, the
+   *  claim UUID for a foreign attach session. */
+  sessionId: string;
+  /** Primary label: the card ref, else the typed hint, else the CLI name. */
+  label: string;
+  ref: string | null;
+  state: SessionState;
+  active: boolean;
+}
+
+/** The switcher list: every hosted session in the given order, marking the
+ *  active one — plus the active attach target prepended when it isn't itself
+ *  a hosted session (a foreign `claude attach` session lives in no store, so
+ *  it can only ride in from the open pane's own target). */
+export function switcherSessions(
+  sessions: SwitchableSession[],
+  activeSessionId: string | null,
+  activeAttach?: { sessionId: string; ref: string | null } | null,
+): SwitchTab[] {
+  const tabs: SwitchTab[] = sessions.map((s) => {
+    const sessionId = `hosted-${s.id}`;
+    const m = sessionRowModel(s);
+    return {
+      sessionId,
+      label: m.label,
+      ref: s.task_ref,
+      state: m.state,
+      active: sessionId === activeSessionId,
+    };
+  });
+  if (activeAttach && !tabs.some((t) => t.sessionId === activeAttach.sessionId)) {
+    tabs.unshift({
+      sessionId: activeAttach.sessionId,
+      label: activeAttach.ref ?? "session",
+      ref: activeAttach.ref,
+      state: "quiet",
+      active: activeAttach.sessionId === activeSessionId,
+    });
+  }
+  return tabs;
+}
+
+/** The session ⌘[ / ⌘] should switch to: the neighbour of the active tab,
+ *  wrapping. Returns null when there is nothing else to switch to (0 or 1
+ *  tabs). dir +1 = next, −1 = previous. A missing active falls to the first. */
+export function nextSessionId(
+  tabs: SwitchTab[],
+  activeSessionId: string | null,
+  dir: 1 | -1,
+): string | null {
+  if (tabs.length < 2) return null;
+  const idx = tabs.findIndex((t) => t.sessionId === activeSessionId);
+  if (idx === -1) return tabs[0].sessionId;
+  const next = (idx + dir + tabs.length) % tabs.length;
+  return tabs[next].sessionId;
+}

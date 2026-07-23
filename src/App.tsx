@@ -20,12 +20,15 @@ import { Sidebar } from "./components/Sidebar";
 import { TableView } from "./components/TableView";
 import { TagManager } from "./components/TagManager";
 import { SessionPane } from "./components/SessionPane";
+import { SessionContextRail } from "./components/SessionContextRail";
+import { switchToSession } from "./components/useSwitcher";
+import { switcherSessions, nextSessionId } from "./utils/sessions";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
 import { QuitWarning } from "./components/QuitWarning";
 import { initArtifactStore } from "./artifactStore";
-import { initHostStore } from "./hostStore";
+import { initHostStore, useHostStore } from "./hostStore";
 import { paneHasFocus, usePaneStore } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
@@ -83,6 +86,13 @@ function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const quickAddRef = useRef<HTMLInputElement>(null);
   const [firstRunDone, setFirstRunDone] = useState(firstRunDismissed);
+  // The docked session pane drives the middle column: an open terminal turns
+  // the board strip into the context rail, and focus mode widens the terminal
+  // over it (spec 2026-07-23-session-context-rail).
+  const paneTarget = usePaneStore((s) => s.target);
+  const paneFullscreen = usePaneStore((s) => s.fullscreen);
+  const paneCollapsed = usePaneStore((s) => s.collapsed);
+  const paneRailCollapsed = usePaneStore((s) => s.railCollapsed);
 
   // One app-wide listener for native OS file drops; individual surfaces opt in
   // with useDropTarget (see src/fileDrop.ts for why it can't be per-element).
@@ -264,6 +274,39 @@ function App() {
     return () => window.removeEventListener("keydown", onToggleKey, { capture: true });
   }, []);
 
+  // ⌘[ / ⌘] cycle the active session (spec 2026-07-23-session-context-rail).
+  // Capture phase, same reasoning as ⇧⌘T — the terminal holds focus while you
+  // switch. Inert unless a pane is open, and never stolen from a text field
+  // elsewhere in the app (a pane-focused terminal is fair game).
+  useEffect(() => {
+    function onCycleKey(e: KeyboardEvent) {
+      if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.key !== "[" && e.key !== "]") return;
+      const st = usePaneStore.getState();
+      if (!st.target) return;
+      const el = document.activeElement as HTMLElement | null;
+      const inField =
+        el != null && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (inField && !paneHasFocus()) return;
+      const activeAttach =
+        st.target.kind === "attach"
+          ? { sessionId: st.target.sessionId, ref: st.target.taskRef }
+          : null;
+      const tabs = switcherSessions(
+        useHostStore.getState().sessions,
+        st.target.sessionId,
+        activeAttach,
+      );
+      const next = nextSessionId(tabs, st.target.sessionId, e.key === "]" ? 1 : -1);
+      if (!next || next === st.target.sessionId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      switchToSession(next);
+    }
+    window.addEventListener("keydown", onCycleKey, { capture: true });
+    return () => window.removeEventListener("keydown", onCycleKey, { capture: true });
+  }, []);
+
   if (!loaded) {
     return (
       <div className="app-loading">
@@ -287,8 +330,16 @@ function App() {
   const isPage = isPageSelection(selection);
   const showFirstRun = !firstRunDone && projects.length === 0 && tasks.length === 0;
 
+  const paneOpen = paneTarget !== null && !paneFullscreen && !paneCollapsed;
+  const railVisible = paneOpen && !paneRailCollapsed;
+
   let content;
-  if (selection.type === "week") {
+  if (railVisible) {
+    content = <SessionContextRail />;
+  } else if (paneOpen) {
+    // Focus mode: the widened terminal fills the board strip; render nothing behind it.
+    content = null;
+  } else if (selection.type === "week") {
     content = <WeekView />;
   } else if (selection.type === "review") {
     content = <ReviewView />;

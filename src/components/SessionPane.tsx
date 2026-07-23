@@ -23,7 +23,16 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { usePaneStore } from "../paneStore";
 import { useHostStore } from "../hostStore";
-import { IconTerminal, IconX, IconMaximize, IconChevronRight, IconChevronLeft } from "./Icons";
+import {
+  IconTerminal,
+  IconX,
+  IconMaximize,
+  IconColumns,
+  IconChevronRight,
+  IconChevronLeft,
+} from "./Icons";
+import { useSwitcherTabs, switchToSession } from "./useSwitcher";
+import { sessionRowModel } from "../utils/sessions";
 
 interface PtyEvent {
   generation: number;
@@ -49,10 +58,13 @@ export function SessionPane() {
   const widthFraction = usePaneStore((s) => s.widthFraction);
   const fullscreen = usePaneStore((s) => s.fullscreen);
   const collapsed = usePaneStore((s) => s.collapsed);
+  const railCollapsed = usePaneStore((s) => s.railCollapsed);
   const focusNonce = usePaneStore((s) => s.focusNonce);
   const closePane = usePaneStore((s) => s.closePane);
   const toggleFullscreen = usePaneStore((s) => s.toggleFullscreen);
   const toggleCollapsed = usePaneStore((s) => s.toggleCollapsed);
+  const toggleRailCollapsed = usePaneStore((s) => s.toggleRailCollapsed);
+  const tabs = useSwitcherTabs();
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -61,10 +73,14 @@ export function SessionPane() {
   // unbound session that binds-on-claim while the pane is up gains its card
   // ref here without a re-open (spec 2026-07-20).
   const hostSessions = useHostStore((s) => s.sessions);
+  const liveHostSession =
+    target?.kind === "hosted" ? hostSessions.find((s) => s.id === target.hostId) : null;
   const liveRef =
     target?.kind === "hosted"
-      ? (hostSessions.find((s) => s.id === target.hostId)?.task_ref ?? target.taskRef)
+      ? (liveHostSession?.task_ref ?? target.taskRef)
       : (target?.taskRef ?? null);
+  // The docked-rail status dot reads the same state as the sidebar row.
+  const liveState = liveHostSession ? sessionRowModel(liveHostSession).state : "quiet";
 
   // One attach per (session, mount). The effect tears the whole terminal
   // down on session change or close — never reuse an xterm across sessions.
@@ -256,19 +272,22 @@ export function SessionPane() {
   // pane) and a vertical scroll to center the card in its now-solo column.
   useEffect(() => {
     const root = document.documentElement;
-    if (target && !fullscreen && !collapsed) {
+    if (target && !fullscreen && !collapsed && !railCollapsed) {
       root.style.setProperty("--pane-inset", `${widthFraction * 100}vw`);
     } else if (target && collapsed && !fullscreen) {
       // Collapsed: the task column reclaims the width, reserving only the
-      // slim peek tab's footprint (keep in sync with .session-pane-peek).
-      root.style.setProperty("--pane-inset", "30px");
+      // slim docked-rail footprint (keep in sync with .session-pane-peek).
+      root.style.setProperty("--pane-inset", "34px");
     } else {
+      // Focus mode (rail collapsed) covers the content with the widened
+      // terminal, and fullscreen covers everything — either way the board
+      // strip reserves nothing.
       root.style.setProperty("--pane-inset", "0px");
     }
     return () => {
       root.style.setProperty("--pane-inset", "0px");
     };
-  }, [target, widthFraction, fullscreen, collapsed]);
+  }, [target, widthFraction, fullscreen, collapsed, railCollapsed]);
 
   useEffect(() => {
     if (!target || target.taskId === null) return;
@@ -305,6 +324,7 @@ export function SessionPane() {
   const paneClass = [
     "session-pane",
     fullscreen && "session-pane--full",
+    !fullscreen && !collapsed && railCollapsed && "session-pane--focus",
     collapsed && !fullscreen && "session-pane--collapsed",
   ]
     .filter(Boolean)
@@ -321,15 +341,18 @@ export function SessionPane() {
           aria-expanded={false}
           onClick={toggleCollapsed}
         >
+          <span className={`sess-dot sess-dot--${liveState}`} />
+          <span className="session-pane-peek-label">{liveRef ?? "terminal"}</span>
           <IconChevronLeft size={13} />
-          <span className="session-pane-peek-label">
-            {liveRef ? `${liveRef} · terminal` : "terminal"}
-          </span>
         </button>
       )}
       <aside
         className={paneClass}
-        style={fullscreen ? undefined : { width: `${widthFraction * 100}%` }}
+        style={
+          fullscreen || (railCollapsed && !collapsed)
+            ? undefined
+            : { width: `${widthFraction * 100}%` }
+        }
         aria-label="Attached session terminal"
         aria-hidden={collapsed && !fullscreen}
         // inert removes the hidden pane from the tab order and blocks
@@ -361,6 +384,26 @@ export function SessionPane() {
             <IconChevronRight size={13} />
           </button>
         )}
+        {!fullscreen && !collapsed && tabs.length > 1 && (
+          <div className="session-pane-tabs" role="tablist" aria-label="Live sessions">
+            {tabs.map((t) => (
+              <button
+                type="button"
+                key={t.sessionId}
+                role="tab"
+                aria-selected={t.active}
+                className={`session-pane-tab${t.active ? " is-active" : ""}`}
+                title={t.label}
+                // Swallow the pointerdown so a tab click never starts a resize drag.
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => switchToSession(t.sessionId)}
+              >
+                <span className={`sess-dot sess-dot--${t.state}`} />
+                <span className="session-pane-tab-label">{t.ref ?? t.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <header className="session-pane-head">
         <IconTerminal size={13} />
         {liveRef ? (
@@ -373,6 +416,18 @@ export function SessionPane() {
         <span className="session-pane-name">
           {target.name ?? (target.kind === "attach" ? target.shortId : "session")}
         </span>
+        {!fullscreen && (
+          <button
+            type="button"
+            className="icon-btn"
+            title={railCollapsed ? "Show context rail" : "Focus terminal (hide rail)"}
+            aria-label={railCollapsed ? "Show context rail" : "Focus terminal"}
+            aria-pressed={railCollapsed}
+            onClick={toggleRailCollapsed}
+          >
+            <IconColumns size={13} />
+          </button>
+        )}
         <button
           type="button"
           className="icon-btn"

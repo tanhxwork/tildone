@@ -36,8 +36,10 @@ export type PaneTarget = {
 );
 
 const WIDTH_KEY = "tildone.pane.widthFraction";
-/** Spec default: the pane takes 3/4 of the window. */
-const DEFAULT_FRACTION = 0.75;
+/** Default split: the terminal takes ~2/3, leaving the context rail a usable
+ *  third (spec 2026-07-23-session-context-rail). It was 3/4 when the left of
+ *  the pane was a throwaway squished board rather than the session's rail. */
+const DEFAULT_FRACTION = 0.65;
 const MIN_FRACTION = 0.3;
 const MAX_FRACTION = 0.9;
 
@@ -51,6 +53,12 @@ function storedFraction(): number {
   return Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, parsed));
 }
 
+const RAIL_KEY = "tildone.pane.railCollapsed";
+/** Focus mode is a layout preference, persisted like the width. Default off. */
+function storedRailCollapsed(): boolean {
+  return window.localStorage.getItem(RAIL_KEY) === "1";
+}
+
 interface PaneState {
   target: PaneTarget | null;
   /** Pane width as a fraction of the window; persisted across opens. */
@@ -60,6 +68,11 @@ interface PaneState {
    *  pane's `target` isn't persisted either); `widthFraction` is left
    *  untouched, so reopening restores the exact prior width for free. */
   collapsed: boolean;
+  /** Focus mode: the context rail is hidden and the terminal fills the
+   *  board-strip space; the sidebar stays (distinct from `fullscreen`, which
+   *  covers everything). Persisted like `widthFraction` — a layout
+   *  preference, not per-session state, so it survives a switch or reopen. */
+  railCollapsed: boolean;
   /** Bumped by openPane on an already-open session — tells the pane to grab focus. */
   focusNonce: number;
   openPane: (target: PaneTarget) => void;
@@ -68,6 +81,8 @@ interface PaneState {
   toggleFullscreen: () => void;
   setCollapsed: (collapsed: boolean) => void;
   toggleCollapsed: () => void;
+  setRailCollapsed: (collapsed: boolean) => void;
+  toggleRailCollapsed: () => void;
 }
 
 export const usePaneStore = create<PaneState>((set, get) => ({
@@ -75,6 +90,7 @@ export const usePaneStore = create<PaneState>((set, get) => ({
   widthFraction: storedFraction(),
   fullscreen: false,
   collapsed: false,
+  railCollapsed: storedRailCollapsed(),
   focusNonce: 0,
   openPane: (target) => {
     const current = get().target;
@@ -96,6 +112,15 @@ export const usePaneStore = create<PaneState>((set, get) => ({
   toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
   setCollapsed: (collapsed) => set({ collapsed }),
   toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
+  setRailCollapsed: (collapsed) => {
+    window.localStorage.setItem(RAIL_KEY, collapsed ? "1" : "0");
+    set({ railCollapsed: collapsed });
+  },
+  toggleRailCollapsed: () => {
+    const next = !get().railCollapsed;
+    window.localStorage.setItem(RAIL_KEY, next ? "1" : "0");
+    set({ railCollapsed: next });
+  },
 }));
 
 /** Is the keyboard currently inside the session pane? Global shortcut handlers

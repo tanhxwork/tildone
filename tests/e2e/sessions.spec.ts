@@ -44,18 +44,24 @@ describe("hosted sessions — shell escape hatch", () => {
     await input.waitForExist();
     await input.setValue("Bind target task");
     await browser.keys("Enter");
-    const row = $(".task-title*=Bind target task");
-    await row.waitForExist();
 
-    // Its ref comes from the row chip; its id from the same DB the app uses.
-    const ref = await $(".task-id").getText();
+    // The middle now shows the open session's context rail, not the board, so the
+    // new card isn't listed there. Read its id and ref from the DB the app uses
+    // (the source of truth), polling until the quick-add's write has landed.
     await invoke("plugin:sql|load", { db: "sqlite:tildone.db" });
-    const found = await invoke<Array<{ id: number }>>("plugin:sql|select", {
-      db: "sqlite:tildone.db",
-      query: "SELECT id FROM tasks WHERE title = $1",
-      values: ["Bind target task"],
-    });
-    expect(found.length).toBe(1);
+    let found: Array<{ id: number; ref: string }> = [];
+    await browser.waitUntil(
+      async () => {
+        found = await invoke<Array<{ id: number; ref: string }>>("plugin:sql|select", {
+          db: "sqlite:tildone.db",
+          query: "SELECT id, ref FROM tasks WHERE title = $1",
+          values: ["Bind target task"],
+        });
+        return found.length === 1;
+      },
+      { timeout: 10000, timeoutMsg: "quick-add task did not persist" },
+    );
+    const ref = found[0].ref;
 
     const sessions = await invoke<HostSession[]>("host_list");
     const shell = sessions.find((s) => s.adapter_id === "shell" && !s.exited);

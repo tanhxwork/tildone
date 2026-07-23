@@ -219,7 +219,7 @@ textarea:focus-visible,
 /* ---------- Sidebar ---------- */
 
 .sidebar {
-  width: 232px;
+  width: var(--sidebar-w, 232px);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -5140,31 +5140,46 @@ textarea:focus-visible,
 
 /* Collapsed state's reopen control: a vertical tab pinned to the window edge,
    labelled with the session's card ref so it is never a mystery panel. */
+/* Docked session rail: the collapsed-terminal reopen control. Flush on the
+   surface layer with a hairline — no pop shadow — so it belongs to the window
+   edge instead of floating off it. Carries the parked session's status dot and
+   ref (spec 2026-07-23-session-context-rail, replacing the floating peek tab). */
 .session-pane-peek {
   position: fixed;
-  top: 50%;
+  top: 0;
+  bottom: 0;
   right: 0;
-  transform: translateY(-50%);
+  transform: none;
+  width: 34px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 12px 6px;
-  border: 1px solid var(--border-strong);
-  border-right: none;
-  border-radius: var(--radius) 0 0 var(--radius);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-pop);
+  gap: 10px;
+  padding: 14px 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-sidebar);
+  box-shadow: none;
   color: var(--text-muted);
   cursor: pointer;
   z-index: 41;
   transition:
     color 150ms,
-    border-color 150ms;
+    background 150ms;
 }
 
 .session-pane-peek:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.session-pane-peek .sess-dot {
+  margin-left: 0;
+}
+
+.session-pane-peek svg {
+  margin-top: auto;
 }
 
 .session-pane-peek-label {
@@ -5867,4 +5882,400 @@ textarea:focus-visible,
   border: 1px dashed var(--border-strong);
   border-radius: 4px;
   padding: 0 5px;
+}
+
+/* ============================================================
+   Session context rail + switcher (spec 2026-07-23-session-context-rail).
+   A docked terminal turns the board strip into the active session's task —
+   board-side, re-flowed narrow — with a roster to re-target the one pane;
+   focus mode widens the terminal over it.
+   ============================================================ */
+
+:root {
+  --sidebar-w: 232px;
+}
+
+/* Focus mode: the terminal fills from the sidebar to the right edge; the
+   sidebar stays (distinct from fullscreen, which covers everything). */
+.session-pane--focus {
+  left: var(--sidebar-w);
+  width: auto;
+}
+
+/* Session tabs — one per live session across the top of the terminal. */
+.session-pane-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+.session-pane-tabs::-webkit-scrollbar {
+  display: none;
+}
+.session-pane-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.session-pane-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.session-pane-tab.is-active {
+  background: var(--bg-inset);
+  border-color: var(--border);
+  color: var(--text);
+}
+.session-pane-tab .sess-dot {
+  margin-left: 0;
+}
+.session-pane-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The rail — a task, board-side, in a narrow column. */
+.context-rail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.rail-head {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.rail-ref {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.rail-ref--none {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* Roster dropdown — option B, nested: the full live-session list. */
+.rail-roster {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.rail-roster:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.rail-roster-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--doing);
+}
+.rail-roster-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+}
+.rail-roster-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+}
+.rail-roster-item:hover {
+  background: var(--bg-hover);
+}
+.rail-roster-item.is-active {
+  background: var(--bg-active);
+}
+.rail-roster-item .sess-dot {
+  margin-left: 0;
+}
+.rail-roster-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px 0;
+}
+.rail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rail-block--grow {
+  flex: 1;
+  min-height: 0;
+}
+.rail-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.rail-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+.rail-status--doing {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--doing) 14%, transparent);
+}
+.rail-status--todo {
+  color: var(--text-muted);
+  background: var(--bg-inset);
+}
+.rail-status--done {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+.rail-chip {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+.rail-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+}
+.rail-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rail-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.rail-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 150ms;
+}
+.rail-progress-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rail-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.rail-check-box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.rail-check.is-done .rail-check-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.rail-check.is-done .rail-check-label {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-faint);
+}
+.rail-check.is-verify .rail-check-box {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+.rail-check.is-verify .rail-check-label {
+  color: var(--accent);
+}
+
+.rail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rail-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.rail-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rail-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.rail-ev {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.rail-ev-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.rail-ev--agent .rail-ev-dot {
+  background: var(--accent);
+}
+.rail-empty-feed {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.rail-open-card {
+  flex: none;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.rail-open-card:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Unbound: no card yet — a minimal rail, never the board, never an error. */
+.context-rail--unbound .rail-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.rail-empty-glyph {
+  font-size: 22px;
+  color: var(--text-faint);
+}
+.rail-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rail-empty-cwd {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.rail-make-task {
+  margin-top: 4px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 13px;
+  font-weight: 600;
+}
+.rail-make-task:hover {
+  background: color-mix(in srgb, var(--accent) 88%, black);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-bar > i {
+    transition: none;
+  }
 }
