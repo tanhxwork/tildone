@@ -60,17 +60,17 @@ describe("terminal divider — show/hide handle", () => {
     await expect(peek).toHaveAttribute("aria-expanded", "false");
     // Task strip reclaims the width, reserving only the slim tab's footprint.
     expect(await paneInset()).toBe("30px");
-    // The pane is actually gone from view (slid off the right edge), not just
-    // reclassed — its left edge reaches the window's right edge once the
-    // 340ms slide settles (poll, don't race the transition).
-    await browser.waitUntil(
-      () =>
-        browser.execute(() => {
-          const el = document.querySelector(".session-pane");
-          return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
-        }),
-      { timeout: 2000, timeoutMsg: "terminal pane did not slide off-screen" },
-    );
+    // The pane actually slides off the right edge (not just reclassed): once
+    // the 340ms transition settles, its left edge has cleared the viewport.
+    // A single post-settle check, not a polled waitUntil, avoids the WebDriver
+    // script-timeout flakiness that polling hit under full-suite load.
+    await browser.pause(500);
+    expect(
+      await browser.execute(() => {
+        const el = document.querySelector(".session-pane");
+        return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
+      }),
+    ).toBe(true);
     // Focus must not be stranded in the hidden, aria-hidden pane, or board
     // shortcuts stay suppressed and focus is trapped in aria-hidden content.
     expect(
