@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { useStore } from "../store";
+import { usePaneStore } from "../paneStore";
 import { isPageSelection } from "../types";
 import type { Project } from "../types";
 import { ProjectGlyph } from "./ProjectGlyph";
@@ -30,6 +31,10 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     activeTagIds,
     toggleTagFilter,
   } = useStore();
+  // A docked session terminal replaces the board with the context rail, so the
+  // board's own chrome — search, filters, view toggles — has nothing to act on.
+  // Hide it while the rail is up; the collapsed state shows the board again.
+  const railActive = usePaneStore((s) => s.target !== null && !s.collapsed);
 
   let title = "";
   let headerProject: Project | undefined;
@@ -73,7 +78,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
           {title}
         </h1>
 
-        {!isPage && (
+        {!isPage && !railActive && (
           <div className="header-controls">
             <div className="search-box">
               <IconSearch size={14} />

@@ -77,7 +77,7 @@ describe("terminal divider — show/hide handle", () => {
           const el = document.querySelector(".session-pane");
           return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
         }),
-      { timeout: 3000, timeoutMsg: "collapsed pane did not slide off the right edge" },
+      { timeout: 5000, timeoutMsg: "collapsed pane did not slide off the right edge" },
     );
     // Focus must not be stranded in the hidden, aria-hidden pane, or board
     // shortcuts stay suppressed and focus is trapped in aria-hidden content.

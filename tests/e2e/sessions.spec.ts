@@ -39,7 +39,10 @@ describe("hosted sessions — shell escape hatch", () => {
   });
 
   it("flips the pane chip and row label to the card ref when the session binds", async () => {
-    // A real card to bind to, created through quick-add like a user would.
+    // A real card to bind to, created through quick-add like a user would. The
+    // pane (open from the previous test) hides the board's quick-add in rail
+    // mode, so collapse the terminal to reach it — then reopen to watch the flip.
+    await browser.keys(["Meta", "Shift", "t"]);
     const input = $(".quick-add input");
     await input.waitForExist();
     await input.setValue("Bind target task");
@@ -62,6 +65,10 @@ describe("hosted sessions — shell escape hatch", () => {
       { timeout: 10000, timeoutMsg: "quick-add task did not persist" },
     );
     const ref = found[0].ref;
+
+    // Reopen the pane so the ref chip's live flip is observable.
+    await browser.keys(["Meta", "Shift", "t"]);
+    await expect($(".session-pane-peek")).not.toBeExisting();
 
     const sessions = await invoke<HostSession[]>("host_list");
     const shell = sessions.find((s) => s.adapter_id === "shell" && !s.exited);

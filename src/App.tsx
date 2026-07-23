@@ -360,7 +360,9 @@ function App() {
       <Sidebar />
       <main className="main">
         <Header searchRef={searchRef} />
-        {(!isPage || selection.type === "week") && <QuickAdd inputRef={quickAddRef} />}
+        {!paneOpen && (!isPage || selection.type === "week") && (
+          <QuickAdd inputRef={quickAddRef} />
+        )}
         <div className="content">{content}</div>
       </main>
       {editingTaskId !== null && <TaskEditor />}

@@ -101,6 +101,17 @@ describe("session context rail", () => {
     await expect($(".rail-link")).toBeExisting();
     await expect($(".rail-feed")).toBeExisting();
 
+    // Board chrome (quick-add, search/filters/view-toggles) has nothing to act
+    // on while the rail is up — it's hidden — and comes back when the terminal
+    // collapses to show the original board (TIL-159).
+    await expect($(".quick-add")).not.toBeExisting();
+    await expect($(".header-controls")).not.toBeExisting();
+    await browser.keys(["Meta", "Shift", "t"]); // collapse → original board
+    await expect($(".session-pane-peek")).toBeExisting();
+    await expect($(".quick-add")).toBeExisting();
+    await browser.keys(["Meta", "Shift", "t"]); // reopen for the rest
+    await expect($(".session-pane-peek")).not.toBeExisting();
+
     // Focus mode: the rail hides and the terminal widens, sidebar kept.
     await $('button[aria-label="Focus terminal"]').click();
     await expect($(".session-pane")).toHaveElementClass("session-pane--focus");
