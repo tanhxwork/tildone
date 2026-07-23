@@ -155,33 +155,88 @@ describe("session context rail", () => {
     await killShells();
   });
 
-  it("offers a tab per live session and switches the one pane between them", async () => {
+  it("offers a tab per live session and REBINDS the rail when switching", async () => {
     await $("#root").waitForExist();
     await killShells();
+    await closePaneIfOpen();
 
-    // Two live sessions → the terminal grows a tab strip; the last opened is active.
-    await spawnShell("/tmp");
-    await spawnShell("/usr");
-    const tabs = $(".session-pane-tabs");
-    await tabs.waitForExist();
+    // Two cards, each with a live shell bound to it from birth. Distinct cards
+    // are what let us prove the rail REBINDS (not just that the active CSS
+    // index moves): the rail's ref must flip from one card to the other on
+    // switch — spec docs/specs/2026-07-23-session-context-rail.md:111-116.
+    const mkCard = async (title: string) => {
+      const input = $(".quick-add input");
+      await input.waitForExist();
+      await input.setValue(title);
+      await browser.keys("Enter");
+      await $(`.task-title*=${title}`).waitForExist();
+      const ref = await browser.execute((t) => {
+        const row = Array.from(document.querySelectorAll(".task-row")).find(
+          (r) => r.querySelector(".task-title")?.textContent === t,
+        );
+        return row?.querySelector(".task-id")?.textContent ?? null;
+      }, title);
+      const found = await invoke<Array<{ id: number }>>("plugin:sql|select", {
+        db: "sqlite:tildone.db",
+        query: "SELECT id FROM tasks WHERE title = $1",
+        values: [title],
+      });
+      return { ref: ref!, id: found[0].id };
+    };
+    const a = await mkCard("Rebind card A");
+    const b = await mkCard("Rebind card B");
+
+    // host_start binds the shell to its card from the start (an already-open
+    // unbound pane can't be rebound via IPC — openPane's same-session guard
+    // never rewrites target.taskRef). No pane opens yet; quick-add stays up.
+    const startBound = (card: { ref: string; id: number }, cwd: string) =>
+      invoke<number>("host_start", {
+        taskId: card.id,
+        taskRef: card.ref,
+        adapterId: "shell",
+        claimCwd: cwd,
+        projectName: null,
+        prompt: null,
+        cols: 80,
+        rows: 24,
+      });
+    await startBound(a, "/tmp");
+    await startBound(b, "/usr");
+
+    // Open one bound session from the sidebar → the one pane, rail bound to
+    // that card, plus a two-tab strip (both live sessions).
+    const row = $(".sess-row");
+    await row.waitForExist();
+    await row.click();
+    await $(".session-pane").waitForExist();
+    await $(".session-pane-tabs").waitForExist();
     await expect($$(".session-pane-tab")).toBeElementsArrayOfSize(2);
     await expect($$(".session-pane-tab.is-active")).toBeElementsArrayOfSize(1);
 
-    // Which tab starts active is order-dependent; prove the SWITCH regardless.
-    const activeIndex = () =>
-      browser.execute(() =>
-        Array.from(document.querySelectorAll(".session-pane-tab")).findIndex((t) =>
-          t.classList.contains("is-active"),
-        ),
+    // The rail is bound to whichever card opened; the other is the switch
+    // target. Reading it (rather than assuming order) keeps the test robust to
+    // sidebar ordering.
+    await expect($(".rail-ref")).toBeExisting();
+    const firstRef = await $(".rail-ref").getText();
+    expect([a.ref, b.ref]).toContain(firstRef);
+    const otherRef = firstRef === a.ref ? b.ref : a.ref;
+
+    // Click the OTHER session's tab (exact-match its ref label).
+    await browser.execute((r) => {
+      const tab = Array.from(document.querySelectorAll(".session-pane-tab")).find(
+        (t) => t.querySelector(".session-pane-tab-label")?.textContent === r,
       );
-    const before = await activeIndex();
-    const other = before === 0 ? 1 : 0;
-    await $(`.session-pane-tab:nth-child(${other + 1})`).click();
-    // Clicking the other tab re-targets the single pane to it.
-    await browser.waitUntil(async () => (await activeIndex()) === other, {
+      (tab as HTMLElement | undefined)?.click();
+    }, otherRef);
+
+    // The single pane re-targets AND the rail rebinds to the other card — its
+    // ref, and the active tab, are now the switched-to session's, not the
+    // original's. This is the rebind the tab test previously left unproven.
+    await browser.waitUntil(async () => (await $(".rail-ref").getText()) === otherRef, {
       timeout: 5000,
-      timeoutMsg: "clicking a tab did not move the active session",
+      timeoutMsg: "switching tabs did not rebind the rail to the other card",
     });
+    await expect($(".session-pane-tab.is-active .session-pane-tab-label")).toHaveText(otherRef);
     await expect($$(".session-pane-tab.is-active")).toBeElementsArrayOfSize(1);
     await expect($$(".session-pane")).toBeElementsArrayOfSize(1);
 
@@ -189,6 +244,7 @@ describe("session context rail", () => {
     await browser.saveScreenshot("./tests/e2e/artifacts/context-rail-tabs.png");
 
     await killShells();
+    await closePaneIfOpen();
   });
 
   it("shows the FULL board (not one column) when a bound session's terminal is collapsed", async () => {

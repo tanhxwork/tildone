@@ -43,7 +43,7 @@ const DEFAULT_FRACTION = 0.65;
 const MIN_FRACTION = 0.3;
 const MAX_FRACTION = 0.9;
 
-function storedFraction(): number {
+export function storedFraction(): number {
   const raw = window.localStorage.getItem(WIDTH_KEY);
   // Number(null) and Number("") are both 0, which is finite — an absent or
   // empty key must fall through to the default, not clamp to the minimum.
@@ -55,7 +55,7 @@ function storedFraction(): number {
 
 const RAIL_KEY = "tildone.pane.railCollapsed";
 /** Focus mode is a layout preference, persisted like the width. Default off. */
-function storedRailCollapsed(): boolean {
+export function storedRailCollapsed(): boolean {
   return window.localStorage.getItem(RAIL_KEY) === "1";
 }
 
