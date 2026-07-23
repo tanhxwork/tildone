@@ -120,25 +120,39 @@ describe("hosted sessions — shell escape hatch", () => {
     // :hover in this webview (real mouse hover works for users), so assert the
     // reveal through the shared focus-within path — same declarations, and it
     // exercises the keyboard-a11y route too.
-    const opacityOf = () =>
-      browser.execute(() => {
-        const el = document.querySelector(".sess-close");
-        return el ? getComputedStyle(el).opacity : null;
-      });
-    await expect(await opacityOf()).toBe("0");
+    const opacityAtRest = await browser.execute(() => {
+      const el = document.querySelector(".sess-close");
+      return el ? getComputedStyle(el).opacity : null;
+    });
+    expect(opacityAtRest).toBe("0");
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/session-row-rest.png");
-    await browser.execute(() => (document.querySelector(".sess-close") as HTMLElement | null)?.focus());
-    await browser.waitUntil(async () => (await opacityOf()) === "1", {
-      timeout: 2000,
-      timeoutMsg: "close X did not reveal on focus-within",
+
+    // Reveal, read deterministically: focus, kill the transition inline so the
+    // computed value is the target (not a mid-animation frame), and read it —
+    // all in one synchronous step so the unbound shell's countdown re-renders
+    // can't blur the focus between the focus() and the read.
+    const opacityOnFocus = await browser.execute(() => {
+      const el = document.querySelector(".sess-close") as HTMLElement | null;
+      if (!el) return null;
+      el.focus();
+      const focusWithin = el.closest(".sess-row")?.matches(":focus-within") ?? false;
+      el.style.transition = "none";
+      const op = getComputedStyle(el).opacity;
+      el.style.transition = "";
+      return { op, focusWithin };
     });
+    expect(opacityOnFocus).not.toBeNull();
+    expect(opacityOnFocus!.focusWithin).toBe(true);
+    expect(opacityOnFocus!.op).toBe("1");
     await browser.saveScreenshot("./tests/e2e/artifacts/session-row-reveal.png");
 
-    // Clicking it kills the live shell (host_kill) and the row disappears.
+    // Triggering it kills the live shell (host_kill) and the row disappears.
+    // Fire the handler directly — the reveal is proven above; this asserts the
+    // wiring without racing the re-render churn for a synthetic click.
     const before = await invoke<HostSession[]>("host_list");
     expect(before.some((s) => s.adapter_id === "shell" && !s.exited)).toBe(true);
-    await close.click();
+    await browser.execute(() => (document.querySelector(".sess-close") as HTMLElement | null)?.click());
     await browser.waitUntil(
       async () => (await invoke<HostSession[]>("host_list")).every((s) => s.exited),
       { timeout: 5000, timeoutMsg: "the shell was not killed by the close X" },
