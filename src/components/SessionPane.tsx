@@ -237,7 +237,15 @@ export function SessionPane() {
   // Re-click on the same card, or fullscreen/width changes: hand focus back
   // to the terminal so typing continues without a click.
   useEffect(() => {
-    if (collapsed) return;
+    if (collapsed) {
+      // Don't strand focus inside the hidden, aria-hidden pane: that keeps
+      // paneHasFocus() true (swallowing board shortcuts) and traps keyboard
+      // focus in aria-hidden content. Hand it to the peek tab — the reopen
+      // control, which is rendered by the time this effect runs.
+      termRef.current?.blur();
+      document.querySelector<HTMLElement>(".session-pane-peek")?.focus();
+      return;
+    }
     termRef.current?.focus();
   }, [focusNonce, fullscreen, widthFraction, collapsed]);
 
@@ -313,7 +321,7 @@ export function SessionPane() {
         >
           <IconChevronLeft size={13} />
           <span className="session-pane-peek-label">
-            {liveRef ?? target.name ?? "terminal"}
+            {liveRef ? `${liveRef} · terminal` : "terminal"}
           </span>
         </button>
       )}

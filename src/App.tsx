@@ -247,7 +247,10 @@ function App() {
   // Inert unless a session is open.
   useEffect(() => {
     function onToggleKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") {
+      // Cmd only (macOS-native, per spec) — not Ctrl. The capture phase means
+      // this fires while the terminal is focused, so accepting Ctrl+Shift+T
+      // here would rob that chord from the TUI.
+      if (e.metaKey && !e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "t") {
         if (!usePaneStore.getState().target) return;
         e.preventDefault();
         e.stopPropagation();

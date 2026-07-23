@@ -5079,17 +5079,29 @@ textarea:focus-visible,
 
 .session-pane-grip:hover::after {
   opacity: 1;
+  background: var(--accent);
+}
+
+/* Hovering the grip or the show/hide handle accents the divider line itself
+   (spec) — the pane's left border is the visible divider. */
+.session-pane:has(.session-pane-grip:hover),
+.session-pane:has(.session-pane-toggle:hover) {
+  border-left-color: var(--accent);
 }
 
 /* Collapse: the pane slides off the right edge but stays mounted — the PTY
    must never tear down (that is closePane's job, not this). A slim peek tab
-   becomes the reopen control; width is untouched, so reopening restores it. */
+   becomes the reopen control; width is untouched, so reopening restores it.
+   We animate `right` (the pane is right-docked) rather than a percentage
+   transform: vite rewrites translateX(100%) → translate(100%), which this
+   WebKit resolves to the identity matrix, leaving the pane visible (TIL-155
+   Codex finding). `right: -100%` clears the viewport unambiguously. */
 .session-pane {
-  transition: transform 340ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: right 340ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .session-pane--collapsed {
-  transform: translateX(100%);
+  right: -100%;
   box-shadow: none;
   pointer-events: none;
 }

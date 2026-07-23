@@ -60,6 +60,22 @@ describe("terminal divider — show/hide handle", () => {
     await expect(peek).toHaveAttribute("aria-expanded", "false");
     // Task strip reclaims the width, reserving only the slim tab's footprint.
     expect(await paneInset()).toBe("30px");
+    // The pane is actually gone from view (slid off the right edge), not just
+    // reclassed — its left edge reaches the window's right edge once the
+    // 340ms slide settles (poll, don't race the transition).
+    await browser.waitUntil(
+      () =>
+        browser.execute(() => {
+          const el = document.querySelector(".session-pane");
+          return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
+        }),
+      { timeout: 2000, timeoutMsg: "terminal pane did not slide off-screen" },
+    );
+    // Focus must not be stranded in the hidden, aria-hidden pane, or board
+    // shortcuts stay suppressed and focus is trapped in aria-hidden content.
+    expect(
+      await browser.execute(() => !!document.activeElement?.closest(".session-pane")),
+    ).toBe(false);
 
     // Reopen via the peek tab — width must be exactly what it was.
     await peek.click();
@@ -72,6 +88,10 @@ describe("terminal divider — show/hide handle", () => {
     await browser.keys(["Meta", "Shift", "t"]);
     await expect(pane).toHaveElementClass("session-pane--collapsed");
     await browser.keys(["Meta", "Shift", "t"]);
+    await expect(pane).not.toHaveElementClass("session-pane--collapsed");
+
+    // Ctrl+Shift+T is NOT the toggle (Cmd only) — it must be left for the TUI.
+    await browser.keys(["Control", "Shift", "t"]);
     await expect(pane).not.toHaveElementClass("session-pane--collapsed");
 
     // Teardown: don't leave a live pty behind the next spec.
