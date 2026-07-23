@@ -38,6 +38,11 @@ export interface HostSession {
   expires_in_secs?: number | null;
   /** First line typed into an unbound session — "make it a task"'s title. */
   title_hint?: string | null;
+  /** Is the single pane currently attached to (rendering) this session? Only
+   *  the shown session is attached; switching the pane detaches the previous
+   *  one. Optional because locally-constructed HostSession literals predate
+   *  it. */
+  attached?: boolean;
 }
 
 /** A dead-but-resumable session from a previous app run (F3). */

@@ -19,7 +19,17 @@ interface HostSession {
   id: number;
   adapter_id: string;
   exited: boolean;
+  waiting: boolean;
+  task_ref: string | null;
+  // Whether the single pane is currently attached to (rendering) this session
+  // — the ground truth for "which PTY the terminal is bound to" (TIL-166).
+  attached: boolean;
 }
+
+const liveShells = async (): Promise<HostSession[]> =>
+  (await invoke<HostSession[]>("host_list")).filter(
+    (s) => s.adapter_id === "shell" && !s.exited,
+  );
 
 async function killShells(): Promise<void> {
   const sessions = await invoke<HostSession[]>("host_list");
@@ -316,11 +326,7 @@ describe("session context rail", () => {
     await $(".session-pane-tabs").waitForExist();
     await expect($$(".session-pane-tab")).toBeElementsArrayOfSize(2);
 
-    const liveShells = async () =>
-      (await invoke<HostSession[]>("host_list")).filter(
-        (s) => s.adapter_id === "shell" && !s.exited,
-      ).length;
-    expect(await liveShells()).toBe(2);
+    expect((await liveShells()).length).toBe(2);
 
     // Closing a LIVE hosted session asks first — X is about to kill a running
     // CLI, not just hide it.
@@ -334,7 +340,7 @@ describe("session context rail", () => {
     await confirm.$(".btn.danger").click();
     await expect($('.modal[aria-label="End this session?"]')).not.toBeExisting();
     await expect($(".session-pane")).toBeExisting();
-    await browser.waitUntil(async () => (await liveShells()) === 1, {
+    await browser.waitUntil(async () => (await liveShells()).length === 1, {
       timeout: 5000,
       timeoutMsg: "closing one of two sessions did not leave exactly one live shell",
     });
@@ -350,8 +356,153 @@ describe("session context rail", () => {
     });
     await expect($(".session-pane-peek")).not.toBeExisting();
     await expect($(".quick-add")).toBeExisting();
-    expect(await liveShells()).toBe(0);
+    expect((await liveShells()).length).toBe(0);
 
     await killShells();
+  });
+
+  // ─── TIL-166: the spec seams TIL-158/160/161 left partial ───────────────
+
+  it("focus mode measurably widens the terminal (not just a class flip)", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await closePaneIfOpen();
+
+    await spawnShell("/tmp");
+    const body = $(".session-pane-body");
+    await body.waitForExist();
+    // Split mode: the terminal body is a fraction of the window.
+    await expect($(".session-pane")).not.toHaveElementClass("session-pane--focus");
+    const splitWidth = (await body.getSize()).width;
+    expect(splitWidth).toBeGreaterThan(0);
+
+    // Enter focus mode: the rail hides and the pane fills from the sidebar to
+    // the right edge (CSS `left: var(--sidebar-w); width: auto`), so the
+    // terminal must be measurably WIDER — the class alone never proved this.
+    await $('button[aria-label="Focus terminal"]').click();
+    await expect($(".session-pane")).toHaveElementClass("session-pane--focus");
+    await expect($(".context-rail")).not.toBeExisting();
+    await browser.waitUntil(async () => (await body.getSize()).width > splitWidth + 20, {
+      timeout: 5000,
+      timeoutMsg: "focus mode did not widen the terminal body",
+    });
+
+    // Restore the split — the terminal narrows back to roughly its old width.
+    await $('button[aria-label="Show context rail"]').click();
+    await expect($(".session-pane")).not.toHaveElementClass("session-pane--focus");
+    await browser.waitUntil(async () => (await body.getSize()).width <= splitWidth + 2, {
+      timeout: 5000,
+      timeoutMsg: "leaving focus mode did not narrow the terminal back",
+    });
+
+    await killShells();
+    await closePaneIfOpen();
+  });
+
+  it("the docked collapsed rail dot carries the parked session's state class", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await closePaneIfOpen();
+
+    await spawnShell("/tmp");
+    await $(".session-pane").waitForExist();
+
+    // The session's real state, straight from the host: a live, non-waiting
+    // shell is "quiet". The docked dot must render THAT state class — the old
+    // test only proved the dot existed, not that it reflects the session.
+    const [shell] = await liveShells();
+    const expected = shell.exited ? "exited" : shell.waiting ? "waiting" : "quiet";
+
+    await $(".session-pane-toggle").click();
+    const dot = $(".session-pane-peek .sess-dot");
+    await expect(dot).toBeExisting();
+    await expect(dot).toHaveElementClass(`sess-dot--${expected}`);
+
+    // Reopen so teardown leaves no docked pane behind.
+    await $(".session-pane-peek").click();
+    await expect($(".session-pane-peek")).not.toBeExisting();
+
+    await killShells();
+    await closePaneIfOpen();
+  });
+
+  it("switching tabs rebinds the terminal to the other session's PTY (attach identity)", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await closePaneIfOpen();
+
+    // Two live shells, one pane. The rail-rebind test proves the rail's DOM
+    // rebinds; this proves the TERMINAL does — which PTY the one pane is
+    // attached to — for two otherwise indistinguishable shells (spec :111-114).
+    await spawnShell("/tmp");
+    await spawnShell("/usr");
+    await $(".session-pane-tabs").waitForExist();
+    await expect($$(".session-pane-tab")).toBeElementsArrayOfSize(2);
+
+    // Exactly one shell is attached (the pane shows one session at a time);
+    // it is the last-opened.
+    const attachedIds = async () => (await liveShells()).filter((s) => s.attached).map((s) => s.id);
+    await browser.waitUntil(async () => (await attachedIds()).length === 1, {
+      timeout: 5000,
+      timeoutMsg: "expected exactly one attached shell with two live sessions",
+    });
+    const before = (await attachedIds())[0];
+
+    // Click the OTHER tab (the non-active one) → the pane re-targets and must
+    // detach `before` and attach the other shell. Pixel-free: read off the host.
+    await $(".session-pane-tab:not(.is-active)").click();
+    await browser.waitUntil(
+      async () => {
+        const now = await attachedIds();
+        return now.length === 1 && now[0] !== before;
+      },
+      { timeout: 5000, timeoutMsg: "switching tabs did not move the PTY attach to the other session" },
+    );
+    // And the previously-attached shell is now detached, still live.
+    const after = await liveShells();
+    expect(after.find((s) => s.id === before)?.attached).toBe(false);
+    expect(after.length).toBe(2);
+
+    await killShells();
+    await closePaneIfOpen();
+  });
+
+  it("collapse then reopen keeps the same live session attached (no re-attach race)", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await closePaneIfOpen();
+
+    await spawnShell("/tmp");
+    const pane = $(".session-pane");
+    await pane.waitForExist();
+    await browser.waitUntil(async () => (await liveShells()).some((s) => s.attached), {
+      timeout: 5000,
+      timeoutMsg: "spawned shell never became attached",
+    });
+    const id = (await liveShells()).find((s) => s.attached)!.id;
+
+    // Collapse: the pane hides but its terminal is NOT torn down — collapsing
+    // doesn't change the pane target, so the session stays attached the whole
+    // time (this is the collapse/replay race that must stay green: no detach,
+    // no re-attach of a new generation).
+    await $(".session-pane-toggle").click();
+    await expect($(".session-pane-peek")).toBeExisting();
+    // Give any spurious teardown a chance to fire, then assert it didn't:
+    // same session, still attached, still live.
+    await browser.pause(400);
+    let now = await liveShells();
+    expect(now.find((s) => s.id === id)?.attached).toBe(true);
+    expect(now.find((s) => s.id === id)?.exited).toBe(false);
+
+    // Reopen: still the same attached, live session — the pane never lost it.
+    await $(".session-pane-peek").click();
+    await expect($(".session-pane-peek")).not.toBeExisting();
+    await expect(pane).not.toHaveElementClass("session-pane--collapsed");
+    now = await liveShells();
+    expect(now.find((s) => s.id === id)?.attached).toBe(true);
+    expect(now.length).toBe(1);
+
+    await killShells();
+    await closePaneIfOpen();
   });
 });

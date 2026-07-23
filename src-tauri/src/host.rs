@@ -1169,6 +1169,13 @@ pub struct HostInfo {
     /// The first line typed into an unbound session — "make it a task"'s
     /// title suggestion.
     pub title_hint: Option<String>,
+    /// Is a pane currently attached to (rendering) this session? True only for
+    /// the one session the single pane is showing; switching the pane to
+    /// another session detaches this one. Exposed so a test can prove the
+    /// pane's terminal actually rebinds on a tab switch — two look-alike shells
+    /// are otherwise indistinguishable from the DOM (spec
+    /// 2026-07-23-session-context-rail.md:111-114; TIL-166).
+    pub attached: bool,
 }
 
 #[tauri::command]
@@ -1210,6 +1217,7 @@ pub fn host_list() -> Vec<HostInfo> {
                 unbound_stage,
                 expires_in_secs,
                 title_hint,
+                attached: shared.attached.is_some(),
             }
         })
         .collect()
