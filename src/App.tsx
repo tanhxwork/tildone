@@ -26,7 +26,7 @@ import { WeekView } from "./components/WeekView";
 import { QuitWarning } from "./components/QuitWarning";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore } from "./hostStore";
-import { paneHasFocus } from "./paneStore";
+import { paneHasFocus, usePaneStore } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { isPageSelection } from "./types";
@@ -239,6 +239,24 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openEditor, setPaletteOpen, setTagManagerOpen, openSettings, closeSettings]);
+
+  // ⇧⌘T shows/hides the terminal pane. Registered on the CAPTURE phase so it
+  // beats xterm's own keydown handler (which stops propagation on the focused
+  // terminal) — otherwise the chord never reaches window while you're typing
+  // in the terminal. stopPropagation also keeps the stray "T" out of the TUI.
+  // Inert unless a session is open.
+  useEffect(() => {
+    function onToggleKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") {
+        if (!usePaneStore.getState().target) return;
+        e.preventDefault();
+        e.stopPropagation();
+        usePaneStore.getState().toggleCollapsed();
+      }
+    }
+    window.addEventListener("keydown", onToggleKey, { capture: true });
+    return () => window.removeEventListener("keydown", onToggleKey, { capture: true });
+  }, []);
 
   if (!loaded) {
     return (

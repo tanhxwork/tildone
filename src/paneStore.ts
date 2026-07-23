@@ -56,35 +56,46 @@ interface PaneState {
   /** Pane width as a fraction of the window; persisted across opens. */
   widthFraction: number;
   fullscreen: boolean;
+  /** Terminal hidden to an edge peek tab, without detaching. Transient (the
+   *  pane's `target` isn't persisted either); `widthFraction` is left
+   *  untouched, so reopening restores the exact prior width for free. */
+  collapsed: boolean;
   /** Bumped by openPane on an already-open session — tells the pane to grab focus. */
   focusNonce: number;
   openPane: (target: PaneTarget) => void;
   closePane: () => void;
   setWidthFraction: (fraction: number) => void;
   toggleFullscreen: () => void;
+  setCollapsed: (collapsed: boolean) => void;
+  toggleCollapsed: () => void;
 }
 
 export const usePaneStore = create<PaneState>((set, get) => ({
   target: null,
   widthFraction: storedFraction(),
   fullscreen: false,
+  collapsed: false,
   focusNonce: 0,
   openPane: (target) => {
     const current = get().target;
-    // Re-click on the same session: focus the existing pane, never re-attach.
+    // Re-click on the same session: focus the existing pane, never re-attach —
+    // and if it was collapsed, bring it back (clicking the session means "show
+    // me it", not "focus a hidden pane").
     if (current && current.sessionId === target.sessionId) {
-      set((s) => ({ focusNonce: s.focusNonce + 1 }));
+      set((s) => ({ collapsed: false, focusNonce: s.focusNonce + 1 }));
       return;
     }
-    set((s) => ({ target, fullscreen: false, focusNonce: s.focusNonce + 1 }));
+    set((s) => ({ target, fullscreen: false, collapsed: false, focusNonce: s.focusNonce + 1 }));
   },
-  closePane: () => set({ target: null, fullscreen: false }),
+  closePane: () => set({ target: null, fullscreen: false, collapsed: false }),
   setWidthFraction: (fraction) => {
     const clamped = Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction));
     window.localStorage.setItem(WIDTH_KEY, String(clamped));
     set({ widthFraction: clamped });
   },
   toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
+  setCollapsed: (collapsed) => set({ collapsed }),
+  toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
 }));
 
 /** Is the keyboard currently inside the session pane? Global shortcut handlers

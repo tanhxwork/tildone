@@ -23,7 +23,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { usePaneStore } from "../paneStore";
 import { useHostStore } from "../hostStore";
-import { IconTerminal, IconX, IconMaximize } from "./Icons";
+import { IconTerminal, IconX, IconMaximize, IconChevronRight, IconChevronLeft } from "./Icons";
 
 interface PtyEvent {
   generation: number;
@@ -48,9 +48,11 @@ export function SessionPane() {
   const target = usePaneStore((s) => s.target);
   const widthFraction = usePaneStore((s) => s.widthFraction);
   const fullscreen = usePaneStore((s) => s.fullscreen);
+  const collapsed = usePaneStore((s) => s.collapsed);
   const focusNonce = usePaneStore((s) => s.focusNonce);
   const closePane = usePaneStore((s) => s.closePane);
   const toggleFullscreen = usePaneStore((s) => s.toggleFullscreen);
+  const toggleCollapsed = usePaneStore((s) => s.toggleCollapsed);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -235,23 +237,28 @@ export function SessionPane() {
   // Re-click on the same card, or fullscreen/width changes: hand focus back
   // to the terminal so typing continues without a click.
   useEffect(() => {
+    if (collapsed) return;
     termRef.current?.focus();
-  }, [focusNonce, fullscreen, widthFraction]);
+  }, [focusNonce, fullscreen, widthFraction, collapsed]);
 
   // The jumped card must stay in sight. Two mechanisms: the layout inset
   // (a root CSS var the board strip uses to stop underlapping the fixed
   // pane) and a vertical scroll to center the card in its now-solo column.
   useEffect(() => {
     const root = document.documentElement;
-    if (target && !fullscreen) {
+    if (target && !fullscreen && !collapsed) {
       root.style.setProperty("--pane-inset", `${widthFraction * 100}vw`);
+    } else if (target && collapsed && !fullscreen) {
+      // Collapsed: the task column reclaims the width, reserving only the
+      // slim peek tab's footprint (keep in sync with .session-pane-peek).
+      root.style.setProperty("--pane-inset", "30px");
     } else {
       root.style.setProperty("--pane-inset", "0px");
     }
     return () => {
       root.style.setProperty("--pane-inset", "0px");
     };
-  }, [target, widthFraction, fullscreen]);
+  }, [target, widthFraction, fullscreen, collapsed]);
 
   useEffect(() => {
     if (!target || target.taskId === null) return;
@@ -285,23 +292,63 @@ export function SessionPane() {
     }
   }
 
+  const paneClass = [
+    "session-pane",
+    fullscreen && "session-pane--full",
+    collapsed && !fullscreen && "session-pane--collapsed",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <aside
-      className={fullscreen ? "session-pane session-pane--full" : "session-pane"}
-      style={fullscreen ? undefined : { width: `${widthFraction * 100}%` }}
-      aria-label="Attached session terminal"
-      onKeyDown={onPaneKeyDown}
-    >
-      {!fullscreen && (
-        <div
-          className="session-pane-grip"
-          onPointerDown={onGripDown}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize terminal pane"
-        />
+    <>
+      {collapsed && !fullscreen && (
+        <button
+          type="button"
+          className="session-pane-peek"
+          title="Show terminal (⇧⌘T)"
+          aria-label="Show terminal"
+          aria-expanded={false}
+          onClick={toggleCollapsed}
+        >
+          <IconChevronLeft size={13} />
+          <span className="session-pane-peek-label">
+            {liveRef ?? target.name ?? "terminal"}
+          </span>
+        </button>
       )}
-      <header className="session-pane-head">
+      <aside
+        className={paneClass}
+        style={fullscreen ? undefined : { width: `${widthFraction * 100}%` }}
+        aria-label="Attached session terminal"
+        aria-hidden={collapsed && !fullscreen}
+        onKeyDown={onPaneKeyDown}
+      >
+        {!fullscreen && (
+          <div
+            className="session-pane-grip"
+            onPointerDown={onGripDown}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize terminal pane"
+          />
+        )}
+        {!fullscreen && (
+          <button
+            type="button"
+            className="session-pane-toggle"
+            title="Hide terminal (⇧⌘T)"
+            aria-label="Hide terminal"
+            aria-expanded={true}
+            // The toggle sits over the resize grip; swallow the pointerdown so
+            // clicking it never starts a resize drag.
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={toggleCollapsed}
+          >
+            <IconChevronRight size={13} />
+          </button>
+        )}
+        <header className="session-pane-head">
         <IconTerminal size={13} />
         {liveRef ? (
           <span className="session-pane-ref">{liveRef}</span>
@@ -341,6 +388,7 @@ export function SessionPane() {
         </span>
         <span>⌘W detach</span>
       </footer>
-    </aside>
+      </aside>
+    </>
   );
 }
