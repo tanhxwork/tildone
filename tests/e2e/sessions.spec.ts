@@ -159,4 +159,55 @@ describe("hosted sessions — shell escape hatch", () => {
     );
     await expect($(".sess-row")).not.toBeExisting();
   });
+
+  it("Enter on the focused close X does not also open the session", async () => {
+    await $("#root").waitForExist();
+
+    // Clean slate, one live shell (spawning opens its pane, un-collapsed).
+    for (const s of await invoke<HostSession[]>("host_list")) {
+      await invoke("host_kill", { sessionId: s.id });
+    }
+    await browser.waitUntil(async () => (await invoke<HostSession[]>("host_list")).length === 0, {
+      timeout: 5000,
+      timeoutMsg: "sessions did not drain",
+    });
+    await $('button[aria-label="New session"]').click();
+    await $(".sess-new").waitForExist();
+    await $(".sess-new-cwd").setValue("/tmp");
+    const shellAdapter = $(".sess-new-adapter*=Shell");
+    await shellAdapter.waitForExist();
+    await shellAdapter.click();
+    await $(".sess-row").waitForExist();
+
+    // Collapse the pane to the peek tab. The row's Enter handler opens the
+    // session via openPane, which unconditionally un-collapses — so "still
+    // collapsed after Enter on the X" is a clean, kill-free proxy for "the row
+    // did NOT open the session". Regression guard for the keydown that used to
+    // bubble from the focusable close button (Codex TIL-165 defect).
+    await browser.keys(["Meta", "Shift", "t"]);
+    await $(".session-pane-peek").waitForExist();
+
+    // Focus the close X and dispatch a bubbling Enter keydown only — no click,
+    // so nothing is killed and the sole effect under test is the row's handler.
+    const dispatched = await browser.execute(() => {
+      const x = document.querySelector(".sess-close") as HTMLElement | null;
+      if (!x) return false;
+      x.focus();
+      x.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      return true;
+    });
+    expect(dispatched).toBe(true);
+
+    // Let any (buggy) re-render land, then assert the pane stayed collapsed and
+    // the session is untouched — with the old bug the row would have opened it,
+    // dropping the peek for the full pane.
+    await browser.pause(400);
+    await expect($(".session-pane-peek")).toBeExisting();
+    expect((await invoke<HostSession[]>("host_list")).some((s) => !s.exited)).toBe(true);
+
+    // Teardown.
+    for (const s of await invoke<HostSession[]>("host_list")) {
+      await invoke("host_kill", { sessionId: s.id });
+    }
+  });
 });

@@ -125,7 +125,13 @@ export function SessionsSection() {
               onClick={() => openSession(s)}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && openSession(s)}
+              // Open only when Enter fires ON the row itself. Without the
+              // target guard the keydown bubbles from the focusable close
+              // button and Enter on the X would open the session as it closes
+              // it (the click handler stops the click, not this keydown).
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && e.target === e.currentTarget) openSession(s);
+              }}
             >
               <span className="sess-glyph">{adapterGlyph(s.adapter_id)}</span>
               <span className="nav-label sess-label">
