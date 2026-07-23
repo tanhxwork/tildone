@@ -3,10 +3,13 @@
 // 2026-07-19-hosted-agent-sessions):
 //
 //   attach — `claude attach <id>` against the card's background session.
-//            Close kills the attach client; the session lives in the daemon.
-//   hosted — a board-started CLI whose PTY the app owns (host.rs). Close
-//            only detaches; the session keeps running here, buffered, and a
-//            re-jump replays the buffer.
+//            Close (X / ⌘W) detaches the attach client; the session itself
+//            lives on in the daemon — we don't own it, so we can't kill it.
+//   hosted — a board-started CLI whose PTY the app owns (host.rs). Close ENDS
+//            it: `host_kill` stops the child and drops its row (Ghostty's
+//            ⌘W, user decision 2026-07-23). A live hosted CLI is a running
+//            process, so its X confirms first. Hiding — keep it running,
+//            just off-screen — is a separate control (the chevron / ⇧⌘T).
 //
 // Lifecycle: mount xterm → pty_open / host_attach (returns a generation) →
 // stream `pty-data` events tagged with that generation into the terminal;
@@ -14,7 +17,7 @@
 // reflows. Generations exist because a chunk from a pane closed a moment ago
 // can still be in flight — stale generations are dropped, not drawn.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
@@ -31,8 +34,8 @@ import {
   IconChevronRight,
   IconChevronLeft,
 } from "./Icons";
-import { useSwitcherTabs, switchToSession, closeOrNextSession } from "./useSwitcher";
-import { sessionRowModel } from "../utils/sessions";
+import { useSwitcherTabs, switchToSession, closeCurrentSession } from "./useSwitcher";
+import { closeKillsLiveCli, sessionRowModel } from "../utils/sessions";
 
 interface PtyEvent {
   generation: number;
@@ -80,6 +83,22 @@ export function SessionPane() {
       : (target?.taskRef ?? null);
   // The docked-rail status dot reads the same state as the sidebar row.
   const liveState = liveHostSession ? sessionRowModel(liveHostSession).state : "quiet";
+
+  // Closing a live hosted CLI ends a running process, so it asks first
+  // (Ghostty's ⌘W confirm). Detaching a foreign attach or clearing an exited
+  // row kills nothing, so those close straight away.
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  function requestClose() {
+    if (closeKillsLiveCli(target?.kind, liveHostSession)) {
+      setConfirmingClose(true);
+      return;
+    }
+    void closeCurrentSession();
+  }
+  function confirmClose() {
+    setConfirmingClose(false);
+    void closeCurrentSession();
+  }
 
   // One attach per (session, mount). The effect tears the whole terminal
   // down on session change or close — never reuse an xterm across sessions.
@@ -312,12 +331,13 @@ export function SessionPane() {
   }
 
   function onPaneKeyDown(e: React.KeyboardEvent) {
-    // ⌘W detaches and falls to the next live session (tab metaphor); closes
-    // when it was the last. Esc is deliberately NOT handled — it's the TUI's.
+    // ⌘W closes the session (Ghostty): ends a hosted CLI (confirm first when
+    // it's live), detaches a foreign attach, then falls to the next live
+    // session or the board. Esc is deliberately NOT handled — it's the TUI's.
     if (e.metaKey && e.key.toLowerCase() === "w") {
       e.preventDefault();
       e.stopPropagation();
-      closeOrNextSession();
+      requestClose();
     }
   }
 
@@ -440,9 +460,13 @@ export function SessionPane() {
         <button
           type="button"
           className="icon-btn"
-          title="Detach — the session keeps running (⌘W)"
-          aria-label="Detach terminal"
-          onClick={closeOrNextSession}
+          title={
+            target.kind === "hosted"
+              ? "End session — stops the CLI (⌘W)"
+              : "Detach — the session keeps running (⌘W)"
+          }
+          aria-label={target.kind === "hosted" ? "End session" : "Detach terminal"}
+          onClick={requestClose}
         >
           <IconX size={13} />
         </button>
@@ -451,12 +475,41 @@ export function SessionPane() {
       <footer className="session-pane-foot">
         <span>
           {target.kind === "hosted"
-            ? "hosted · session keeps running on close"
+            ? "hosted · ⌘W ends the session"
             : "attached · session keeps running on close"}
         </span>
-        <span>⌘W detach</span>
+        <span>{target.kind === "hosted" ? "⌘W end · ⇧⌘T hide" : "⌘W detach · ⇧⌘T hide"}</span>
       </footer>
       </aside>
+      {confirmingClose && (
+        <div className="modal-overlay" onClick={() => setConfirmingClose(false)}>
+          <div
+            className="modal quit-warning"
+            role="dialog"
+            aria-label="End this session?"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>End this session?</h2>
+            </div>
+            <p className="quit-warning-text">
+              {liveRef ? <strong>{liveRef}</strong> : "This session"}
+              {liveRef && " · "}
+              {target.name ?? "The CLI"} is still running. Ending it stops the CLI —
+              this can't be undone. To keep it running off-screen, hide the terminal
+              instead (⇧⌘T).
+            </p>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setConfirmingClose(false)}>
+                Keep running
+              </button>
+              <button className="btn danger" onClick={confirmClose}>
+                End session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

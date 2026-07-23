@@ -4,9 +4,10 @@
 // re-target. One visible pane throughout — switching is openPane, the same
 // re-attach + buffer-replay the jump has always used.
 
+import { invoke } from "@tauri-apps/api/core";
 import { useHostStore } from "../hostStore";
 import { usePaneStore } from "../paneStore";
-import { switcherSessions, type SwitchTab } from "../utils/sessions";
+import { nextAfterClose, switcherSessions, type SwitchTab } from "../utils/sessions";
 
 /** The switcher list for the current pane: every hosted session, plus the
  *  active attach target when it isn't itself hosted, with the active one
@@ -46,17 +47,31 @@ export function switchToSession(sessionId: string): void {
   });
 }
 
-/** Closing the active pane falls to the next live session — the tab metaphor
- *  (⌘W → next tab), and the spec's "closing the terminal falls focus to the
- *  next live session … when none remain [it closes]". Detaching never kills
- *  the session; it keeps running, we just stop showing it. */
-export function closeOrNextSession(): void {
+/** Close the active session (Ghostty's ⌘W; user decision 2026-07-23). A hosted
+ *  CLI we own is *killed* — `host_kill` stops the child and removes its row —
+ *  because closing a terminal ends its process. A foreign attach we don't own
+ *  can't be killed, so it is merely detached (the pane's own teardown runs
+ *  `pty_close`); the daemon keeps it running. Either way the view then falls to
+ *  the next live session, or closes to the board when none remain.
+ *
+ *  This *terminates* where the old detach-and-fall-to-next never did: a
+ *  detached session stayed live, so the fall-through always re-found the other
+ *  session and the pane ping-ponged forever. A killed session is genuinely
+ *  gone, so `nextAfterClose` converges. The confirm prompt for a live hosted
+ *  session is the caller's (SessionPane's) — by here the decision is made.
+ *
+ *  `host_kill` emits `host-changed` and the store re-pulls asynchronously, so
+ *  we `await refresh()` before choosing the next target: otherwise the killed
+ *  row could still read live and we'd re-target a dead session. */
+export async function closeCurrentSession(): Promise<void> {
   const st = usePaneStore.getState();
   const cur = st.target;
   if (!cur) return;
-  const next = useHostStore
-    .getState()
-    .sessions.find((s) => !s.exited && `hosted-${s.id}` !== cur.sessionId);
+  if (cur.kind === "hosted") {
+    await invoke("host_kill", { sessionId: cur.hostId }).catch(() => {});
+    await useHostStore.getState().refresh();
+  }
+  const next = nextAfterClose(useHostStore.getState().sessions, cur.sessionId);
   if (next) {
     st.openPane({
       kind: "hosted",

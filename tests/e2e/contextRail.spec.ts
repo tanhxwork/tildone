@@ -29,13 +29,15 @@ async function killShells(): Promise<void> {
 }
 
 // killShells stops the ptys but leaves the pane open (showing exited sessions),
-// which keeps the rail up and the board's quick-add hidden. Detach it so the
-// board — and quick-add — are reachable again. With every session already
-// exited, closeOrNextSession has no next to fall to, so one detach closes it.
-async function detachPaneIfOpen(): Promise<void> {
-  const detach = $('button[aria-label="Detach terminal"]');
-  while (await detach.isExisting()) {
-    await detach.click();
+// which keeps the rail up and the board's quick-add hidden. Close it so the
+// board — and quick-add — are reachable again. Every session is already exited,
+// so the close needs no confirm (nothing live to kill) and, with no next live
+// session to fall to, one click closes the pane. The X on a hosted session is
+// labelled "End session" (Ghostty close, TIL-162).
+async function closePaneIfOpen(): Promise<void> {
+  const close = $('button[aria-label="End session"]');
+  while (await close.isExisting()) {
+    await close.click();
     await browser.pause(100);
   }
 }
@@ -188,7 +190,7 @@ describe("session context rail", () => {
   it("shows the FULL board (not one column) when a bound session's terminal is collapsed", async () => {
     await $("#root").waitForExist();
     await killShells();
-    await detachPaneIfOpen(); // a prior test may have left the pane (and rail) up
+    await closePaneIfOpen(); // a prior test may have left the pane (and rail) up
 
     // A real card, and a shell BOUND to it from birth. This is the state the bug
     // needs: the pane target must itself carry the taskId. Binding an already-open
@@ -239,6 +241,56 @@ describe("session context rail", () => {
     let shown = 0;
     for (const c of cols) if (await c.isDisplayed()) shown += 1;
     expect(shown).toBe(3);
+
+    await killShells();
+  });
+
+  it("ends a live session on close (Ghostty ⌘W): confirm → fall to next → board", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await closePaneIfOpen();
+
+    // Two live hosted shells → one pane with a two-tab strip.
+    await spawnShell("/tmp");
+    await spawnShell("/usr");
+    await $(".session-pane-tabs").waitForExist();
+    await expect($$(".session-pane-tab")).toBeElementsArrayOfSize(2);
+
+    const liveShells = async () =>
+      (await invoke<HostSession[]>("host_list")).filter(
+        (s) => s.adapter_id === "shell" && !s.exited,
+      ).length;
+    expect(await liveShells()).toBe(2);
+
+    // Closing a LIVE hosted session asks first — X is about to kill a running
+    // CLI, not just hide it.
+    await $('button[aria-label="End session"]').click();
+    const confirm = $('.modal[aria-label="End this session?"]');
+    await expect(confirm).toBeExisting();
+
+    // Confirm → that session ends and the pane falls to the OTHER live one
+    // (still exactly one pane — no ping-pong — now with a single session, so
+    // the tab strip is gone and one live shell remains).
+    await confirm.$(".btn.danger").click();
+    await expect($('.modal[aria-label="End this session?"]')).not.toBeExisting();
+    await expect($(".session-pane")).toBeExisting();
+    await browser.waitUntil(async () => (await liveShells()) === 1, {
+      timeout: 5000,
+      timeoutMsg: "closing one of two sessions did not leave exactly one live shell",
+    });
+    await expect($$(".session-pane-tab")).toBeElementsArrayOfSize(0);
+
+    // Close the last one → confirm → the pane closes to the board: no terminal,
+    // no docked peek rail, and the quick-add is reachable again.
+    await $('button[aria-label="End session"]').click();
+    await $('.modal[aria-label="End this session?"]').$(".btn.danger").click();
+    await browser.waitUntil(async () => !(await $(".session-pane").isExisting()), {
+      timeout: 5000,
+      timeoutMsg: "closing the last session did not return to the board",
+    });
+    await expect($(".session-pane-peek")).not.toBeExisting();
+    await expect($(".quick-add")).toBeExisting();
+    expect(await liveShells()).toBe(0);
 
     await killShells();
   });

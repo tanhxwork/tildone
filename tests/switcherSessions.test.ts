@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  closeKillsLiveCli,
+  nextAfterClose,
   nextSessionId,
   switcherSessions,
   type SwitchableSession,
@@ -99,5 +101,52 @@ describe("nextSessionId", () => {
 
   test("a missing active falls to the first tab", () => {
     expect(nextSessionId(tabs, "gone", 1)).toBe("a");
+  });
+});
+
+describe("nextAfterClose", () => {
+  test("falls to the first remaining live session, skipping the closing one", () => {
+    // hosted-1 is closing; it has already left the store, so the remaining
+    // list is [2, 3] and the pane falls to 2.
+    const next = nextAfterClose([host(2), host(3)], "hosted-1");
+    expect(next?.id).toBe(2);
+  });
+
+  test("defends against a not-yet-refreshed row: never re-picks the closing session", () => {
+    // The kill hasn't propagated yet, so the closing session is still present
+    // and live. It must still be skipped, and the next live one chosen.
+    const next = nextAfterClose([host(1), host(2)], "hosted-1");
+    expect(next?.id).toBe(2);
+  });
+
+  test("skips exited sessions when falling through", () => {
+    const next = nextAfterClose([host(2, { exited: true }), host(3)], "hosted-1");
+    expect(next?.id).toBe(3);
+  });
+
+  test("returns null when nothing live remains — the pane closes to the board", () => {
+    expect(nextAfterClose([], "hosted-1")).toBeNull();
+    expect(nextAfterClose([host(2, { exited: true })], "hosted-1")).toBeNull();
+    // The last live session closing on itself: only its own (stale) row is left.
+    expect(nextAfterClose([host(1)], "hosted-1")).toBeNull();
+  });
+});
+
+describe("closeKillsLiveCli", () => {
+  test("true only for a live hosted session — the case that needs a confirm", () => {
+    expect(closeKillsLiveCli("hosted", { exited: false })).toBe(true);
+  });
+
+  test("false for an exited hosted session (already dead)", () => {
+    expect(closeKillsLiveCli("hosted", { exited: true })).toBe(false);
+  });
+
+  test("false for a foreign attach (detach kills nothing)", () => {
+    expect(closeKillsLiveCli("attach", { exited: false })).toBe(false);
+  });
+
+  test("false when the hosted session is missing or the kind is unknown", () => {
+    expect(closeKillsLiveCli("hosted", null)).toBe(false);
+    expect(closeKillsLiveCli(undefined, { exited: false })).toBe(false);
   });
 });

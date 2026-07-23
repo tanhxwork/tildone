@@ -155,3 +155,38 @@ export function nextSessionId(
   const next = (idx + dir + tabs.length) % tabs.length;
   return tabs[next].sessionId;
 }
+
+// Closing the terminal (X button / ⌘W) follows Ghostty's Cmd+W (user decision
+// 2026-07-23): it CLOSES the session rather than cycling between live ones. A
+// hosted CLI we own is killed (host_kill, which removes its row entirely); a
+// foreign attach we don't own is merely detached. The view then falls to the
+// next live session, or closes to the board when none remain — the tab
+// metaphor, which now *converges* because the closed session is genuinely
+// gone (the old "detach + fall to next" never terminated: a detached session
+// stays live, so X ping-ponged between the two forever — the uncloseable-pane
+// bug this replaces).
+
+/** The session the pane should show after the current one closes, or null to
+ *  close the pane to the board. Pass the sessions remaining after the close —
+ *  a killed hosted session has already left host.rs's table, a detached attach
+ *  was never in it — so `closingSessionId` only guards the window before a kill
+ *  has propagated to the store. First live session in list order wins; null =
+ *  close the last tab, so the pane returns to the board (Ghostty's window-close
+ *  on the final tab). */
+export function nextAfterClose<T extends { id: number; exited: boolean }>(
+  sessions: T[],
+  closingSessionId: string,
+): T | null {
+  return sessions.find((s) => !s.exited && `hosted-${s.id}` !== closingSessionId) ?? null;
+}
+
+/** Whether closing this pane would KILL a live CLI we own — the only case that
+ *  warrants a confirm prompt. A live hosted session is a running child process
+ *  (a live claude/codex/shell); detaching a foreign attach kills nothing, and
+ *  an exited session is already dead. */
+export function closeKillsLiveCli(
+  targetKind: "hosted" | "attach" | undefined,
+  hostSession: { exited: boolean } | null | undefined,
+): boolean {
+  return targetKind === "hosted" && !!hostSession && !hostSession.exited;
+}
