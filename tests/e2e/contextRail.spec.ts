@@ -28,17 +28,21 @@ async function killShells(): Promise<void> {
   }
 }
 
-// killShells stops the ptys but leaves the pane open (showing exited sessions),
-// which keeps the rail up and the board's quick-add hidden. Close it so the
-// board — and quick-add — are reachable again. Every session is already exited,
-// so the close needs no confirm (nothing live to kill) and, with no next live
-// session to fall to, one click closes the pane. The X on a hosted session is
-// labelled "End session" (Ghostty close, TIL-162).
+// killShells stops the ptys (host_kill removes the rows) but leaves the pane
+// open on a now-missing hosted target, which keeps the rail up and the board's
+// quick-add hidden. Close it so the board — and quick-add — are reachable
+// again. A hosted target whose row the store no longer has is treated as
+// maybe-live (a just-started session lives in host.rs before the refresh
+// lands), so the X — labelled "End session" (Ghostty close, TIL-162) — now
+// raises the confirm; dismiss it. With no next live session to fall to, one
+// confirmed close returns the pane to the board.
 async function closePaneIfOpen(): Promise<void> {
   const close = $('button[aria-label="End session"]');
   while (await close.isExisting()) {
     await close.click();
-    await browser.pause(100);
+    const confirm = $('.modal[aria-label="End this session?"] .btn.danger');
+    if (await confirm.isExisting()) await confirm.click();
+    await browser.pause(150);
   }
 }
 

@@ -181,12 +181,20 @@ export function nextAfterClose<T extends { id: number; exited: boolean }>(
 }
 
 /** Whether closing this pane would KILL a live CLI we own — the only case that
- *  warrants a confirm prompt. A live hosted session is a running child process
- *  (a live claude/codex/shell); detaching a foreign attach kills nothing, and
- *  an exited session is already dead. */
+ *  warrants a confirm prompt. A hosted session is a child process we own;
+ *  detaching a foreign attach kills nothing, so it never prompts. For a hosted
+ *  target we confirm unless we can *prove* the CLI is already dead: only a row
+ *  the store shows as `exited` skips the prompt. A missing row is NOT proof of
+ *  death — a just-started session lives in host.rs before the async `host_list`
+ *  refresh lands it in the store, so `closeCurrentSession` would `host_kill` a
+ *  running CLI; treating "unknown" as live makes the prompt fail safe (Codex
+ *  defect, 2026-07-23). An extra confirm on a genuinely-gone row is harmless —
+ *  the follow-up `host_kill` just no-ops. */
 export function closeKillsLiveCli(
   targetKind: "hosted" | "attach" | undefined,
   hostSession: { exited: boolean } | null | undefined,
 ): boolean {
-  return targetKind === "hosted" && !!hostSession && !hostSession.exited;
+  if (targetKind !== "hosted") return false;
+  if (!hostSession) return true; // unknown row → assume live, confirm
+  return !hostSession.exited;
 }

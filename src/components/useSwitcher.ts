@@ -71,6 +71,12 @@ export async function closeCurrentSession(): Promise<void> {
     await invoke("host_kill", { sessionId: cur.hostId }).catch(() => {});
     await useHostStore.getState().refresh();
   }
+  // The kill + refresh above were awaited; if the user re-targeted the pane in
+  // that window (a tab click, ⌘[/⌘], opening another session), honour their
+  // choice — don't yank the pane off the session they just chose onto whatever
+  // nextAfterClose picks (Codex defect, 2026-07-23). The just-closed session is
+  // already gone; there is nothing more to do here.
+  if (usePaneStore.getState().target?.sessionId !== cur.sessionId) return;
   const next = nextAfterClose(useHostStore.getState().sessions, cur.sessionId);
   if (next) {
     st.openPane({

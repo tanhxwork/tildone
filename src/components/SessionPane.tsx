@@ -88,6 +88,14 @@ export function SessionPane() {
   // (Ghostty's ⌘W confirm). Detaching a foreign attach or clearing an exited
   // row kills nothing, so those close straight away.
   const [confirmingClose, setConfirmingClose] = useState(false);
+  // The confirm prompt belongs to the session it was opened for. If the target
+  // changes underneath it — a tab click, ⌘[/⌘], the pane closing — drop the
+  // prompt rather than let a later "End session" click apply to whatever
+  // session is now shown, or let a stale modal resurrect on the next open
+  // (Codex defect, 2026-07-23).
+  useEffect(() => {
+    setConfirmingClose(false);
+  }, [target?.sessionId]);
   function requestClose() {
     if (closeKillsLiveCli(target?.kind, liveHostSession)) {
       setConfirmingClose(true);

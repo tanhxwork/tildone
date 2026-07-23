@@ -143,10 +143,17 @@ describe("closeKillsLiveCli", () => {
 
   test("false for a foreign attach (detach kills nothing)", () => {
     expect(closeKillsLiveCli("attach", { exited: false })).toBe(false);
+    expect(closeKillsLiveCli("attach", null)).toBe(false);
   });
 
-  test("false when the hosted session is missing or the kind is unknown", () => {
-    expect(closeKillsLiveCli("hosted", null)).toBe(false);
+  test("true for a hosted target whose row the store hasn't caught up to yet", () => {
+    // A just-started session lives in host.rs before host_list refreshes the
+    // store, so a missing row is not proof of death — confirm, don't kill blind.
+    expect(closeKillsLiveCli("hosted", null)).toBe(true);
+    expect(closeKillsLiveCli("hosted", undefined)).toBe(true);
+  });
+
+  test("false when the kind is unknown", () => {
     expect(closeKillsLiveCli(undefined, { exited: false })).toBe(false);
   });
 });
