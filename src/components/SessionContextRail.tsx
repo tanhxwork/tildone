@@ -45,10 +45,11 @@ export function SessionContextRail() {
   // Re-fetch on task change and whenever an agent writes to the DB, so the feed
   // is as live as the board.
   useEffect(() => {
-    if (taskId == null) {
-      setActivity([]);
-      return;
-    }
+    // Clear immediately on any task change, so switching A→B never renders B's
+    // title/checklist over A's feed (and a failed B fetch can't leave A's
+    // activity stuck — the error is swallowed below by design).
+    setActivity([]);
+    if (taskId == null) return;
     let alive = true;
     const load = () => {
       fetchActivity(taskId)
@@ -221,15 +222,14 @@ export function SessionContextRail() {
             <p className="rail-empty-feed">No activity yet.</p>
           ) : (
             <ul className="rail-feed">
-              {activity
-                .slice()
-                .reverse()
-                .map((e) => (
-                  <li key={e.id} className={`rail-ev rail-ev--${e.actor_kind ?? "none"}`}>
-                    <span className="rail-ev-dot" />
-                    <span className="rail-ev-label">{e.label}</span>
-                  </li>
-                ))}
+              {/* fetchActivity is already newest-first (ORDER BY id DESC) — render
+                  as-is so "now" sits at the top, matching the full card's feed. */}
+              {activity.map((e) => (
+                <li key={e.id} className={`rail-ev rail-ev--${e.actor_kind ?? "none"}`}>
+                  <span className="rail-ev-dot" />
+                  <span className="rail-ev-label">{e.label}</span>
+                </li>
+              ))}
             </ul>
           )}
         </div>

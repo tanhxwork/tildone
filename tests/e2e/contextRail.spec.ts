@@ -78,6 +78,29 @@ describe("session context rail", () => {
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/context-rail-bound.png");
 
+    // Rail content (spec: e2e exercises progress / checklist / chips / feed).
+    // Seed a subtask and a link, nudge the store to reload, assert they render.
+    await invoke("plugin:sql|execute", {
+      db: "sqlite:tildone.db",
+      query: "INSERT INTO subtasks (task_id, title, position) VALUES ($1, $2, $3)",
+      values: [found[0].id, "Wire the rail", 0],
+    });
+    await invoke("plugin:sql|execute", {
+      db: "sqlite:tildone.db",
+      query:
+        "INSERT INTO task_links (task_id, url, label, kind, created_at) VALUES ($1, $2, $3, $4, $5)",
+      values: [found[0].id, "https://example.com/tree/feature", "feature", "branch", "2026-07-23T00:00:00Z"],
+    });
+    await browser.execute(() =>
+      (
+        window as unknown as { __TAURI__: { event: { emit: (e: string) => void } } }
+      ).__TAURI__.event.emit("agent-db-changed"),
+    );
+    await expect($(".rail-check")).toBeExisting();
+    await expect($(".rail-bar")).toBeExisting();
+    await expect($(".rail-link")).toBeExisting();
+    await expect($(".rail-feed")).toBeExisting();
+
     // Focus mode: the rail hides and the terminal widens, sidebar kept.
     await $('button[aria-label="Focus terminal"]').click();
     await expect($(".session-pane")).toHaveElementClass("session-pane--focus");

@@ -66,13 +66,19 @@ describe("terminal divider — show/hide handle", () => {
     // the 340ms transition settles, its left edge has cleared the viewport.
     // A single post-settle check, not a polled waitUntil, avoids the WebDriver
     // script-timeout flakiness that polling hit under full-suite load.
-    await browser.pause(500);
-    expect(
-      await browser.execute(() => {
-        const el = document.querySelector(".session-pane");
-        return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
-      }),
-    ).toBe(true);
+    // Wait for the 340ms transition to settle, then the left edge has cleared
+    // the viewport. A bounded waitUntil, not a fixed pause: machine load that
+    // stretches the transition (a parallel build, a Codex run) must not flake
+    // this — it polls a stable end-state, so the script-timeout risk that ruled
+    // out polling a live-updating value doesn't apply here.
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() => {
+          const el = document.querySelector(".session-pane");
+          return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
+        }),
+      { timeout: 3000, timeoutMsg: "collapsed pane did not slide off the right edge" },
+    );
     // Focus must not be stranded in the hidden, aria-hidden pane, or board
     // shortcuts stay suppressed and focus is trapped in aria-hidden content.
     expect(

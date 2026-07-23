@@ -45,3 +45,28 @@ export function switchToSession(sessionId: string): void {
     name: s.adapter_name,
   });
 }
+
+/** Closing the active pane falls to the next live session — the tab metaphor
+ *  (⌘W → next tab), and the spec's "closing the terminal falls focus to the
+ *  next live session … when none remain [it closes]". Detaching never kills
+ *  the session; it keeps running, we just stop showing it. */
+export function closeOrNextSession(): void {
+  const st = usePaneStore.getState();
+  const cur = st.target;
+  if (!cur) return;
+  const next = useHostStore
+    .getState()
+    .sessions.find((s) => !s.exited && `hosted-${s.id}` !== cur.sessionId);
+  if (next) {
+    st.openPane({
+      kind: "hosted",
+      hostId: next.id,
+      sessionId: `hosted-${next.id}`,
+      taskRef: next.task_ref,
+      taskId: next.task_id,
+      name: next.adapter_name,
+    });
+  } else {
+    st.closePane();
+  }
+}

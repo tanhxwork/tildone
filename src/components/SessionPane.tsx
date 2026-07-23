@@ -31,7 +31,7 @@ import {
   IconChevronRight,
   IconChevronLeft,
 } from "./Icons";
-import { useSwitcherTabs, switchToSession } from "./useSwitcher";
+import { useSwitcherTabs, switchToSession, closeOrNextSession } from "./useSwitcher";
 import { sessionRowModel } from "../utils/sessions";
 
 interface PtyEvent {
@@ -60,7 +60,6 @@ export function SessionPane() {
   const collapsed = usePaneStore((s) => s.collapsed);
   const railCollapsed = usePaneStore((s) => s.railCollapsed);
   const focusNonce = usePaneStore((s) => s.focusNonce);
-  const closePane = usePaneStore((s) => s.closePane);
   const toggleFullscreen = usePaneStore((s) => s.toggleFullscreen);
   const toggleCollapsed = usePaneStore((s) => s.toggleCollapsed);
   const toggleRailCollapsed = usePaneStore((s) => s.toggleRailCollapsed);
@@ -313,11 +312,12 @@ export function SessionPane() {
   }
 
   function onPaneKeyDown(e: React.KeyboardEvent) {
-    // ⌘W detaches. Esc is deliberately NOT handled — it belongs to the TUI.
+    // ⌘W detaches and falls to the next live session (tab metaphor); closes
+    // when it was the last. Esc is deliberately NOT handled — it's the TUI's.
     if (e.metaKey && e.key.toLowerCase() === "w") {
       e.preventDefault();
       e.stopPropagation();
-      closePane();
+      closeOrNextSession();
     }
   }
 
@@ -442,7 +442,7 @@ export function SessionPane() {
           className="icon-btn"
           title="Detach — the session keeps running (⌘W)"
           aria-label="Detach terminal"
-          onClick={closePane}
+          onClick={closeOrNextSession}
         >
           <IconX size={13} />
         </button>

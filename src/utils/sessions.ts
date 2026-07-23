@@ -104,16 +104,21 @@ export interface SwitchTab {
   active: boolean;
 }
 
-/** The switcher list: every hosted session in the given order, marking the
- *  active one — plus the active attach target prepended when it isn't itself
- *  a hosted session (a foreign `claude attach` session lives in no store, so
- *  it can only ride in from the open pane's own target). */
+/** The switcher list: every **live** hosted session in the given order (an
+ *  exited session lingers in the store until dismissed, but it is board
+ *  detritus, not a switch target — so it is neither counted "live" nor
+ *  cycled to), marking the active one — plus the active attach target
+ *  prepended when it isn't itself a hosted session (a foreign `claude attach`
+ *  session lives in no store, so it can only ride in from the open pane's own
+ *  target). */
 export function switcherSessions(
   sessions: SwitchableSession[],
   activeSessionId: string | null,
   activeAttach?: { sessionId: string; ref: string | null } | null,
 ): SwitchTab[] {
-  const tabs: SwitchTab[] = sessions.map((s) => {
+  const tabs: SwitchTab[] = sessions
+    .filter((s) => !s.exited)
+    .map((s) => {
     const sessionId = `hosted-${s.id}`;
     const m = sessionRowModel(s);
     return {

@@ -41,12 +41,13 @@ describe("switcherSessions", () => {
     expect(b.label).toBe("Claude Code");
   });
 
-  test("state ranks exited over waiting over quiet", () => {
+  test("exited sessions are excluded from the switcher (not live, not cycled)", () => {
     const tabs = switcherSessions(
       [host(1, { exited: true }), host(2, { waiting: true }), host(3)],
       null,
     );
-    expect(tabs.map((t) => t.state)).toEqual(["exited", "waiting", "quiet"]);
+    expect(tabs.map((t) => t.sessionId)).toEqual(["hosted-2", "hosted-3"]);
+    expect(tabs.map((t) => t.state)).toEqual(["waiting", "quiet"]);
   });
 
   test("a foreign attach target rides in as a prepended tab when it isn't hosted", () => {
