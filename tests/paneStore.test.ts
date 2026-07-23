@@ -3,8 +3,8 @@
 // railCollapsed toggle + persistence, and that re-targeting the pane preserves
 // widthFraction. paneStore reads window.localStorage at import, so the shim
 // MUST be imported before the store (TIL-158 deviation, closed by TIL-161).
-import { memoryStorage } from "./support/localStorageShim";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { memoryStorage, restoreStorageShim } from "./support/localStorageShim";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import {
   usePaneStore,
   storedFraction,
@@ -23,6 +23,10 @@ function attach(sessionId: string, over: Partial<PaneTarget> = {}): PaneTarget {
     ...over,
   } as PaneTarget;
 }
+
+// Remove the window/localStorage shim once this file's tests finish, so it
+// can't leak into test files Bun loads afterwards (Codex verify, 2026-07-23).
+afterAll(restoreStorageShim);
 
 beforeEach(() => {
   memoryStorage.clear();
