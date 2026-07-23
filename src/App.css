@@ -5154,6 +5154,7 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   padding: 14px 0;
   border: none;
@@ -5176,10 +5177,6 @@ textarea:focus-visible,
 
 .session-pane-peek .sess-dot {
   margin-left: 0;
-}
-
-.session-pane-peek svg {
-  margin-top: auto;
 }
 
 .session-pane-peek-label {
