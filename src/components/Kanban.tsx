@@ -381,10 +381,11 @@ function Column({
   const reviewSplit = Math.min(reviewCount, ids.length);
   const hasReview = isDoing && reviewSplit > 0;
   const hasWorking = isDoing && ids.length > reviewSplit;
-  // While the session pane is open, the board strip shows only the jumped
-  // card's column — the whole board can't fit beside a ¾ pane, and the
-  // pane's entire point is "this card, that session, side by side"
-  // (user review finding, 2026-07-19).
+  // The column that holds the pane's bound card. Unguarded by collapse on
+  // purpose (unlike paneOpenTaskId above): it drives the card accent ring, the
+  // "this card owns the docked session" cue that stays useful on the collapsed
+  // full board. (The old ¾-pane single-column narrowing it also fed is now
+  // superseded by the context rail — TIL-160.)
   const paneTaskId = usePaneStore((s) => s.target?.taskId ?? null);
   const holdsPaneSrc = paneTaskId !== null && ids.includes(paneTaskId);
 

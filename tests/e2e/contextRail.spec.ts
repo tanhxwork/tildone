@@ -28,6 +28,18 @@ async function killShells(): Promise<void> {
   }
 }
 
+// killShells stops the ptys but leaves the pane open (showing exited sessions),
+// which keeps the rail up and the board's quick-add hidden. Detach it so the
+// board — and quick-add — are reachable again. With every session already
+// exited, closeOrNextSession has no next to fall to, so one detach closes it.
+async function detachPaneIfOpen(): Promise<void> {
+  const detach = $('button[aria-label="Detach terminal"]');
+  while (await detach.isExisting()) {
+    await detach.click();
+    await browser.pause(100);
+  }
+}
+
 async function spawnShell(cwd: string): Promise<void> {
   await $('button[aria-label="New session"]').click();
   await $(".sess-new").waitForExist();
@@ -51,10 +63,6 @@ describe("session context rail", () => {
     await browser.keys("Enter");
     await $(".task-title*=Rail target task").waitForExist();
     const ref = await $(".task-id").getText();
-
-    // Board view, so the collapse-shows-full-board check below has columns to
-    // count. The toggle is only reachable now, before the pane hides the chrome.
-    await $('button[aria-label="Board view"]').click();
 
     // Open an UNBOUND shell: the middle becomes the minimal (no-card-yet) rail,
     // never the board and never an error.
@@ -113,14 +121,6 @@ describe("session context rail", () => {
     await browser.keys(["Meta", "Shift", "t"]); // collapse → original board
     await expect($(".session-pane-peek")).toBeExisting();
     await expect($(".quick-add")).toBeExisting();
-    // The collapsed board is the FULL board — all three status columns, not the
-    // single narrowed column of the parked session's card (TIL-159 follow-up:
-    // the pane-focus narrowing must not survive into the docked-rail state).
-    await expect($(".board")).not.toHaveElementClass("pane-focus");
-    const cols = await $$(".board-column");
-    let shown = 0;
-    for (const c of cols) if (await c.isDisplayed()) shown += 1;
-    expect(shown).toBe(3);
     await browser.keys(["Meta", "Shift", "t"]); // reopen for the rest
     await expect($(".session-pane-peek")).not.toBeExisting();
 
@@ -181,6 +181,64 @@ describe("session context rail", () => {
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/context-rail-tabs.png");
+
+    await killShells();
+  });
+
+  it("shows the FULL board (not one column) when a bound session's terminal is collapsed", async () => {
+    await $("#root").waitForExist();
+    await killShells();
+    await detachPaneIfOpen(); // a prior test may have left the pane (and rail) up
+
+    // A real card, and a shell BOUND to it from birth. This is the state the bug
+    // needs: the pane target must itself carry the taskId. Binding an already-open
+    // unbound pane via IPC does not — openPane's same-session guard never rewrites
+    // target.taskId — so only opening an already-bound session (sidebar openSession
+    // passes s.task_id) puts a taskId on the target. Start bound, then open it.
+    const input = $(".quick-add input");
+    await input.waitForExist();
+    await input.setValue("Full board on collapse");
+    await browser.keys("Enter");
+    await $(".task-title*=Full board on collapse").waitForExist();
+    const ref = await $(".task-id").getText();
+    // Board view, so the collapsed board has columns to count (chrome is reachable
+    // now, before any pane opens and hides it).
+    await $('button[aria-label="Board view"]').click();
+
+    const found = await invoke<Array<{ id: number }>>("plugin:sql|select", {
+      db: "sqlite:tildone.db",
+      query: "SELECT id FROM tasks WHERE title = $1",
+      values: ["Full board on collapse"],
+    });
+    await invoke<number>("host_start", {
+      taskId: found[0].id,
+      taskRef: ref,
+      adapterId: "shell",
+      claimCwd: "/tmp",
+      projectName: null,
+      prompt: null,
+      cols: 80,
+      rows: 24,
+    });
+    // Open the bound session from the sidebar row → openPane's full path puts the
+    // task id on the pane target. Confirm via the bound ref chip.
+    const row = $(".sess-row");
+    await row.waitForExist();
+    await row.click();
+    await $(".session-pane").waitForExist();
+    await expect($(".session-pane-ref")).toHaveText(ref);
+
+    // Collapse: the middle returns to the ORIGINAL full board — all three status
+    // columns — not the single narrowed column of the bound card. Pre-fix, the
+    // pane-focus narrowing survived into the docked-rail state and left only the
+    // bound card's column (e.g. just "To Do"); this is the guard for that (TIL-160).
+    await browser.keys(["Meta", "Shift", "t"]);
+    await expect($(".session-pane-peek")).toBeExisting();
+    await expect($(".board")).not.toHaveElementClass("pane-focus");
+    const cols = await $$(".board-column");
+    let shown = 0;
+    for (const c of cols) if (await c.isDisplayed()) shown += 1;
+    expect(shown).toBe(3);
 
     await killShells();
   });

@@ -5245,14 +5245,17 @@ textarea:focus-visible,
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-/* While the pane is open, the board strip narrows to the real remaining
-   space (the pane is position:fixed, so layout alone would underlap it) and
-   shows only the jumped card's column — a full board can't fit beside a
-   ¾ pane, and the pane's point is "this card, that session, side by side". */
+/* The board strip keeps clear of the fixed pane / docked rail (both
+   position:fixed, so layout alone would underlap them). --pane-inset is the
+   pane width while open, or the slim docked-rail footprint while collapsed. */
 .content {
   padding-right: calc(20px + var(--pane-inset, 0px));
 }
 
+/* Superseded by the context rail (TIL-160): the open pane now shows the rail,
+   not a narrowed board, so this only bites behind a fullscreen pane, where it's
+   invisible. Kept as the single-column fallback should a board ever render
+   beside an open pane again. */
 .board.pane-focus .board-column:not(.pane-src-col) {
   display: none;
 }
