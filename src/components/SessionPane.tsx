@@ -131,11 +131,15 @@ export function SessionPane() {
     }
     fit.fit();
     termRef.current = term;
-    // Test seam: the e2e suite drives the live xterm (selection, buffer reads)
-    // through this handle — the terminal has no other stable entry point from
-    // outside React, and the app's imported `invoke` can't be intercepted via
-    // the global Tauri shim. Costs one window ref in prod; cleared on dispose.
-    (window as unknown as { __tildoneTerm?: Terminal }).__tildoneTerm = term;
+    // Test seam: the e2e suite drives the live xterm (selection, buffer reads,
+    // onData taps) through this handle — the terminal has no other stable entry
+    // point from outside React. Gated on VITE_E2E, which scripts/e2e-build.sh
+    // sets and no prod/dev build does, so `import.meta.env.VITE_E2E` is
+    // undefined there and the handle is never assigned — nothing reachable from
+    // the page world can feed the pty (the seam can call term.paste).
+    if (import.meta.env.VITE_E2E) {
+      (window as unknown as { __tildoneTerm?: Terminal }).__tildoneTerm = term;
+    }
 
     // The whole async chain below races the effect's own cleanup: StrictMode
     // re-invokes effects synchronously in dev, and a fast session switch does
@@ -259,18 +263,19 @@ export function SessionPane() {
       // is no Tauri clipboard plugin — navigator.clipboard works in the
       // webview because each branch fires on a real ⌘-key gesture.
       term.attachCustomKeyEventHandler((e) => {
-        if (e.type !== "keydown" || !e.metaKey || e.ctrlKey || e.altKey) return true;
+        // Exactly ⌘ (no Ctrl/Alt/Shift): a lone Cmd modifier. Shift is excluded
+        // so ⌘⇧←/→ (extend-selection) and ⌘⇧C/V stay with the app/TUI.
+        if (e.type !== "keydown" || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return true;
         const k = e.key.toLowerCase();
         // ⌘←/⌘→ → Home/End (CSI H / CSI F). This terminal's primary tenants
         // are agent TUIs (Claude Code, codex — crossterm), which read these as
         // Home/End and move to line start/end; raw shells honor them when
         // their keymap binds Home/End (config-dependent, not ours to force).
+        // Sent via term.input, not a direct pty_write, so it rides the one
+        // onData → pty_write pipe (below) — single write path, and observable.
         if (k === "arrowleft" || k === "arrowright") {
           e.preventDefault();
-          void invoke("pty_write", {
-            generation: opened,
-            data: k === "arrowleft" ? "\x1b[H" : "\x1b[F",
-          }).catch(() => {});
+          term.input(k === "arrowleft" ? "\x1b[H" : "\x1b[F");
           return false;
         }
         // ⌘C only when there's a selection to copy — otherwise let it fall
@@ -324,8 +329,10 @@ export function SessionPane() {
       }
       term.dispose();
       termRef.current = null;
-      const w = window as unknown as { __tildoneTerm?: Terminal };
-      if (w.__tildoneTerm === term) delete w.__tildoneTerm;
+      if (import.meta.env.VITE_E2E) {
+        const w = window as unknown as { __tildoneTerm?: Terminal };
+        if (w.__tildoneTerm === term) delete w.__tildoneTerm;
+      }
     };
     // sessionId is the pane's stable identity (claim UUID for attach,
     // `hosted-<id>` for hosted): kind/shortId/hostId are fixed for a given

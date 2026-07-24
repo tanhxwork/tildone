@@ -17,22 +17,40 @@ interface HostSession {
   exited: boolean;
 }
 
-// Dispatch a ⌘-chord straight at xterm's textarea. Synthetic dispatch (rather
-// than browser.keys) is deliberate: WebDriver key injection into this webview
-// drops the Meta modifier off Arrow keydowns, so an OS-level ⌘← never reaches
-// the handler with metaKey set. A synthesized event guarantees the modifier and
+// Bytes xterm has emitted (onData) since the tap was installed. Home/End ride
+// term.input and paste rides term.paste, so both surface here exactly as they
+// reach the pty — server output (term.write) never fires onData, so the prompt
+// and echoes don't pollute this.
+async function emitted(): Promise<string[]> {
+  return browser.execute(() => (window as unknown as { __emit?: string[] }).__emit ?? []);
+}
+
+// Dispatch a ⌘-chord straight at xterm's textarea. Synthetic dispatch (not
+// browser.keys) is deliberate: WebDriver key injection into this webview drops
+// the Meta modifier off Arrow keydowns, so an OS-level ⌘← never reaches the
+// handler with metaKey set. A synthesized event guarantees the modifier and
 // exercises the handler exactly as a real ⌘-press does. Returns false when the
 // handler called preventDefault (i.e. it claimed the chord).
-async function metaChord(key: string): Promise<boolean> {
-  return browser.execute((k) => {
-    const ta = document.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
-    if (!ta) return true;
-    return ta.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true, cancelable: true }));
-  }, key);
+async function metaChord(key: string, shift = false): Promise<boolean> {
+  return browser.execute(
+    (k, s) => {
+      const ta = document.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+      if (!ta) return true;
+      return ta.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, shiftKey: s, bubbles: true, cancelable: true }));
+    },
+    key,
+    shift,
+  );
 }
 
 describe("terminal — ⌘ line-editing & copy/paste", () => {
-  it("⌘←/⌘→ are claimed as Home/End, ⌘C copies the selection, ⌘V pastes", async () => {
+  afterEach(async () => {
+    // Never leave a live pty behind the next spec, even if an assertion threw.
+    for (const s of await invoke<HostSession[]>("host_list"))
+      if (s.adapter_id === "shell" && !s.exited) await invoke("host_kill", { sessionId: s.id });
+  });
+
+  it("⌘←/⌘→ emit Home/End, ⌘C copies the selection, ⌘V pastes, ⌘⇧ passes through", async () => {
     await $("#root").waitForExist();
 
     // Spawn a live shell so the pane and its xterm exist (same path a user takes).
@@ -45,7 +63,7 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
     await $(".session-pane").waitForExist();
 
     // Wait for the shell prompt to render — proof the pty is attached and the
-    // handler's pty_write path (wired only after attach) is live.
+    // onData → pty_write path (wired only after attach) is live.
     await browser.waitUntil(
       async () =>
         browser.execute(() => {
@@ -59,17 +77,24 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
           for (let y = 0; y < b.length; y++) if ((b.getLine(y)?.translateToString(true) ?? "").trim().length) return true;
           return false;
         }),
-      { timeout: 12000, timeoutMsg: "shell prompt never rendered" },
+      { timeout: 12000, timeoutMsg: "shell prompt never rendered (or VITE_E2E seam missing)" },
     );
 
-    // Stub the clipboard so ⌘C/⌘V are observable without OS clipboard access:
-    // writeText records the copied text; readText records that a paste asked
-    // for it. Both are deterministic — no dependency on the shell echoing back.
+    // Tap onData to see the exact bytes leaving for the pty, and stub the
+    // clipboard so ⌘C/⌘V are observable without OS clipboard access.
     await browser.execute(() => {
-      const w = window as unknown as { __clipOut: string | null; __pasteRead: boolean; __clipIn: string };
-      w.__clipOut = null;
+      const w = window as unknown as {
+        __emit: string[];
+        __pasteRead: boolean;
+        __clipOut: string | null;
+        __clipIn: string;
+        __tildoneTerm: { onData(cb: (d: string) => void): void };
+      };
+      w.__emit = [];
       w.__pasteRead = false;
+      w.__clipOut = null;
       w.__clipIn = "PASTED-marker";
+      w.__tildoneTerm.onData((d) => w.__emit.push(d));
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
@@ -87,11 +112,20 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
 
     await $(".xterm").click();
 
-    // ⌘←/⌘→ are claimed by the handler (preventDefault → dispatch returns false).
+    // ⌘←/⌘→ are claimed (preventDefault → dispatch returns false) and emit the
+    // Home/End CSI sequences verbatim onto the pty pipe.
     expect(await metaChord("ArrowLeft")).toBe(false);
     expect(await metaChord("ArrowRight")).toBe(false);
-    // A ⌘-chord the handler does not own passes through untouched.
+    expect(await emitted()).toEqual(expect.arrayContaining(["\x1b[H", "\x1b[F"]));
+
+    // ⌘⇧←, ⌘⇧c, ⌘⇧v and a ⌘-chord the handler doesn't own all pass through
+    // untouched — not claimed (dispatch returns true), and nothing new emitted.
+    const beforePassthrough = (await emitted()).length;
+    expect(await metaChord("ArrowLeft", true)).toBe(true);
+    expect(await metaChord("c", true)).toBe(true);
+    expect(await metaChord("v", true)).toBe(true);
     expect(await metaChord("q")).toBe(true);
+    expect((await emitted()).length).toBe(beforePassthrough);
 
     // ⌘C copies the current selection verbatim to the clipboard.
     const selection = await browser.execute(() => {
@@ -110,18 +144,15 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
       (window as unknown as { __tildoneTerm: { clearSelection(): void } }).__tildoneTerm.clearSelection(),
     );
 
-    // ⌘V is claimed and reads the clipboard to forward into the pty. (The
-    // pty_write path itself is covered by the ⌘←/⌘→ interception above; the
-    // shell's echo of the pasted text is intentionally not asserted — it's a
-    // racy, shell-config-dependent signal.)
+    // ⌘V reads the clipboard and pastes the bytes onto the pty pipe.
     expect(await metaChord("v")).toBe(false);
     await browser.waitUntil(
       async () => browser.execute(() => (window as unknown as { __pasteRead: boolean }).__pasteRead),
-      { timeout: 4000, timeoutMsg: "⌘V did not read the clipboard to paste" },
+      { timeout: 4000, timeoutMsg: "⌘V did not read the clipboard" },
     );
-
-    // Teardown: don't leave a live pty behind the next spec.
-    for (const s of await invoke<HostSession[]>("host_list"))
-      if (s.adapter_id === "shell" && !s.exited) await invoke("host_kill", { sessionId: s.id });
+    await browser.waitUntil(async () => (await emitted()).some((d) => d.includes("PASTED-marker")), {
+      timeout: 4000,
+      timeoutMsg: "⌘V did not emit the pasted bytes to the pty",
+    });
   });
 });
