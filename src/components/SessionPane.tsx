@@ -131,6 +131,11 @@ export function SessionPane() {
     }
     fit.fit();
     termRef.current = term;
+    // Test seam: the e2e suite drives the live xterm (selection, buffer reads)
+    // through this handle — the terminal has no other stable entry point from
+    // outside React, and the app's imported `invoke` can't be intercepted via
+    // the global Tauri shim. Costs one window ref in prod; cleared on dispose.
+    (window as unknown as { __tildoneTerm?: Terminal }).__tildoneTerm = term;
 
     // The whole async chain below races the effect's own cleanup: StrictMode
     // re-invokes effects synchronously in dev, and a fast session switch does
@@ -246,6 +251,50 @@ export function SessionPane() {
       dataSub = term.onData((data) => {
         void invoke("pty_write", { generation: opened, data }).catch(() => {});
       });
+      // macOS line-editing + copy/paste that xterm doesn't give us for free.
+      // ⌘←/⌘→ aren't line motions to xterm (it forwards nothing), and a
+      // selection highlights but never reaches the clipboard on its own. The
+      // handler owns exactly these four chords and returns false so xterm
+      // drops them; everything else (incl. ⌃C = SIGINT) passes through. There
+      // is no Tauri clipboard plugin — navigator.clipboard works in the
+      // webview because each branch fires on a real ⌘-key gesture.
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown" || !e.metaKey || e.ctrlKey || e.altKey) return true;
+        const k = e.key.toLowerCase();
+        // ⌘←/⌘→ → Home/End (CSI H / CSI F). This terminal's primary tenants
+        // are agent TUIs (Claude Code, codex — crossterm), which read these as
+        // Home/End and move to line start/end; raw shells honor them when
+        // their keymap binds Home/End (config-dependent, not ours to force).
+        if (k === "arrowleft" || k === "arrowright") {
+          e.preventDefault();
+          void invoke("pty_write", {
+            generation: opened,
+            data: k === "arrowleft" ? "\x1b[H" : "\x1b[F",
+          }).catch(() => {});
+          return false;
+        }
+        // ⌘C only when there's a selection to copy — otherwise let it fall
+        // through so it can't shadow anything the TUI wants.
+        if (k === "c" && term.hasSelection()) {
+          e.preventDefault();
+          void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          return false;
+        }
+        if (k === "v") {
+          e.preventDefault();
+          // term.paste (not a raw pty_write) so a TUI in bracketed-paste mode
+          // gets the \x1b[200~…\x1b[201~ framing; it still flows out through
+          // onData → pty_write above.
+          void navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (text) term.paste(text);
+            })
+            .catch(() => {});
+          return false;
+        }
+        return true;
+      });
       observer = new ResizeObserver(() => {
         fit.fit();
         void invoke("pty_resize", {
@@ -275,6 +324,8 @@ export function SessionPane() {
       }
       term.dispose();
       termRef.current = null;
+      const w = window as unknown as { __tildoneTerm?: Terminal };
+      if (w.__tildoneTerm === term) delete w.__tildoneTerm;
     };
     // sessionId is the pane's stable identity (claim UUID for attach,
     // `hosted-<id>` for hosted): kind/shortId/hostId are fixed for a given
