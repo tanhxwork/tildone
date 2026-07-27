@@ -65,7 +65,7 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
     // The footer surfaces the terminal shortcut cheat-sheet as kbd chips —
     // every ⌘-chord the handler owns plus close/hide must be listed (TIL-169).
     const footKeys = await browser.execute(() =>
-      Array.from(document.querySelectorAll(".session-pane-keys kbd")).map((k) => k.textContent),
+      Array.from(document.querySelectorAll(".session-pane-foot .session-pane-keys kbd")).map((k) => k.textContent),
     );
     expect(footKeys).toEqual(expect.arrayContaining(["⌘←", "⌘→", "⌘⌫", "⌘C", "⌘V", "⌘W", "⇧⌘T"]));
 
