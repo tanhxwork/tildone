@@ -17,8 +17,8 @@ interface HostSession {
   exited: boolean;
 }
 
-// Bytes xterm has emitted (onData) since the tap was installed. Home/End ride
-// term.input and paste rides term.paste, so both surface here exactly as they
+// Bytes xterm has emitted (onData) since the tap was installed. Line motions
+// ride term.input and paste rides term.paste, so both surface here as they
 // reach the pty — server output (term.write) never fires onData, so the prompt
 // and echoes don't pollute this.
 async function emitted(): Promise<string[]> {
@@ -50,7 +50,7 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
       if (s.adapter_id === "shell" && !s.exited) await invoke("host_kill", { sessionId: s.id });
   });
 
-  it("⌘←/⌘→ emit Home/End, ⌘C copies the selection, ⌘V pastes, ⌘⇧ passes through", async () => {
+  it("⌘←/⌘→ emit Ctrl-A/Ctrl-E, ⌘C copies the selection, ⌘V pastes, ⌘⇧ passes through", async () => {
     await $("#root").waitForExist();
 
     // Spawn a live shell so the pane and its xterm exist (same path a user takes).
@@ -112,11 +112,13 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
 
     await $(".xterm").click();
 
-    // ⌘←/⌘→ are claimed (preventDefault → dispatch returns false) and emit the
-    // Home/End CSI sequences verbatim onto the pty pipe.
+    // ⌘←/⌘→ are claimed (preventDefault → dispatch returns false) and emit
+    // Ctrl-A (\x01, beginning-of-line) / Ctrl-E (\x05, end-of-line) verbatim
+    // onto the pty pipe — the bytes zsh/bash actually bind for line motion,
+    // unlike CSI Home/End which zsh's default keymap ignored (TIL-167 finding).
     expect(await metaChord("ArrowLeft")).toBe(false);
     expect(await metaChord("ArrowRight")).toBe(false);
-    expect(await emitted()).toEqual(expect.arrayContaining(["\x1b[H", "\x1b[F"]));
+    expect(await emitted()).toEqual(expect.arrayContaining(["\x01", "\x05"]));
 
     // ⌘⇧←, ⌘⇧c, ⌘⇧v and a ⌘-chord the handler doesn't own all pass through
     // untouched — not claimed (dispatch returns true), and nothing new emitted.

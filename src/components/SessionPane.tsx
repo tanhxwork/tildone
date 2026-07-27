@@ -267,15 +267,19 @@ export function SessionPane() {
         // so ⌘⇧←/→ (extend-selection) and ⌘⇧C/V stay with the app/TUI.
         if (e.type !== "keydown" || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return true;
         const k = e.key.toLowerCase();
-        // ⌘←/⌘→ → Home/End (CSI H / CSI F). This terminal's primary tenants
-        // are agent TUIs (Claude Code, codex — crossterm), which read these as
-        // Home/End and move to line start/end; raw shells honor them when
-        // their keymap binds Home/End (config-dependent, not ours to force).
-        // Sent via term.input, not a direct pty_write, so it rides the one
-        // onData → pty_write pipe (below) — single write path, and observable.
+        // ⌘←/⌘→ → beginning/end-of-line, sent as Ctrl-A (\x01) / Ctrl-E (\x05)
+        // — exactly what iTerm2's "Natural Text Editing" preset emits. Those
+        // are the readline/ZLE emacs bindings, bound out of the box in bash and
+        // zsh (verified: `zsh -f` maps ^A→beginning-of-line, ^E→end-of-line)
+        // and honored by the readline-style agent TUIs too — terminfo- and
+        // config-independent. CSI Home/End (\x1b[H / \x1b[F) was the earlier
+        // encoding but zsh's default keymap binds neither, so a raw shell just
+        // ignored it (TIL-167 verify finding). Sent via term.input, not a
+        // direct pty_write, so it rides the one onData → pty_write pipe (below)
+        // — single write path, and observable.
         if (k === "arrowleft" || k === "arrowright") {
           e.preventDefault();
-          term.input(k === "arrowleft" ? "\x1b[H" : "\x1b[F");
+          term.input(k === "arrowleft" ? "\x01" : "\x05");
           return false;
         }
         // ⌘C only when there's a selection to copy — otherwise let it fall
