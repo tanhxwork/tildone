@@ -256,9 +256,9 @@ export function SessionPane() {
         void invoke("pty_write", { generation: opened, data }).catch(() => {});
       });
       // macOS line-editing + copy/paste that xterm doesn't give us for free.
-      // ⌘←/⌘→ aren't line motions to xterm (it forwards nothing), and a
+      // ⌘←/⌘→ and ⌘⌫ aren't line motions to xterm (it forwards nothing), and a
       // selection highlights but never reaches the clipboard on its own. The
-      // handler owns exactly these four chords and returns false so xterm
+      // handler owns exactly these five chords and returns false so xterm
       // drops them; everything else (incl. ⌃C = SIGINT) passes through. There
       // is no Tauri clipboard plugin — navigator.clipboard works in the
       // webview because each branch fires on a real ⌘-key gesture.
@@ -280,6 +280,15 @@ export function SessionPane() {
         if (k === "arrowleft" || k === "arrowright") {
           e.preventDefault();
           term.input(k === "arrowleft" ? "\x01" : "\x05");
+          return false;
+        }
+        // ⌘⌫ → delete the whole line, sent as Ctrl-U (\x15) — iTerm2 "Natural
+        // Text Editing"'s ⌘⌫. In zsh's default keymap ^U is kill-whole-line
+        // (verified `zsh -f`); bash readline discards cursor→line-start. Same
+        // term.input path as above.
+        if (k === "backspace") {
+          e.preventDefault();
+          term.input("\x15");
           return false;
         }
         // ⌘C only when there's a selection to copy — otherwise let it fall
@@ -556,12 +565,29 @@ export function SessionPane() {
       </header>
       <div className="session-pane-body" style={{ background: TERM_BG }} ref={bodyRef} />
       <footer className="session-pane-foot">
-        <span>
-          {target.kind === "hosted"
-            ? "hosted · ⌘W ends the session"
-            : "attached · session keeps running on close"}
+        <span className="session-pane-foot-kind">
+          {target.kind === "hosted" ? "hosted" : "attached"}
         </span>
-        <span>{target.kind === "hosted" ? "⌘W end · ⇧⌘T hide" : "⌘W detach · ⇧⌘T hide"}</span>
+        {/* Shortcut cheat-sheet: the ⌘-chords the terminal handler owns (line
+            motions + copy/paste, TIL-167/168) plus close/hide, as kbd chips so
+            they're discoverable. Wraps to more rows when the pane is narrow. */}
+        <ul className="session-pane-keys" aria-label="Terminal shortcuts">
+          {[
+            { keys: ["⌘←", "⌘→"], label: "line" },
+            { keys: ["⌘⌫"], label: "clear line" },
+            { keys: ["⌘C"], label: "copy" },
+            { keys: ["⌘V"], label: "paste" },
+            { keys: ["⌘W"], label: target.kind === "hosted" ? "end" : "detach" },
+            { keys: ["⇧⌘T"], label: "hide" },
+          ].map((hint) => (
+            <li key={hint.label}>
+              {hint.keys.map((k) => (
+                <kbd key={k}>{k}</kbd>
+              ))}
+              <span>{hint.label}</span>
+            </li>
+          ))}
+        </ul>
       </footer>
       </aside>
       {confirmingClose && (

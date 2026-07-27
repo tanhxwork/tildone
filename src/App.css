@@ -5231,10 +5231,46 @@ textarea:focus-visible,
 .session-pane-foot {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   padding: 4px 12px;
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--text-faint);
+}
+
+.session-pane-foot-kind {
+  white-space: nowrap;
+}
+
+/* Terminal shortcut cheat-sheet: wraps to more rows on a narrow pane. */
+.session-pane-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-pane-keys li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.session-pane-keys kbd {
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
 }
 
 /* The jumped card, ringed while its session is attached — the accent ring the

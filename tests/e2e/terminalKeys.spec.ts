@@ -50,7 +50,7 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
       if (s.adapter_id === "shell" && !s.exited) await invoke("host_kill", { sessionId: s.id });
   });
 
-  it("⌘←/⌘→ emit Ctrl-A/Ctrl-E, ⌘C copies the selection, ⌘V pastes, ⌘⇧ passes through", async () => {
+  it("⌘←/⌘→ emit Ctrl-A/Ctrl-E, ⌘⌫ clears the line, ⌘C copies, ⌘V pastes, ⌘⇧ passes through", async () => {
     await $("#root").waitForExist();
 
     // Spawn a live shell so the pane and its xterm exist (same path a user takes).
@@ -61,6 +61,13 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
     await shellAdapter.waitForExist();
     await shellAdapter.click();
     await $(".session-pane").waitForExist();
+
+    // The footer surfaces the terminal shortcut cheat-sheet as kbd chips —
+    // every ⌘-chord the handler owns plus close/hide must be listed (TIL-169).
+    const footKeys = await browser.execute(() =>
+      Array.from(document.querySelectorAll(".session-pane-keys kbd")).map((k) => k.textContent),
+    );
+    expect(footKeys).toEqual(expect.arrayContaining(["⌘←", "⌘→", "⌘⌫", "⌘C", "⌘V", "⌘W", "⇧⌘T"]));
 
     // Wait for the shell prompt to render — proof the pty is attached and the
     // onData → pty_write path (wired only after attach) is live.
@@ -118,7 +125,9 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
     // unlike CSI Home/End which zsh's default keymap ignored (TIL-167 finding).
     expect(await metaChord("ArrowLeft")).toBe(false);
     expect(await metaChord("ArrowRight")).toBe(false);
-    expect(await emitted()).toEqual(expect.arrayContaining(["\x01", "\x05"]));
+    // ⌘⌫ → Ctrl-U (\x15, kill-whole-line) — delete the whole row.
+    expect(await metaChord("Backspace")).toBe(false);
+    expect(await emitted()).toEqual(expect.arrayContaining(["\x01", "\x05", "\x15"]));
 
     // ⌘⇧←, ⌘⇧c, ⌘⇧v and a ⌘-chord the handler doesn't own all pass through
     // untouched — not claimed (dispatch returns true), and nothing new emitted.
