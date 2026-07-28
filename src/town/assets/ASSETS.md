@@ -23,14 +23,24 @@ The renderer (`pixiScene.ts`) composes houses from wall + tinted-roof + door +
 window tiles, tiles the ground in grass (with sprinkled variation), and scatters
 the tree/bush/mushroom decorations deterministically across the green.
 
-## Characters & leisure props — procedurally generated (CC0)
+## Characters, leisure props & interiors — procedurally generated (CC0)
 
 The walking characters are **generated in code** (`assets.ts` →
 `buildCharFrames`): a self-authored 4-direction walk cycle (down/up/left/right,
 stand + two step frames) drawn to a canvas, tinted per agent identity
 (Claude / Codex / Cursor / Secretary / generic). The shared leisure-spot props
 (bench / pond / campfire / garden) are likewise drawn in code (`drawSpot`).
-Being authored here they are CC0 by construction.
+
+The house **interior furnishings** are the same technique — each is one 16px
+tile drawn to a canvas (`assets.ts` → `drawFloor` / `drawWall` / `drawDesk` /
+`drawComputer` / `drawPlant` / `drawBookshelf` / `drawRug` / `drawPicture`).
+The renderer (`pixiScene.ts` → `drawBuilding`) composes them into each house's
+open cutaway: a project-tinted roof over a furnished office — a desk with a
+glowing computer in the door column (where the `working` character sits, facing
+up into it), a bookshelf and framed picture on the back wall, plants at the
+corners, a rug under the desk.
+
+Being authored here they are all CC0 by construction.
 
 ### Swapping in richer character art
 

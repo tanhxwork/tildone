@@ -53,12 +53,28 @@ export interface WorldTiles {
   barrel: Texture;
 }
 
+/** Procedural CC0 interior furnishings the renderer composes each house's
+ *  cutaway room from (a desk with a computer where the working character sits,
+ *  plus homey props so it reads as a real house, not a shut exterior). */
+export interface InteriorTiles {
+  floor: Texture;
+  wall: Texture;
+  desk: Texture;
+  computer: Texture;
+  plant: Texture;
+  bookshelf: Texture;
+  rug: Texture;
+  picture: Texture;
+}
+
 export interface TownTextures {
   world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
   chars: Record<string, DirFrames>;
   /** Procedural CC0 leisure-spot props, by kind. */
   spots: Record<SpotKind, Texture>;
+  /** Procedural CC0 interior furnishings for the house cutaways. */
+  interior: InteriorTiles;
 }
 
 /** Placeholder character palette by agent key — mirrors the agent-identity
@@ -199,6 +215,166 @@ function spotTexture(kind: SpotKind): Texture {
   return tex;
 }
 
+// --- Interior furnishings for the house cutaways (procedural, self-authored →
+// CC0). Each is one 16px tile the renderer lays inside a building's open front.
+type Draw = (ctx: CanvasRenderingContext2D) => void;
+
+/** Warm wood-plank floor. */
+const drawFloor: Draw = (x) => {
+  x.fillStyle = "#c69a63";
+  x.fillRect(0, 0, 16, 16);
+  x.fillStyle = "#b6885230"; // faint plank shading bands
+  x.fillRect(0, 0, 16, 4);
+  x.fillRect(0, 8, 16, 4);
+  x.strokeStyle = "#9c6d3d";
+  x.lineWidth = 1;
+  x.beginPath();
+  for (let y = 4; y < 16; y += 4) {
+    x.moveTo(0, y + 0.5);
+    x.lineTo(16, y + 0.5);
+  }
+  // staggered plank seams
+  x.moveTo(5.5, 0);
+  x.lineTo(5.5, 4);
+  x.moveTo(11.5, 4);
+  x.lineTo(11.5, 8);
+  x.moveTo(4.5, 8);
+  x.lineTo(4.5, 12);
+  x.moveTo(10.5, 12);
+  x.lineTo(10.5, 16);
+  x.stroke();
+  x.fillStyle = "#d3ac79";
+  x.fillRect(0, 3, 16, 1); // top plank highlight
+};
+
+/** Interior back wall (warm plaster) with a wood baseboard. */
+const drawWall: Draw = (x) => {
+  x.fillStyle = "#efe4d2";
+  x.fillRect(0, 0, 16, 16);
+  x.fillStyle = "#e6d8c0";
+  x.fillRect(0, 0, 16, 2); // top shade under the roof
+  x.fillStyle = "#c9a878";
+  x.fillRect(0, 13, 16, 3); // baseboard
+  x.fillStyle = "#b8946530";
+  x.fillRect(0, 13, 16, 1);
+};
+
+/** Wooden desk, top slab + drawers, front edge facing the seated character. */
+const drawDesk: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "rgba(0,0,0,.15)";
+  x.fillRect(1, 14, 14, 2); // shadow
+  x.fillStyle = "#7a4a25";
+  x.fillRect(0, 5, 16, 4); // top slab
+  x.fillStyle = "#8a5730";
+  x.fillRect(0, 5, 16, 1); // front-edge highlight
+  x.fillStyle = "#6b3f20";
+  x.fillRect(1, 9, 14, 5); // body / drawers
+  x.fillStyle = "#5a3319";
+  x.fillRect(1, 9, 14, 1);
+  x.fillStyle = "#4a2a14";
+  x.fillRect(8, 9, 1, 5); // drawer seam
+  x.fillStyle = "#d8b487";
+  x.fillRect(4, 11, 1, 1); // knobs
+  x.fillRect(11, 11, 1, 1);
+};
+
+/** Desktop computer — a monitor with a glowing screen + keyboard, on the desk. */
+const drawComputer: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "#2c2f36"; // stand
+  x.fillRect(7, 7, 2, 2);
+  x.fillRect(5, 9, 6, 1);
+  x.fillStyle = "#20242b"; // bezel
+  x.fillRect(3, 1, 10, 7);
+  x.fillStyle = "#39c6d6"; // screen glow
+  x.fillRect(4, 2, 8, 5);
+  x.fillStyle = "#8be6ef";
+  x.fillRect(4, 2, 8, 1); // top glow line
+  x.fillStyle = "#1f6f79"; // code lines
+  x.fillRect(5, 4, 5, 1);
+  x.fillRect(5, 5, 3, 1);
+  x.fillStyle = "#3a3f47"; // keyboard on the desk
+  x.fillRect(4, 11, 8, 2);
+  x.fillStyle = "#565d68";
+  x.fillRect(4, 11, 8, 1);
+};
+
+/** Potted plant. */
+const drawPlant: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "rgba(0,0,0,.15)";
+  x.fillRect(4, 14, 8, 2);
+  x.fillStyle = "#c56b3f"; // terracotta pot
+  x.fillRect(5, 11, 6, 4);
+  x.fillStyle = "#a85631";
+  x.fillRect(5, 11, 6, 1);
+  x.fillStyle = "#3f8f4a"; // foliage
+  x.fillRect(6, 4, 4, 7);
+  x.fillRect(4, 6, 2, 4);
+  x.fillRect(10, 6, 2, 4);
+  x.fillStyle = "#57ad61";
+  x.fillRect(7, 4, 2, 3);
+  x.fillRect(5, 7, 1, 2);
+  x.fillRect(10, 7, 1, 2);
+};
+
+/** Bookshelf against the back wall, colourful spines. */
+const drawBookshelf: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "#6b4626"; // frame
+  x.fillRect(2, 1, 12, 15);
+  x.fillStyle = "#4d3117";
+  x.fillRect(2, 1, 12, 1);
+  x.fillRect(2, 7, 12, 1);
+  x.fillRect(2, 13, 12, 1);
+  x.fillStyle = "#3a2410";
+  x.fillRect(2, 1, 1, 15);
+  x.fillRect(13, 1, 1, 15);
+  const books = ["#c0503f", "#4f7ed4", "#e0a93b", "#4f9d4f", "#8b5cf6"];
+  for (let s = 0; s < 2; s++) {
+    const yy = 2 + s * 6;
+    for (let i = 0; i < 5; i++) {
+      x.fillStyle = books[(i + s) % books.length];
+      x.fillRect(3 + i * 2, yy, 2, 5);
+    }
+  }
+};
+
+/** Small floor rug. */
+const drawRug: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "#c0503f";
+  x.fillRect(2, 4, 12, 9);
+  x.fillStyle = "#ffffff40";
+  x.fillRect(3, 5, 10, 7);
+  x.fillStyle = "#c0503f";
+  x.fillRect(5, 7, 6, 3);
+};
+
+/** Framed wall picture — a little landscape. */
+const drawPicture: Draw = (x) => {
+  x.clearRect(0, 0, 16, 16);
+  x.fillStyle = "#7a5a34"; // frame
+  x.fillRect(4, 3, 8, 7);
+  x.fillStyle = "#cfe6f2"; // sky
+  x.fillRect(5, 4, 6, 5);
+  x.fillStyle = "#8fbf7a"; // hills
+  x.fillRect(5, 7, 6, 2);
+  x.fillStyle = "#f2c94c"; // sun
+  x.fillRect(9, 4, 2, 2);
+};
+
+function pixelTexture(draw: Draw): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = FRAME;
+  canvas.height = FRAME;
+  draw(canvas.getContext("2d")!);
+  const tex = Texture.from(canvas);
+  tex.source.scaleMode = "nearest";
+  return tex;
+}
+
 let cache: TownTextures | null = null;
 
 export async function loadTownTextures(): Promise<TownTextures> {
@@ -255,6 +431,16 @@ export async function loadTownTextures(): Promise<TownTextures> {
       pond: spotTexture("pond"),
       campfire: spotTexture("campfire"),
       garden: spotTexture("garden"),
+    },
+    interior: {
+      floor: pixelTexture(drawFloor),
+      wall: pixelTexture(drawWall),
+      desk: pixelTexture(drawDesk),
+      computer: pixelTexture(drawComputer),
+      plant: pixelTexture(drawPlant),
+      bookshelf: pixelTexture(drawBookshelf),
+      rug: pixelTexture(drawRug),
+      picture: pixelTexture(drawPicture),
     },
   };
   return cache;

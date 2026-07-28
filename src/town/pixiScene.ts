@@ -105,18 +105,39 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const g = new Container();
     const { tx, ty, tw, th } = place;
     const tint = roofTint(place);
-    // Walls fill the footprint; the top row is the project-tinted shingle roof;
-    // a window sits on the mid wall and the door on the bottom-centre.
-    for (let ry = 0; ry < th; ry++) {
-      for (let rx = 0; rx < tw; rx++) g.addChild(tile(tex.world.wall, tx + rx, ty + ry));
+    const int = tex.interior;
+    // A dollhouse cutaway: the top row is the project-tinted shingle roof, the
+    // front is open, and inside is a furnished office — a desk with a computer
+    // in the door column (where the `working` character sits, facing up into
+    // it) flanked by homey props, so a house reads as a lived-in room.
+    const doorCol = tx + Math.floor(tw / 2);
+    const floorRow = ty + th - 1;
+
+    // Interior back wall on the rows between roof and floor; wood floor on the
+    // bottom row (its front edge is open — no exterior wall drawn over it).
+    for (let ry = ty + 1; ry < floorRow; ry++) {
+      for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.wall, tx + rx, ry));
     }
+    for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.floor, tx + rx, floorRow));
+
+    // Project-tinted roof.
     for (let rx = 0; rx < tw; rx++) {
       const roof = rx === 0 ? tex.world.roofL : rx === tw - 1 ? tex.world.roofR : tex.world.roofM;
       g.addChild(tile(roof, tx + rx, ty, tint));
     }
-    g.addChild(tile(tex.world.window, tx + 1, ty + 1));
-    if (tw >= 4) g.addChild(tile(tex.world.window, tx + tw - 2, ty + 1));
-    g.addChild(tile(tex.world.door, tx + Math.floor(tw / 2), ty + th - 1));
+
+    // Back-wall decor sits on the topmost interior row.
+    g.addChild(tile(int.bookshelf, tx, ty + 1));
+    g.addChild(tile(int.picture, tx + tw - 1, ty + 1));
+
+    // Floor furnishings: the workstation centred on the door column, plants at
+    // the corners, a rug under the desk.
+    g.addChild(tile(int.rug, doorCol - 1, floorRow));
+    g.addChild(tile(int.plant, tx, floorRow));
+    g.addChild(tile(int.plant, tx + tw - 1, floorRow));
+    g.addChild(tile(int.desk, doorCol - 1, floorRow));
+    g.addChild(tile(int.desk, doorCol, floorRow));
+    g.addChild(tile(int.computer, doorCol, floorRow));
 
     const label = new Text({
       text: place.room.name,
@@ -152,8 +173,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         ground.addChild(tile(g, x, y));
       }
     }
-    // A dirt threshold on each building's doorstep.
-    for (const b of w.buildings) ground.addChild(tile(tex.world.dirt, b.door.x, b.door.y));
+    // A wood threshold on each doorstep — continuous with the room's floor, so
+    // the working character sits on the interior, not on grass.
+    for (const b of w.buildings) ground.addChild(tile(tex.interior.floor, b.door.x, b.door.y));
 
     for (const b of w.buildings) drawBuilding(b, theme);
 
