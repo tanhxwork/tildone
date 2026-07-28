@@ -18,7 +18,7 @@ import {
   Sprite,
   Text,
   TextStyle,
-  TilingSprite,
+  Texture,
 } from "pixi.js";
 import type { PresenceState } from "../utils/presence";
 import type { DirFrames, TownTextures } from "./assets";
@@ -79,41 +79,51 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   const titleStyle = (fill: number) =>
     new TextStyle({ fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: "600", fill });
 
+  /** Place a 16px tile sprite at tile (tx,ty), optional tint. */
+  function tile(t: Texture, tx: number, ty: number, tint?: number): Sprite {
+    const s = new Sprite(t);
+    s.scale.set(scale);
+    s.position.set(tx * tilePx, ty * tilePx);
+    if (tint !== undefined) s.tint = tint;
+    return s;
+  }
+
+  /** Deterministic 0..1 hash of a tile coord (stable scatter, no per-render RNG). */
+  function hash(x: number, y: number): number {
+    let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) ^ 0x9e3779b9;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  function roofTint(place: TownWorld["buildings"][number]): number {
+    return place.room.color && /^#[0-9a-f]{6}$/i.test(place.room.color)
+      ? parseInt(place.room.color.slice(1), 16)
+      : 0xcc5b3a;
+  }
+
   function drawBuilding(place: TownWorld["buildings"][number], theme: TownTheme) {
     const g = new Container();
-    const x = place.tx * tilePx;
-    const y = place.ty * tilePx;
-    const w = place.tw * tilePx;
-    const h = place.th * tilePx;
+    const { tx, ty, tw, th } = place;
+    const tint = roofTint(place);
+    // Walls fill the footprint; the top row is the project-tinted shingle roof;
+    // a window sits on the mid wall and the door on the bottom-centre.
+    for (let ry = 0; ry < th; ry++) {
+      for (let rx = 0; rx < tw; rx++) g.addChild(tile(tex.world.wall, tx + rx, ty + ry));
+    }
+    for (let rx = 0; rx < tw; rx++) {
+      const roof = rx === 0 ? tex.world.roofL : rx === tw - 1 ? tex.world.roofR : tex.world.roofM;
+      g.addChild(tile(roof, tx + rx, ty, tint));
+    }
+    g.addChild(tile(tex.world.window, tx + 1, ty + 1));
+    if (tw >= 4) g.addChild(tile(tex.world.window, tx + tw - 2, ty + 1));
+    g.addChild(tile(tex.world.door, tx + Math.floor(tw / 2), ty + th - 1));
 
-    // Wall body.
-    g.addChild(new Graphics().roundRect(x, y, w, h, 4).fill(theme.wall));
-    // Roof band tinted by the project colour (falls back to theme roof).
-    const tint =
-      place.room.color && /^#[0-9a-f]{6}$/i.test(place.room.color)
-        ? parseInt(place.room.color.slice(1), 16)
-        : theme.roof;
-    g.addChild(new Graphics().roundRect(x, y, w, tilePx, 4).fill(tint));
-    // A desk against the front wall — where the working character sits — with
-    // the door beside it. The working character stands on the door tile just
-    // below, facing up into the desk, so "home" reads as "at the desk".
-    const desk = new Sprite(tex.desk);
-    desk.anchor.set(0.5, 1);
-    desk.scale.set(scale);
-    desk.position.set(x + w / 2, y + h - 2);
-    const door = new Sprite(tex.door);
-    door.anchor.set(0.5, 1);
-    door.scale.set(scale);
-    door.position.set(x + w - scale * 5, y + h);
-    g.addChild(desk, door);
-
-    // Project label above the roof.
     const label = new Text({
       text: place.room.name,
       style: titleStyle(place.room.characters.length ? theme.title : theme.inkMuted),
     });
     label.anchor.set(0.5, 1);
-    label.position.set(x + w / 2, y - 3);
+    label.position.set((tx + tw / 2) * tilePx, ty * tilePx - 3);
     g.addChild(label);
 
     buildings.addChild(g);
@@ -124,16 +134,61 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     // each resize / project-set change leaks their GPU resources until GC.
     ground.removeChildren().forEach((c) => c.destroy({ children: true }));
     buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
-    const gw = w.cols * tilePx;
-    const gh = w.rows * tilePx;
-    // Base green wash, then the tiled floor texture over it.
-    ground.addChild(new Graphics().rect(0, 0, gw, gh).fill(theme.ground));
-    const tile = new TilingSprite({ texture: tex.ground, width: gw, height: gh });
-    tile.tileScale.set(tilePx / tex.ground.width);
-    tile.alpha = 0.5;
-    ground.addChild(tile);
+
+    const isBuilding = new Set<string>();
+    for (const b of w.buildings) {
+      for (let ry = 0; ry < b.th; ry++) {
+        for (let rx = 0; rx < b.tw; rx++) isBuilding.add(`${b.tx + rx},${b.ty + ry}`);
+      }
+    }
+    const isSpot = new Set(w.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+    const isApron = new Set(w.buildings.map((b) => `${b.door.x},${b.door.y}`));
+
+    // Grass ground with light per-tile variation (flowers/detail sprinkled in).
+    for (let y = 0; y < w.rows; y++) {
+      for (let x = 0; x < w.cols; x++) {
+        const r = hash(x, y);
+        const g = r < 0.06 ? tex.world.grass[2] : r < 0.18 ? tex.world.grass[1] : tex.world.grass[0];
+        ground.addChild(tile(g, x, y));
+      }
+    }
+    // A dirt threshold on each building's doorstep.
+    for (const b of w.buildings) ground.addChild(tile(tex.world.dirt, b.door.x, b.door.y));
+
     for (const b of w.buildings) drawBuilding(b, theme);
-    // Shared leisure props dotted across the green (below the character layer).
+
+    // Scatter decorations on free green tiles (below the character layer, which
+    // always draws over them). Trees are anchored at their base so they stand a
+    // little over the tile above.
+    for (let y = 0; y < w.rows; y++) {
+      for (let x = 0; x < w.cols; x++) {
+        const key = `${x},${y}`;
+        if (isBuilding.has(key) || isSpot.has(key) || isApron.has(key)) continue;
+        const r = hash(x * 7 + 1, y * 13 + 5);
+        let dec: Texture | null = null;
+        let tall = false;
+        if (r < 0.06) {
+          dec = tex.world.trees[x % tex.world.trees.length];
+          tall = true;
+        } else if (r < 0.11) {
+          dec = tex.world.bush;
+        } else if (r < 0.135) {
+          dec = tex.world.mushrooms;
+        }
+        if (!dec) continue;
+        const s = new Sprite(dec);
+        s.scale.set(scale);
+        if (tall) {
+          s.anchor.set(0, 1);
+          s.position.set(x * tilePx, (y + 1) * tilePx);
+        } else {
+          s.position.set(x * tilePx, y * tilePx);
+        }
+        buildings.addChild(s);
+      }
+    }
+
+    // Shared leisure props (below the character layer).
     for (const s of w.spots) {
       const prop = new Sprite(tex.spots[s.kind]);
       prop.anchor.set(0.5, 0.9);

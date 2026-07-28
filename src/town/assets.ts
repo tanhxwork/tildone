@@ -1,20 +1,31 @@
 // Town textures for the living overworld.
 //
-// The world tiles reuse the in-repo Kenney "Tiny Dungeon" CC0 art (floor / wall
-// / door / desk) — see assets/ASSETS.md. The characters are *procedurally*
-// generated here as 4-direction walk cycles: a small, self-authored (CC0)
-// atlas so v2a ships with real directional walk animation and zero new asset
-// downloads. Swapping in nicer CC0 art (Kenney Tiny Town ground + Piano no
-// Renshu 4-dir walk characters) is a contained change: replace `buildCharFrames`
-// with a spritesheet slicer returning the same DirFrames shape — pixiScene
-// consumes DirFrames and never sees how they were made.
+// World tiles are Kenney "Tiny Town" (CC0, 16px) — grass, dirt, trees, fences,
+// and house parts (see assets/world/ + ASSETS.md). Roofs use the neutral-grey
+// shingle tiles so the renderer can tint them per project. The characters and
+// the leisure-spot props are *procedurally* generated here (self-authored CC0)
+// as 4-direction walk cycles / small props; swapping in richer CC0 character
+// art is a contained change — replace `buildCharFrames` with a spritesheet
+// slicer returning the same DirFrames shape.
 
 import { Assets, Texture } from "pixi.js";
 import type { SpotKind } from "./world";
-import floorUrl from "./assets/floor.png";
-import wallUrl from "./assets/wall.png";
-import deskUrl from "./assets/desk.png";
-import doorUrl from "./assets/door.png";
+import grass0Url from "./assets/world/grass0.png";
+import grass1Url from "./assets/world/grass1.png";
+import grass2Url from "./assets/world/grass2.png";
+import dirtUrl from "./assets/world/dirt.png";
+import roofLUrl from "./assets/world/roofL.png";
+import roofMUrl from "./assets/world/roofM.png";
+import roofRUrl from "./assets/world/roofR.png";
+import wallUrl from "./assets/world/wall.png";
+import door2Url from "./assets/world/door2.png";
+import windowUrl from "./assets/world/window.png";
+import treePineUrl from "./assets/world/tree_pine.png";
+import treeOrangeUrl from "./assets/world/tree_orange.png";
+import bushUrl from "./assets/world/bush.png";
+import mushroomsUrl from "./assets/world/mushrooms.png";
+import fenceUrl from "./assets/world/fence.png";
+import barrelUrl from "./assets/world/barrel.png";
 
 export type Dir = "down" | "up" | "left" | "right";
 
@@ -22,12 +33,28 @@ export type Dir = "down" | "up" | "left" | "right";
  *  renderer cycles all frames while the character is moving. */
 export type DirFrames = Record<Dir, Texture[]>;
 
-export interface TownTextures {
-  /** Tiled ground of the green. */
-  ground: Texture;
+/** Kenney Tiny Town world tiles the renderer composes from. */
+export interface WorldTiles {
+  /** Grass variants — [plain, detail, flowers] — for ground variation. */
+  grass: Texture[];
+  dirt: Texture;
+  /** Grey shingle roof left/mid/right (tinted per project by the renderer). */
+  roofL: Texture;
+  roofM: Texture;
+  roofR: Texture;
   wall: Texture;
   door: Texture;
-  desk: Texture;
+  window: Texture;
+  /** Scatterable green decorations. */
+  trees: Texture[];
+  bush: Texture;
+  mushrooms: Texture;
+  fence: Texture;
+  barrel: Texture;
+}
+
+export interface TownTextures {
+  world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
   chars: Record<string, DirFrames>;
   /** Procedural CC0 leisure-spot props, by kind. */
@@ -177,10 +204,22 @@ let cache: TownTextures | null = null;
 export async function loadTownTextures(): Promise<TownTextures> {
   if (cache) return cache;
   const urls: Record<string, string> = {
-    ground: floorUrl,
+    grass0: grass0Url,
+    grass1: grass1Url,
+    grass2: grass2Url,
+    dirt: dirtUrl,
+    roofL: roofLUrl,
+    roofM: roofMUrl,
+    roofR: roofRUrl,
     wall: wallUrl,
-    door: doorUrl,
-    desk: deskUrl,
+    door2: door2Url,
+    window: windowUrl,
+    treePine: treePineUrl,
+    treeOrange: treeOrangeUrl,
+    bush: bushUrl,
+    mushrooms: mushroomsUrl,
+    fence: fenceUrl,
+    barrel: barrelUrl,
   };
   const loaded: Record<string, Texture> = {};
   await Promise.all(
@@ -195,10 +234,21 @@ export async function loadTownTextures(): Promise<TownTextures> {
     chars[key] = buildCharFrames(color);
   }
   cache = {
-    ground: loaded.ground,
-    wall: loaded.wall,
-    door: loaded.door,
-    desk: loaded.desk,
+    world: {
+      grass: [loaded.grass0, loaded.grass1, loaded.grass2],
+      dirt: loaded.dirt,
+      roofL: loaded.roofL,
+      roofM: loaded.roofM,
+      roofR: loaded.roofR,
+      wall: loaded.wall,
+      door: loaded.door2,
+      window: loaded.window,
+      trees: [loaded.treePine, loaded.treeOrange],
+      bush: loaded.bush,
+      mushrooms: loaded.mushrooms,
+      fence: loaded.fence,
+      barrel: loaded.barrel,
+    },
     chars,
     spots: {
       bench: spotTexture("bench"),
