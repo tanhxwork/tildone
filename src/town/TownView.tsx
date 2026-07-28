@@ -224,7 +224,13 @@ export function TownView() {
               camRef.current = followCam(camRef.current, target, worldPxRef.current, viewRef.current, FOLLOW_EASE);
             }
           } else if (camTargetRef.current) {
-            const t = camTargetRef.current;
+            // Re-clamp the pending target to CURRENT geometry every frame. If the
+            // viewport resizes or the world changes mid-glide, a target clamped
+            // only at creation can become unreachable — the clamped intermediate
+            // never meets it and the glide never completes. Re-clamping keeps the
+            // target a legal camera, so the ease always converges.
+            const t = clampCamera(camTargetRef.current, worldPxRef.current, viewRef.current);
+            camTargetRef.current = t;
             const cam = camRef.current;
             const nx = cam.x + (t.x - cam.x) * FRAME_EASE;
             const ny = cam.y + (t.y - cam.y) * FRAME_EASE;
