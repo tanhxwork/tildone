@@ -88,8 +88,9 @@ export interface TownTextures {
   world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
   chars: Record<string, DirFrames>;
-  /** Procedural CC0 leisure-spot props, by kind. */
-  spots: Record<SpotKind, Texture>;
+  /** Procedural CC0 leisure-spot props, by kind — frame arrays (the campfire and
+   *  pond animate; bench and garden are single-frame). */
+  spots: Record<SpotKind, Texture[]>;
   /** Kenney interior furnishings for the house cutaways. */
   interior: InteriorTiles;
   /** Self-authored roads/plaza pavement. */
@@ -137,8 +138,10 @@ function sliceChar(source: TextureSource, personIndex: number): DirFrames {
 }
 
 /** Draw one 16×16 leisure prop. Procedural + self-authored → CC0; swaps out for
- *  real art the same way (a texture per kind). */
-function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind) {
+ *  real art the same way (a texture per kind). `frame` (0..2) animates the props
+ *  that should move — the campfire flame flickers and the pond glint ripples;
+ *  bench and garden ignore it (they get a single frame). */
+function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind, frame = 0) {
   ctx.clearRect(0, 0, FRAME, FRAME);
   ctx.fillStyle = "rgba(0,0,0,0.15)";
   ctx.beginPath();
@@ -156,20 +159,25 @@ function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind) {
     ctx.beginPath();
     ctx.ellipse(8, 9, 6, 4, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#8fc4e6"; // glint
-    ctx.fillRect(6, 7, 2, 1);
+    ctx.fillStyle = "#8fc4e6"; // glint (ripples across the surface)
+    const gx = [6, 8, 5][frame];
+    const gy = [7, 8, 9][frame];
+    ctx.fillRect(gx, gy, 2, 1);
+    ctx.fillRect(gx + 3, gy - 1, 1, 1);
   } else if (kind === "campfire") {
     ctx.fillStyle = "#5e3d1c"; // logs
     ctx.fillRect(4, 11, 8, 2);
-    ctx.fillStyle = "#e8791f"; // flame
+    ctx.fillStyle = "#e8791f"; // flame (height + sway flicker)
+    const apexY = [4, 6, 3][frame];
+    const lean = [0, 1, -1][frame];
     ctx.beginPath();
-    ctx.moveTo(8, 4);
+    ctx.moveTo(8 + lean, apexY);
     ctx.lineTo(11, 11);
     ctx.lineTo(5, 11);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = "#f6c33b";
-    ctx.fillRect(7, 8, 2, 3);
+    ctx.fillStyle = "#f6c33b"; // inner core
+    ctx.fillRect(7 + lean, apexY + 4, 2, 11 - (apexY + 4));
   } else {
     // garden plot
     ctx.fillStyle = "#7a5230";
@@ -399,10 +407,10 @@ export async function loadTownTextures(): Promise<TownTextures> {
     },
     chars,
     spots: {
-      bench: canvasTexture((c) => drawSpot(c, "bench")),
-      pond: canvasTexture((c) => drawSpot(c, "pond")),
-      campfire: canvasTexture((c) => drawSpot(c, "campfire")),
-      garden: canvasTexture((c) => drawSpot(c, "garden")),
+      bench: [canvasTexture((c) => drawSpot(c, "bench"))],
+      pond: [0, 1, 2].map((f) => canvasTexture((c) => drawSpot(c, "pond", f))),
+      campfire: [0, 1, 2].map((f) => canvasTexture((c) => drawSpot(c, "campfire", f))),
+      garden: [canvasTexture((c) => drawSpot(c, "garden"))],
     },
     interior: {
       floor: sub(indoors, 24, 0), // wood plank floor

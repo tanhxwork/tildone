@@ -108,6 +108,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   let lampGlows: { gx: number; gy: number; sprite: Sprite }[] = [];
   /** The plaza fountain sprite (its water shimmer is cycled each frame). */
   let fountainSprite: Sprite | null = null;
+  /** Leisure-spot sprites with more than one frame (campfire, pond) — cycled. */
+  let animatedSpots: { sprite: Sprite; frames: Texture[] }[] = [];
   let propAnim = 0;
   let currentCam: Camera = { x: 0, y: 0, zoom: 1 };
 
@@ -228,6 +230,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     glows = [];
     lampGlows = [];
     fountainSprite = null;
+    animatedSpots = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -298,13 +301,16 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       fountainSprite = f;
     }
 
-    // Shared leisure props in the plaza (below the character layer).
+    // Shared leisure props in the plaza (below the character layer). The
+    // campfire + pond carry multiple frames and are cycled (see syncChars tail).
     for (const s of w.spots) {
-      const prop = new Sprite(tex.spots[s.kind]);
+      const frames = tex.spots[s.kind];
+      const prop = new Sprite(frames[0]);
       prop.anchor.set(0.5, 0.9);
       prop.scale.set(scale);
       prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
       buildings.addChild(prop);
+      if (frames.length > 1) animatedSpots.push({ sprite: prop, frames });
     }
 
     // Street lamps (positions + blocking come from the world model, so the sim
@@ -401,10 +407,16 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
 
-    // Animate the plaza fountain's water shimmer (paused under reduced motion).
-    if (fountainSprite && !theme.reducedMotion) {
+    // Animate the plaza props — fountain shimmer, campfire flicker, pond ripple
+    // — off one shared clock (paused under reduced motion).
+    if (!theme.reducedMotion) {
       propAnim += dtMs;
-      fountainSprite.texture = tex.fountain[Math.floor(propAnim / 380) % tex.fountain.length];
+      if (fountainSprite) {
+        fountainSprite.texture = tex.fountain[Math.floor(propAnim / 380) % tex.fountain.length];
+      }
+      for (const a of animatedSpots) {
+        a.sprite.texture = a.frames[Math.floor(propAnim / 300) % a.frames.length];
+      }
     }
   }
 
@@ -457,6 +469,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       glows = [];
       lampGlows = [];
       fountainSprite = null;
+      animatedSpots = [];
     },
   };
 }

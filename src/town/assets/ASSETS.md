@@ -63,7 +63,9 @@ people three walk-frame rows each, with columns left/down/up/right at grid cols
 secretary=5 (headband). The walk cycle bobs stand→stepA→stand→stepB.
 
 The shared **leisure-spot props** (bench / pond / campfire / garden) are still
-drawn in code (`assets.ts → drawSpot`) — also CC0. The plaza's **fountain**
+drawn in code (`assets.ts → drawSpot`) — also CC0. Each kind is a frame array;
+the campfire (flame flicker) and pond (glint ripple) carry 3 frames the renderer
+cycles, while bench and garden are single-frame. The plaza's **fountain**
 centrepiece (`assets.ts → drawFountain`, a 3-frame water shimmer the renderer
 cycles) is likewise self-authored → CC0; it sits on the plaza's centre tile,
 which `world.ts` blocks so idle characters gather around it rather than stand in
