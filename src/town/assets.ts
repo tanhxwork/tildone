@@ -15,7 +15,7 @@
 // lives at pixel (col*17, row*17); `sub()` slices a sub-texture there. Swapping
 // art is contained: repoint the grid coordinates below.
 
-import { Assets, Rectangle, Texture, type TextureSource } from "pixi.js";
+import { Rectangle, Texture, type TextureSource } from "pixi.js";
 import type { SpotKind } from "./world";
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
@@ -186,6 +186,33 @@ function canvasTexture(draw: (ctx: CanvasRenderingContext2D) => void): Texture {
   return tex;
 }
 
+/**
+ * Load a bundled PNG into a Texture via an <img> drawn onto a canvas, rather
+ * than Pixi's `Assets.load`. Under Tauri the app is served from the
+ * `tauri://localhost` custom protocol, where Pixi's asset fetch/ImageBitmap
+ * path rejects (`_loadAssetWithRetry`) and the whole town canvas silently falls
+ * back to "overlay only" — the town never rendered in the app until this. An
+ * `<img>` element loads `tauri://` URLs fine (it is how every other image in
+ * the app loads), and `Texture.from(canvas)` is the same source path the
+ * procedural textures already use, so it works in the WKWebView.
+ */
+function loadImageTexture(url: string): Promise<Texture> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d")!.drawImage(img, 0, 0);
+      const tex = Texture.from(canvas);
+      tex.source.scaleMode = "nearest";
+      resolve(tex);
+    };
+    img.onerror = () => reject(new Error(`town: failed to load ${url}`));
+    img.src = url;
+  });
+}
+
 let cache: TownTextures | null = null;
 
 export async function loadTownTextures(): Promise<TownTextures> {
@@ -207,9 +234,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
   const loaded: Record<string, Texture> = {};
   await Promise.all(
     Object.entries(urls).map(async ([k, url]) => {
-      const tex = (await Assets.load(url)) as Texture;
-      tex.source.scaleMode = "nearest";
-      loaded[k] = tex;
+      loaded[k] = await loadImageTexture(url);
     }),
   );
   const indoors = loaded.indoors.source;

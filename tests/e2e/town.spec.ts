@@ -80,16 +80,26 @@ describe("town view", () => {
     await townButton.click();
 
     await $(".town").waitForExist();
-    // Assert the DOM overlay, not the canvas: the pixel layer needs WebGL (absent
-    // in a GPU-less test webview), but the overlay renders from the model either
-    // way — and it is what carries hover/aria/hit-testing. The agent-touched task
-    // must appear as a character node, proving the model → roster → character path.
+    // The DOM overlay carries hover/aria/hit-testing: the agent-touched task must
+    // appear as a character node, proving the model → roster → character path.
     const char = $(`[data-testid="town-char-${tid}"]`);
     await char.waitForExist();
     // The node is tagged with its presence state (the fallback resolves quiet)
     // and the index of its building (its only project → building 0).
     await expect(char).toHaveAttribute("data-state", "quiet");
     await expect(char).toHaveAttribute("data-building", "0");
+
+    // The Pixi canvas must actually mount. It silently fell back to "overlay
+    // only" (TownView's catch) because Pixi's `Assets.load` rejects under
+    // Tauri's `tauri://localhost` protocol — so the town rendered blank in the
+    // app for months while this overlay-only assertion stayed green. Loading the
+    // PNGs via <img> fixed it; assert the canvas so the regression can't hide
+    // behind the overlay again.
+    const canvasMounted = await browser.execute(() => {
+      const c = document.querySelector(".town-canvas canvas") as HTMLCanvasElement | null;
+      return !!c && c.width > 0 && c.height > 0;
+    });
+    expect(canvasMounted).toBe(true);
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");
