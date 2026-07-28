@@ -1,12 +1,14 @@
 # Town sprite assets
 
-Every shipped asset here is **CC0** — this repo is public. Two sources:
+Every shipped asset here is **CC0** — this repo is public. All art is Kenney
+(CC0 1.0 Universal, public domain); only the desktop computer and the
+leisure-spot props are self-authored (also CC0).
 
-## World tiles — Kenney "Tiny Town" (CC0 1.0)
+## Ground, roof & decorations — Kenney "Tiny Town" (CC0 1.0)
 
-https://kenney.nl/assets/tiny-town — Licensed **CC0 1.0 Universal** (public
-domain); full text in `world/Kenney-TinyTown-License.txt`. Selected 16×16 tiles
-live in `world/` (original Tiny Town tile index → our name):
+https://kenney.nl/assets/tiny-town — full licence text in
+`world/Kenney-TinyTown-License.txt`. Selected 16×16 tiles live in `world/`
+(original Tiny Town tile index → our name):
 
 - 0 → `grass0.png`, 1 → `grass1.png`, 2 → `grass2.png` — grass ground + variation
 - 48 → `roofL.png`, 49 → `roofM.png`, 50 → `roofR.png` — grey shingle roof,
@@ -14,38 +16,46 @@ live in `world/` (original Tiny Town tile index → our name):
 - 3 → `tree_orange.png`, 4 → `tree_pine.png` — scattered trees
 - 5 → `bush.png`, 29 → `mushrooms.png` — scattered decorations
 
-The renderer (`pixiScene.ts`) uses the Kenney tiles only for the ground (grass
-with sprinkled variation), the project-tinted roof over each house, and the
-tree/bush/mushroom decorations scattered deterministically across the green.
-The house bodies below the roof are furnished cutaways drawn from the
-procedural interior tiles (next section) — so the former exterior wall / door /
-window / dirt-doorstep Kenney tiles are no longer used.
+The renderer (`pixiScene.ts`) uses these for the ground, the project-tinted roof
+over each house, and the tree/bush/mushroom decorations scattered across the
+green. The house bodies below the roof are furnished cutaways (next section).
 
-## Characters, leisure props & interiors — procedurally generated (CC0)
+## Interiors & characters — Kenney "Roguelike Indoors" + "RPG Urban" (CC0 1.0)
 
-The walking characters are **generated in code** (`assets.ts` →
-`buildCharFrames`): a self-authored 4-direction walk cycle (down/up/left/right,
-stand + two step frames) drawn to a canvas, tinted per agent identity
-(Claude / Codex / Cursor / Secretary / generic). The shared leisure-spot props
-(bench / pond / campfire / garden) are likewise drawn in code (`drawSpot`).
+Both are **CC0 1.0** (licence files: `kenney/roguelike-indoors-License.txt`,
+`kenney/rpg-urban-License.txt`). The full spritesheets ship as-is —
+`kenney/roguelike-indoors.png` and `kenney/rpg-urban.png` — and `assets.ts`
+slices 16×16 sub-textures from them (the sheets are 16px tiles with a 1px gap,
+so grid `(col,row)` is at pixel `(col*17, row*17)`; `sub()` does the slice).
 
-The house **interior furnishings** are the same technique — each is one 16px
-tile drawn to a canvas (`assets.ts` → `drawFloor` / `drawWall` / `drawDesk` /
-`drawComputer` / `drawPlant` / `drawBookshelf` / `drawRug` / `drawPicture`).
-The renderer (`pixiScene.ts` → `drawBuilding`) composes them into each house's
-open cutaway: a project-tinted roof over a furnished office — a desk with a
-glowing computer in the door column (where the `working` character sits, facing
-up into it), a bookshelf and framed picture on the back wall, plants at the
-corners, a rug under the desk.
+**Interior furnishings** (`InteriorTiles`, from Roguelike Indoors unless noted),
+composed by `pixiScene.ts → drawBuilding` into each house's open cutaway — a
+project-tinted roof over a furnished office:
 
-Being authored here they are all CC0 by construction.
+- `floor` = `24,0` (wood plank floor)
+- `wall` = `18,4` **from RPG Urban** (tan brick back wall)
+- `deskL`/`deskR` = `0,0` / `1,0` (a two-tile table = the desk)
+- `plant` = `16,0` (potted plant, at both corners)
+- `rug` = `5,9` (bordered rug under the desk)
+- `artA`/`artB` = `20,12` / `19,12` (framed landscapes on the back wall)
 
-### Swapping in richer character art
+The **desktop computer** is the one interior piece drawn in code (`assets.ts →
+drawComputer`) — the rustic roguelike packs ship no monitor — so it stays CC0
+and sits on the desk in the door column, where the `working` character rests
+facing up into it.
 
-The renderer consumes a `DirFrames` shape (`Record<Dir, Texture[]>`) and never
-sees how it was made. To upgrade the *characters* to nicer Stardew-style
-sprites, replace `buildCharFrames` with a spritesheet slicer returning the same
-shape — e.g. **Piano no Renshu "15 Top-Down Character Sprites"** (CC0 1.0,
-4-direction walk, 16/24px — https://piano-no-renshu.itch.io/top-down-character-sprites).
-Drop the PNGs into `world/` (or a `chars/` dir), record their index→name mapping
-here, and point the slicer at them. Keep every shipped asset CC0.
+**Characters** (`assets.ts → sliceChar`) come from RPG Urban, which stacks six
+people three walk-frame rows each, with columns left/down/up/right at grid cols
+`23/24/25/26`. Each agent identity maps to one person (`CHAR_INDEX`): claude=0
+(green), codex=1 (red), cursor=2 (grey-hair), generic=3 (hard hat),
+secretary=5 (headband). The walk cycle bobs stand→stepA→stand→stepB.
+
+The shared **leisure-spot props** (bench / pond / campfire / garden) are still
+drawn in code (`assets.ts → drawSpot`) — also CC0.
+
+### Swapping art
+
+Everything is a texture behind a stable shape (`DirFrames` for characters,
+`InteriorTiles` for furniture), so swapping art is contained: repoint the grid
+coordinates in `assets.ts`, or replace `sub(...)` with a different slicer / a
+`canvasTexture(...)`. Keep every shipped asset CC0.

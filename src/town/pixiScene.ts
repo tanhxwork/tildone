@@ -126,18 +126,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       g.addChild(tile(roof, tx + rx, ty, tint));
     }
 
-    // Back-wall decor sits on the topmost interior row.
-    g.addChild(tile(int.bookshelf, tx, ty + 1));
-    g.addChild(tile(int.picture, tx + tw - 1, ty + 1));
+    // Framed wall art on the topmost interior row.
+    g.addChild(tile(int.artA, tx, ty + 1));
+    g.addChild(tile(int.artB, tx + tw - 1, ty + 1));
 
-    // Floor furnishings: the workstation centred on the door column, plants at
-    // the corners, a rug under the desk.
+    // Floor furnishings: the desk spans the door column and its left neighbour,
+    // plants at the corners, a rug under the desk. The monitor lifts a few px so
+    // it sits on the desk surface rather than on the floor.
     g.addChild(tile(int.rug, doorCol - 1, floorRow));
     g.addChild(tile(int.plant, tx, floorRow));
     g.addChild(tile(int.plant, tx + tw - 1, floorRow));
-    g.addChild(tile(int.desk, doorCol - 1, floorRow));
-    g.addChild(tile(int.desk, doorCol, floorRow));
-    g.addChild(tile(int.computer, doorCol, floorRow));
+    g.addChild(tile(int.deskL, doorCol - 1, floorRow));
+    g.addChild(tile(int.deskR, doorCol, floorRow));
+    const comp = tile(int.computer, doorCol, floorRow);
+    comp.y -= 5 * scale;
+    g.addChild(comp);
 
     const label = new Text({
       text: place.room.name,
