@@ -236,6 +236,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
     const isSpot = new Set(w.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+    const isLamp = new Set(w.lamps.map((l) => `${l.x},${l.y}`));
     const inPlaza = (x: number, y: number) =>
       x >= w.plaza.x && x < w.plaza.x + w.plaza.w && y >= w.plaza.y && y < w.plaza.y + w.plaza.h;
 
@@ -260,7 +261,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     for (let y = 0; y < w.rows; y++) {
       for (let x = 0; x < w.cols; x++) {
         const key = `${x},${y}`;
-        if (isBuilding.has(key) || isSpot.has(key) || w.road[y * w.cols + x]) continue;
+        if (isBuilding.has(key) || isSpot.has(key) || isLamp.has(key) || w.road[y * w.cols + x])
+          continue;
         const r = hash(x * 7 + 1, y * 13 + 5);
         let dec: Texture | null = null;
         let tall = false;
@@ -305,32 +307,23 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       buildings.addChild(prop);
     }
 
-    // Street lamps line the south side of every horizontal road (a green tile
-    // with a road directly above), spaced out; each carries a warm glow that the
-    // day/night cycle lights at dusk (see setAmbience) — so the streets come
-    // alive at night, not just the office windows. Lamps are decoration: they
-    // don't block, so the sim ignores them.
-    const LAMP_GAP = 5;
-    for (let y = 1; y < w.rows; y++) {
-      for (let x = 0; x < w.cols; x++) {
-        if (x % LAMP_GAP !== 2) continue;
-        const key = `${x},${y}`;
-        const onRoad = w.road[y * w.cols + x];
-        const roadAbove = w.road[(y - 1) * w.cols + x];
-        if (onRoad || !roadAbove || isBuilding.has(key) || isSpot.has(key)) continue;
-        const lamp = new Sprite(tex.lamp);
-        lamp.anchor.set(0.5, 0.9);
-        lamp.scale.set(scale);
-        lamp.position.set(x * tilePx + tilePx / 2, y * tilePx + tilePx);
-        buildings.addChild(lamp);
-        // Glow pool centred on the lamp's glass (near the sprite top).
-        const glow = new Sprite(tex.facade.windowGlow);
-        glow.anchor.set(0.5, 0.5);
-        glow.alpha = 0;
-        glow.blendMode = "add";
-        glowLayer.addChild(glow);
-        lampGlows.push({ gx: x * tilePx + tilePx / 2, gy: y * tilePx + 3 * scale, sprite: glow });
-      }
+    // Street lamps (positions + blocking come from the world model, so the sim
+    // routes characters around them). Each carries a warm glow that the day/night
+    // cycle lights at dusk (see setAmbience) — the streets come alive at night,
+    // not just the office windows.
+    for (const l of w.lamps) {
+      const lamp = new Sprite(tex.lamp);
+      lamp.anchor.set(0.5, 0.9);
+      lamp.scale.set(scale);
+      lamp.position.set(l.x * tilePx + tilePx / 2, l.y * tilePx + tilePx);
+      buildings.addChild(lamp);
+      // Glow pool centred on the lamp's glass (near the sprite top).
+      const glow = new Sprite(tex.facade.windowGlow);
+      glow.anchor.set(0.5, 0.5);
+      glow.alpha = 0;
+      glow.blendMode = "add";
+      glowLayer.addChild(glow);
+      lampGlows.push({ gx: l.x * tilePx + tilePx / 2, gy: l.y * tilePx + 3 * scale, sprite: glow });
     }
   }
 
@@ -456,6 +449,10 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     },
     destroy() {
       world.destroy({ children: true });
+      // glowLayer + nightOverlay are stage-level siblings of `world`, so they
+      // aren't torn down by world.destroy — release them explicitly.
+      glowLayer.destroy({ children: true });
+      nightOverlay.destroy();
       views.clear();
       glows = [];
       lampGlows = [];

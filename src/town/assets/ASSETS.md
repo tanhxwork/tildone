@@ -70,8 +70,9 @@ which `world.ts` blocks so idle characters gather around it rather than stand in
 the water. **Street lamps**
 (`assets.ts → drawLamp`, self-authored → CC0) line the south side of the roads;
 `pixiScene.ts` gives each a warm glow that the day/night cycle lights at dusk
-(reusing the window-glow texture), so the streets come alive at night too. Lamps
-are pure decoration — they don't block, so the sim ignores them.
+(reusing the window-glow texture), so the streets come alive at night too. Lamp
+positions come from `world.ts` (`TownWorld.lamps`) and are blocked tiles, so
+pathfinding routes characters around a post rather than through it.
 
 ### Swapping art
 

@@ -147,6 +147,23 @@ describe("buildWorld — roads & plaza", () => {
     expect(findPath(world, world.buildings[0].door, beside).length).toBeGreaterThan(0);
   });
 
+  it("lines the roads with blocked lamp tiles that keep the town connected", () => {
+    const world = buildWorld(model("A", "B", "C", "D"));
+    expect(world.lamps.length).toBeGreaterThan(0);
+    for (const l of world.lamps) {
+      expect(isWalkable(world, l.x, l.y)).toBe(false); // blocked → routed around, not through
+      expect(isRoad(world, l.x, l.y)).toBe(false); // sits on green beside the road
+      expect(isRoad(world, l.x, l.y - 1)).toBe(true); // immediately south of a road
+    }
+    // Blocking the lamps must not island anything: every door still reaches the
+    // plaza, and the walk-off edge is still reachable.
+    const target = { x: world.plaza.x, y: world.plaza.y };
+    for (const b of world.buildings) {
+      expect(findPath(world, b.door, target).length).toBeGreaterThan(0);
+    }
+    expect(findPath(world, world.buildings[0].door, world.edge).length).toBeGreaterThan(0);
+  });
+
   it("connects every building's door to the plaza by road", () => {
     const world = buildWorld(model("A", "B", "C", "D"));
     // Target a walkable plaza corner (the geometric centre is the blocked fountain).

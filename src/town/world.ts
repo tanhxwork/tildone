@@ -118,6 +118,9 @@ export interface TownWorld {
   /** Shared leisure spots, clustered in the plaza. Any idle character walks to
    *  whichever is free (see stepTownSim). */
   spots: LeisureSpot[];
+  /** Street-lamp tiles lining the roads. Blocked (so characters path around
+   *  them, never through) and rendered + lit at night by the Pixi layer. */
+  lamps: Tile[];
 }
 
 function idx(x: number, y: number, cols: number): number {
@@ -213,6 +216,24 @@ export function buildWorld(
     corners.forEach((tile, i) => spots.push({ id: i, tile, kind: SPOT_KINDS[i % SPOT_KINDS.length] }));
   }
 
+  // Street lamps: one every few columns on the green immediately south of a
+  // horizontal road. Blocked so pathfinding routes around them (a departure
+  // path must not thread a lamp post), and exposed so the renderer draws + lights
+  // them. Sparse single tiles beside (never on) the roads, so blocking them
+  // can't disconnect a door from the plaza or the walk-off edge.
+  const lamps: Tile[] = [];
+  const edgeX = Math.floor(cols / 2);
+  const LAMP_GAP = 5;
+  for (let y = 1; y < rows; y++) {
+    for (let x = 2; x < cols; x += LAMP_GAP) {
+      if (x === edgeX && y === rows - 1) continue; // never block the walk-off edge
+      const here = idx(x, y, cols);
+      if (road[here] || blocked[here] || !road[idx(x, y - 1, cols)]) continue;
+      blocked[here] = true;
+      lamps.push({ x, y });
+    }
+  }
+
   return {
     cols,
     rows,
@@ -221,8 +242,9 @@ export function buildWorld(
     road,
     plaza,
     plazaCenter,
-    edge: { x: Math.floor(cols / 2), y: rows - 1 },
+    edge: { x: edgeX, y: rows - 1 },
     spots,
+    lamps,
   };
 }
 
