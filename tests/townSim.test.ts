@@ -213,4 +213,43 @@ describe("stepTownSim — leisure spots (v2b)", () => {
     expect(sim.chars.get(1)!.spotId).toBeNull();
     expect(sim.occupied.size).toBe(0);
   });
+
+  it("never lets two characters physically stand on the same spot tile", () => {
+    const world = world2(); // 2 spots
+    const spotKeys = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+    const sim = createSim();
+    const rng = mulberry32(1);
+    const r = [
+      roster(1, "quiet", true, 0),
+      roster(2, "quiet", true, 0),
+      roster(3, "quiet", true, 1),
+      roster(4, "quiet", true, 1),
+    ];
+    for (let i = 0; i < 2000; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      const perTile = new Map<string, number>();
+      for (const c of sim.chars.values()) {
+        const key = `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`;
+        if (spotKeys.has(key)) perTile.set(key, (perTile.get(key) ?? 0) + 1);
+      }
+      for (const n of perTile.values()) expect(n).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("snaps to the exact home tile when work resumes mid-step (no off-tile rest)", () => {
+    const world = world2();
+    const door = world.buildings[0].door;
+    const sim = createSim();
+    // rng→0 makes it head to a spot immediately, so after one step it sits at a
+    // fractional position, mid-tile.
+    stepTownSim(sim, [roster(1, "quiet", true)], 16, world, () => 0);
+    const midPos = sim.chars.get(1)!.pos;
+    expect(Number.isInteger(midPos.x) && Number.isInteger(midPos.y)).toBe(false);
+    // Work resumes → it must reach its exact home tile, not rest a fraction off.
+    for (let i = 0; i < 200; i++) {
+      stepTownSim(sim, [roster(1, "working", true)], 16, world, () => 0);
+    }
+    const c = sim.chars.get(1)!;
+    expect(c.pos).toEqual({ x: door.x, y: door.y });
+  });
 });

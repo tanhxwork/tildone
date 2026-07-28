@@ -148,15 +148,22 @@ const STEPS: Array<[number, number]> = [
   [0, -1],
 ];
 
-/** A single random walkable step to a 4-neighbour, or null if hemmed in. Wander
- *  is deliberately these cheap adjacent steps — not A* to a distant waypoint
- *  (A* is reserved for going to a specific target: home, a spot, the edge). */
-function randomAdjacentStep(world: TownWorld, from: Tile, rng: () => number): Tile | null {
+/** A single random walkable step to a 4-neighbour that `avoid` rejects none of,
+ *  or null if hemmed in. Wander is deliberately these cheap adjacent steps — not
+ *  A* to a distant waypoint (A* is reserved for a specific target: home, a spot,
+ *  the edge). `avoid` keeps wanderers off leisure-spot tiles so only a spot's
+ *  claimant ever stands on it. */
+function randomAdjacentStep(
+  world: TownWorld,
+  from: Tile,
+  rng: () => number,
+  avoid: (t: Tile) => boolean,
+): Tile | null {
   const start = Math.floor(rng() * STEPS.length);
   for (let i = 0; i < STEPS.length; i++) {
     const [dx, dy] = STEPS[(start + i) % STEPS.length];
     const t = { x: from.x + dx, y: from.y + dy };
-    if (isWalkable(world, t.x, t.y)) return t;
+    if (isWalkable(world, t.x, t.y) && !avoid(t)) return t;
   }
   return null;
 }
@@ -178,6 +185,14 @@ export function stepTownSim(
 ): SimState {
   const dt = Math.min(Math.max(dtMs, 0), MAX_DT_MS);
   const byId = new Map(roster.map((r) => [r.taskId, r]));
+  // Leisure-spot tiles are off-limits to wanderers — only a spot's claimant
+  // stands on it, so two bodies never share a spot.
+  const spotTiles = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+  // A path predicate that routes around every spot tile except the destination,
+  // so a character walking to its own spot (or home/edge) never transits — and
+  // momentarily stands on — a spot another character is occupying.
+  const avoidSpots = (target: Tile) => (x: number, y: number) =>
+    spotTiles.has(`${x},${y}`) && !(x === target.x && y === target.y);
 
   // --- Spawn newcomers at their building door. ---
   for (const r of roster) {
@@ -243,7 +258,7 @@ export function stepTownSim(
     if (c.intent !== "off") {
       c.intent = "off";
       releaseSpot(sim, c); // give up any spot on the way out
-      c.path = findPath(world, round(c.pos), world.edge).slice(1);
+      c.path = findPath(world, round(c.pos), world.edge, avoidSpots(world.edge)).slice(1);
       if (c.path.length === 0) sim.chars.delete(id); // already at edge / stuck
     }
   }
@@ -257,15 +272,33 @@ export function stepTownSim(
 
     if (c.intent === "home") {
       const home = homeTile(world, c.buildingIndex);
-      if (c.path.length === 0 && !sameTile(here, home)) {
-        c.path = findPath(world, here, home).slice(1);
+      if (c.path.length === 0) {
+        if (!sameTile(here, home)) {
+          c.path = findPath(world, here, home, avoidSpots(home)).slice(1);
+        } else if (c.pos.x !== home.x || c.pos.y !== home.y) {
+          // On the home tile but stopped mid-tile (e.g. path cleared by an
+          // intent flip) — snap the residual float to the exact rest tile.
+          c.pos = { x: home.x, y: home.y };
+        }
       }
     } else if (c.intent === "wander") {
       if (c.spotId !== null) {
-        // Claimed a spot: walk to it, then linger, then release and wander on.
+        // Claimed a spot: walk to it, linger, then step off — holding the
+        // reservation until physically clear of the tile, so no one else can
+        // claim or enter it while we are still standing there.
+        const spot = world.spots.find((s) => s.id === c.spotId);
+        const onSpot = !!spot && here.x === spot.tile.x && here.y === spot.tile.y;
         if (c.path.length === 0) {
-          c.dwellMs -= dt;
-          if (c.dwellMs <= 0) {
+          if (onSpot && c.dwellMs > 0) {
+            c.dwellMs -= dt; // lingering
+          } else if (onSpot) {
+            // Done lingering — step off to an adjacent non-spot tile.
+            const step = randomAdjacentStep(world, here, rng, (t) =>
+              spotTiles.has(`${t.x},${t.y}`),
+            );
+            if (step) c.path = [step];
+          } else {
+            // Clear of the spot tile now — release it and resume wandering.
             releaseSpot(sim, c);
             c.wanderPauseMs = WANDER_PAUSE_MS;
           }
@@ -277,7 +310,7 @@ export function stepTownSim(
           // Head to a free leisure spot, or take a plain wander waypoint.
           const spot = rng() < SPOT_CHANCE ? freeSpot(world, sim, here) : null;
           if (spot) {
-            const path = findPath(world, here, spot.tile).slice(1);
+            const path = findPath(world, here, spot.tile, avoidSpots(spot.tile)).slice(1);
             if (path.length > 0) {
               sim.occupied.set(spot.id, c.taskId);
               c.spotId = spot.id;
@@ -287,7 +320,9 @@ export function stepTownSim(
               c.wanderPauseMs = WANDER_PAUSE_MS; // unreachable — try again later
             }
           } else {
-            const step = randomAdjacentStep(world, here, rng);
+            const step = randomAdjacentStep(world, here, rng, (t) =>
+              spotTiles.has(`${t.x},${t.y}`),
+            );
             if (step) c.path = [step];
             c.wanderPauseMs = WANDER_PAUSE_MS;
           }
@@ -297,7 +332,7 @@ export function stepTownSim(
       if (c.path.length === 0) {
         const spots = frontage(world, c.buildingIndex).filter((t) => !sameTile(t, here));
         const pick = spots[Math.floor(rng() * spots.length)] ?? null;
-        if (pick) c.path = findPath(world, here, pick).slice(1);
+        if (pick) c.path = findPath(world, here, pick, avoidSpots(pick)).slice(1);
         c.wanderPauseMs = WANDER_PAUSE_MS;
         if (spots.length && c.path.length === 0) c.wanderPauseMs = WANDER_PAUSE_MS;
       }

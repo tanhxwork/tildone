@@ -183,12 +183,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
       const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
       const seq = frames[c.facing];
+      // Lingering at a leisure spot (claimed, not walking) → a gentle activity
+      // loop, not a frozen frame (spec: "play a loop").
+      const dwelling = c.spotId !== null && !c.moving;
       if (c.moving && !theme.reducedMotion) {
         v.anim += dtMs;
         v.sprite.texture = seq[Math.floor(v.anim / FRAME_MS) % seq.length];
+        v.sprite.y = 0;
+      } else if (dwelling && !theme.reducedMotion) {
+        v.anim += dtMs;
+        v.sprite.texture = seq[Math.floor(v.anim / (FRAME_MS * 2)) % seq.length];
+        v.sprite.y = Math.sin(v.anim / 240) * -1.5; // small bob
       } else {
         v.anim = 0;
         v.sprite.texture = seq[0];
+        v.sprite.y = 0;
       }
       v.container.x = c.pos.x * tilePx + tilePx / 2;
       v.container.y = c.pos.y * tilePx + tilePx;

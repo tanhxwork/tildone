@@ -25,8 +25,17 @@ const NEIGHBOURS = [
  * endpoints. Returns `[]` when unreachable (the caller stays put). A path of
  * length 1 (`from` == `to`) is `[from]`. `to` must itself be walkable; an
  * unwalkable goal yields `[]`.
+ *
+ * `blocked` optionally forbids *intermediate* tiles the pathfinder may not cross
+ * (e.g. other characters' leisure spots) — it is not applied to `from` or `to`,
+ * so a character can always leave its current tile and reach its own target.
  */
-export function findPath(world: TownWorld, from: Tile, to: Tile): Tile[] {
+export function findPath(
+  world: TownWorld,
+  from: Tile,
+  to: Tile,
+  blocked?: (x: number, y: number) => boolean,
+): Tile[] {
   if (!isWalkable(world, from.x, from.y) || !isWalkable(world, to.x, to.y)) {
     return [];
   }
@@ -67,6 +76,8 @@ export function findPath(world: TownWorld, from: Tile, to: Tile): Tile[] {
       const nx = current.x + dx;
       const ny = current.y + dy;
       if (!isWalkable(world, nx, ny)) continue;
+      // Skip forbidden intermediate tiles unless it's the goal itself.
+      if (blocked && blocked(nx, ny) && !(nx === to.x && ny === to.y)) continue;
       const nk = key(nx, ny);
       if (closed.has(nk)) continue;
       const tentative = g + 1;
