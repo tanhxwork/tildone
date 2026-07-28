@@ -157,13 +157,23 @@ function nearbyRestTiles(world: TownWorld, buildingIndex: number, count: number)
     ]),
   );
   const spots = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+  // Exclude the door + its frontage — those tiles belong to a `blocked` worker
+  // pacing the building front, so an overflow rester must never wait there.
+  const frontageSet = new Set(frontage(world, buildingIndex).map((t) => `${t.x},${t.y}`));
   const seen = new Set<string>([`${door.x},${door.y}`]);
   const queue: Tile[] = [door];
   const out: Tile[] = [];
   while (queue.length && out.length < count) {
     const t = queue.shift()!;
     const key = `${t.x},${t.y}`;
-    if (isWalkable(world, t.x, t.y) && !interior.has(key) && !spots.has(key)) out.push(t);
+    if (
+      isWalkable(world, t.x, t.y) &&
+      !interior.has(key) &&
+      !spots.has(key) &&
+      !frontageSet.has(key)
+    ) {
+      out.push(t);
+    }
     for (const [dx, dy] of STEPS) {
       const n = { x: t.x + dx, y: t.y + dy };
       const k = `${n.x},${n.y}`;
@@ -173,7 +183,7 @@ function nearbyRestTiles(world: TownWorld, buildingIndex: number, count: number)
       }
     }
   }
-  return out.length ? out : [door];
+  return out.length ? out : [{ x: door.x, y: door.y + 1 }];
 }
 
 /**

@@ -345,6 +345,36 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
     expect(sim.chars.get(3)!.seated).toBe(true);
   });
 
+  it("settles an overflow worker off a blocked pacer's frontage tile", () => {
+    // The overflow worker's rest tile must avoid the door + frontage where a
+    // `blocked` worker paces, so at rest they never share a tile. (Transient
+    // overlap while one is still walking in is inherent — the sim has no general
+    // moving-collision avoidance — so this pins the settled state.)
+    const world = world2(); // 2 desks
+    const sim = createSim();
+    const rng = mulberry32(36);
+    const r = [
+      roster(1, "working", true, 0),
+      roster(2, "working", true, 0),
+      roster(3, "working", true, 0),
+      roster(4, "blocked", true, 0),
+    ];
+    for (let i = 0; i < 400; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      if (i < 150) continue; // let everyone reach their settled position first
+      const pos = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
+      expect(new Set(pos).size).toBe(pos.length); // no pile-up once settled
+    }
+    // The overflow worker rests beyond the pacer's frontage, not on the door.
+    const c3 = sim.chars.get(3)!;
+    const frontageKeys = new Set([
+      `${world.buildings[0].door.x},${world.buildings[0].door.y}`,
+      `${world.buildings[0].door.x - 1},${world.buildings[0].door.y}`,
+      `${world.buildings[0].door.x + 1},${world.buildings[0].door.y}`,
+    ]);
+    expect(frontageKeys.has(`${Math.round(c3.pos.x)},${Math.round(c3.pos.y)}`)).toBe(false);
+  });
+
   it("keeps idle wanderers out of building interiors entirely", () => {
     const world = world2();
     const interior = new Set(

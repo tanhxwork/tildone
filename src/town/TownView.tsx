@@ -356,7 +356,9 @@ export function TownView() {
     setFollowId(null);
     const b = worldRef.current.buildings[index];
     if (!b) return;
-    const zoom = 2;
+    // Step *in*: never zoom out below the current level (spec: "center + step
+    // zoom in"), but bring a zoomed-out view up to a readable level.
+    const zoom = Math.max(camRef.current.zoom, 2);
     const cx = (b.tx + b.tw / 2) * BASE_TILE;
     const cy = (b.ty + b.th / 2) * BASE_TILE;
     camRef.current = clampCamera(
