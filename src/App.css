@@ -6520,3 +6520,46 @@ textarea:focus-visible,
   text-align: center;
   pointer-events: none;
 }
+
+/* First-open interaction hint: a subtle pill at the bottom of the town that
+   teaches the controls, then dismisses on first use (see TownView). Click-through
+   so it never blocks a drag under it. */
+.town-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: town-hint-in 200ms ease-out;
+}
+
+.town-hint b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Slide up only — never animate opacity, so the hint is fully visible even in a
+   context that doesn't advance CSS animations (e.g. a backgrounded webview). */
+@keyframes town-hint-in {
+  from {
+    transform: translate(-50%, 8px);
+  }
+  to {
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .town-hint {
+    animation: none;
+  }
+}

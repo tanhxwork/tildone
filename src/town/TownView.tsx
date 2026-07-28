@@ -13,7 +13,7 @@
 // scrolls it. Overlay nodes are positioned imperatively from the sim + camera
 // each frame (React never re-renders per frame).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Application } from "pixi.js";
 import { useStore } from "../store";
 import { townModel } from "../selectors";
@@ -42,6 +42,11 @@ const FRAME_EASE = 0.18;
 /** Fixed simulation step (ms); MAX_SIM_STEPS caps catch-up so a slow frame can't spiral. */
 const SIM_STEP_MS = 16;
 const MAX_SIM_STEPS = 5;
+/** localStorage flag: the first-open interaction hint has been seen/dismissed.
+ *  Mirrors FirstRun's dismiss pattern so the hint teaches the controls once. */
+const TOWN_HINT_KEY = "tildone-town-hint-seen";
+/** Auto-dismiss the hint after this long even if the user hasn't interacted. */
+const HINT_TIMEOUT_MS = 9000;
 
 function cssColorToHex(css: string): number | null {
   const m = css.trim().match(/^#([0-9a-f]{6})$/i);
@@ -106,6 +111,33 @@ export function TownView() {
   const buildingRefs = useRef(new Map<number, HTMLButtonElement>());
   const [view, setView] = useState({ w: 0, h: 0 });
   const [followId, setFollowId] = useState<number | null>(null);
+  // First-open interaction hint: shown until the user interacts (or a timeout),
+  // then remembered so it never returns. Mirrors the FirstRun dismiss pattern.
+  const [showHint, setShowHint] = useState(() => {
+    try {
+      return localStorage.getItem(TOWN_HINT_KEY) !== "1";
+    } catch {
+      return false;
+    }
+  });
+  const dismissHint = useCallback(() => {
+    setShowHint((cur) => {
+      if (cur) {
+        try {
+          localStorage.setItem(TOWN_HINT_KEY, "1");
+        } catch {
+          /* private mode / storage disabled — just hide it for this session */
+        }
+      }
+      return false;
+    });
+  }, []);
+  // Fade the hint out on its own after a while, even if the user just looks.
+  useEffect(() => {
+    if (!showHint) return;
+    const t = setTimeout(dismissHint, HINT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [showHint, dismissHint]);
   // Flips true once the async Pixi init + textures are ready, so the render
   // effect (which needs the scene) re-runs and actually draws the world.
   const [ready, setReady] = useState(false);
@@ -330,6 +362,7 @@ export function TownView() {
       // (spec: cleared by a background click / drag) and begins a pan.
       setFollowId(null);
       camTargetRef.current = null; // manual pan cancels a building glide
+      dismissHint(); // first interaction — retire the hint
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -359,6 +392,7 @@ export function TownView() {
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      dismissHint(); // first interaction — retire the hint
       const rect = wrap.getBoundingClientRect();
       const pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       camTargetRef.current = null; // manual zoom cancels a building glide
@@ -379,11 +413,12 @@ export function TownView() {
       wrap.removeEventListener("wheel", onWheel);
       window.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [dismissHint]);
 
   /** Frame a building: centre + step-zoom the camera on it, releasing follow. */
   function frameBuilding(index: number) {
     setFollowId(null);
+    dismissHint(); // first interaction — retire the hint
     const b = worldRef.current.buildings[index];
     if (!b) return;
     // Step *in*: never zoom out below the current level (spec: "center + step
@@ -469,7 +504,10 @@ export function TownView() {
                 aria-label={title}
                 type="button"
                 onPointerDown={(e) => e.stopPropagation()}
-                onClick={() => setFollowId((cur) => (cur === r.taskId ? null : r.taskId))}
+                onClick={() => {
+                  dismissHint(); // first interaction — retire the hint
+                  setFollowId((cur) => (cur === r.taskId ? null : r.taskId));
+                }}
               />
             );
           })}
@@ -478,6 +516,12 @@ export function TownView() {
       {roster.length === 0 && (
         <div className="town-empty">
           No agents at work right now. Claim a task and its character appears here.
+        </div>
+      )}
+      {showHint && (
+        <div className="town-hint" role="status" data-testid="town-hint">
+          <b>Drag</b> to pan&ensp;·&ensp;<b>scroll</b> to zoom&ensp;·&ensp;<b>click</b> a character to
+          follow
         </div>
       )}
     </div>

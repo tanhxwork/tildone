@@ -74,12 +74,23 @@ describe("town view", () => {
     );
     await nudge();
 
-    // Open the town from the header view toggle.
+    // Open the town from the header view toggle. Clear the first-open hint's
+    // seen-flag first so it shows on this open (a prior run may have set it).
     const townButton = $('button[aria-label="Town view"]');
     await townButton.waitForExist();
+    await browser.execute(() => localStorage.removeItem("tildone-town-hint-seen"));
     await townButton.click();
 
     await $(".town").waitForExist();
+    // First open → the discoverability hint bar teaches the controls. Pump a few
+    // frames first so the canvas renders behind it for the artifact screenshot.
+    await expect($('[data-testid="town-hint"]')).toBeExisting();
+    await browser.execute(() => {
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 40; i++) step?.(16);
+    });
+    mkdirSync("./tests/e2e/artifacts", { recursive: true });
+    await browser.saveScreenshot("./tests/e2e/artifacts/town-hint.png");
     // The DOM overlay carries hover/aria/hit-testing: the agent-touched task must
     // appear as a character node, proving the model → roster → character path.
     const char = $(`[data-testid="town-char-${tid}"]`);
@@ -117,6 +128,8 @@ describe("town view", () => {
     // `following` class (React-driven; independent of the animation frame).
     await char.click();
     await expect(char).toHaveElementClass("following", { containing: true });
+    // Clicking a character is a "first interaction" → the hint retires for good.
+    await expect($('[data-testid="town-hint"]')).not.toBeExisting();
 
     // This automated webview is never composited, so requestAnimationFrame (and
     // therefore Pixi's ticker) never fires — the world would stay unrendered.
