@@ -96,8 +96,8 @@ export interface TownTextures {
   pavement: PavementTiles;
   /** Self-authored door + lit-window glow. */
   facade: FacadeTiles;
-  /** Self-authored plaza fountain centrepiece. */
-  fountain: Texture;
+  /** Self-authored plaza fountain centrepiece — water-shimmer frames (cycled). */
+  fountain: Texture[];
   /** Self-authored street lamp (lit by a warm glow at night). */
   lamp: Texture;
 }
@@ -233,8 +233,10 @@ function drawPlaza(c: CanvasRenderingContext2D) {
 }
 
 /** A stone fountain — the plaza centrepiece idle characters gather around.
- *  Self-authored → CC0. A round basin of water with a central spout + spray. */
-function drawFountain(c: CanvasRenderingContext2D) {
+ *  Self-authored → CC0. A round basin of water with a central spout + spray.
+ *  `frame` (0..2) shifts the spray height, highlight and droplets so the
+ *  renderer can cycle a gentle water shimmer (see pixiScene animateProps). */
+function drawFountain(c: CanvasRenderingContext2D, frame = 0) {
   c.clearRect(0, 0, FRAME, FRAME);
   const ell = (cx: number, cy: number, rx: number, ry: number, fill: string) => {
     c.fillStyle = fill;
@@ -246,13 +248,15 @@ function drawFountain(c: CanvasRenderingContext2D) {
   ell(8, 11, 7, 4, "#9a948a"); // outer stone rim
   ell(8, 11, 6, 3.2, "#7f7a70"); // rim inner edge
   ell(8, 11, 5, 2.6, "#3f7fb0"); // water
-  ell(8, 10.4, 3, 1.3, "#5fa0cf"); // water highlight
+  ell(8 + [-1, 0, 1][frame], 10.4, 3, 1.3, "#5fa0cf"); // water highlight (drifts)
   c.fillStyle = "#8f8980"; // centre column
   c.fillRect(7, 5, 2, 6);
-  c.fillStyle = "#bfe0f2"; // spray
-  c.fillRect(7, 2, 2, 3);
-  c.fillRect(5, 5, 1, 2);
-  c.fillRect(10, 5, 1, 2);
+  c.fillStyle = "#bfe0f2"; // spray (pulses)
+  const sprayH = [4, 2, 3][frame];
+  c.fillRect(7, 5 - sprayH, 2, sprayH);
+  const drop = [5, 4, 6][frame]; // side droplets rise/fall
+  c.fillRect(5, drop, 1, 2);
+  c.fillRect(10, drop, 1, 2);
 }
 
 /** A street lamp post — lines the roads; its glass lights up at night (a warm
@@ -420,7 +424,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
       window: canvasTexture(drawWindow),
       windowGlow: canvasTexture(drawWindowGlow),
     },
-    fountain: canvasTexture(drawFountain),
+    fountain: [0, 1, 2].map((f) => canvasTexture((c) => drawFountain(c, f))),
     lamp: canvasTexture(drawLamp),
   };
   return cache;

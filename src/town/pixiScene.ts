@@ -106,6 +106,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   /** Street-lamp glows: warm pools projected to screen each frame (world-px),
    *  lit by the day/night cycle regardless of any office being live. */
   let lampGlows: { gx: number; gy: number; sprite: Sprite }[] = [];
+  /** The plaza fountain sprite (its water shimmer is cycled each frame). */
+  let fountainSprite: Sprite | null = null;
+  let propAnim = 0;
   let currentCam: Camera = { x: 0, y: 0, zoom: 1 };
 
   const titleStyle = (fill: number) =>
@@ -224,6 +227,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     glowLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     glows = [];
     lampGlows = [];
+    fountainSprite = null;
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -281,13 +285,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
 
-    // The fountain centrepiece on the plaza's (blocked) centre tile.
+    // The fountain centrepiece on the plaza's (blocked) centre tile. Its water
+    // shimmer is animated per frame (see the syncChars tail).
     if (w.plazaCenter) {
-      const f = new Sprite(tex.fountain);
+      const f = new Sprite(tex.fountain[0]);
       f.anchor.set(0.5, 0.9);
       f.scale.set(scale);
       f.position.set(w.plazaCenter.x * tilePx + tilePx / 2, w.plazaCenter.y * tilePx + tilePx);
       buildings.addChild(f);
+      fountainSprite = f;
     }
 
     // Shared leisure props in the plaza (below the character layer).
@@ -401,6 +407,12 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
       }
     }
+
+    // Animate the plaza fountain's water shimmer (paused under reduced motion).
+    if (fountainSprite && !theme.reducedMotion) {
+      propAnim += dtMs;
+      fountainSprite.texture = tex.fountain[Math.floor(propAnim / 380) % tex.fountain.length];
+    }
   }
 
   return {
@@ -447,6 +459,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       views.clear();
       glows = [];
       lampGlows = [];
+      fountainSprite = null;
     },
   };
 }
