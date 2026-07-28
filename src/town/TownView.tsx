@@ -47,6 +47,10 @@ const MAX_SIM_STEPS = 5;
 const TOWN_HINT_KEY = "tildone-town-hint-seen";
 /** Auto-dismiss the hint after this long even if the user hasn't interacted. */
 const HINT_TIMEOUT_MS = 9000;
+/** Module-scoped fallback flag: survives TownView remounts within a page session
+ *  even when localStorage.setItem throws (e.g. Safari private mode reads fine but
+ *  rejects writes) — so a dismissed hint can't resurrect on reopening the view. */
+let townHintDismissedThisSession = false;
 
 function cssColorToHex(css: string): number | null {
   const m = css.trim().match(/^#([0-9a-f]{6})$/i);
@@ -114,6 +118,7 @@ export function TownView() {
   // First-open interaction hint: shown until the user interacts (or a timeout),
   // then remembered so it never returns. Mirrors the FirstRun dismiss pattern.
   const [showHint, setShowHint] = useState(() => {
+    if (townHintDismissedThisSession) return false;
     try {
       return localStorage.getItem(TOWN_HINT_KEY) !== "1";
     } catch {
@@ -121,12 +126,15 @@ export function TownView() {
     }
   });
   const dismissHint = useCallback(() => {
+    // Remember in module scope first, so even if the persistent write throws the
+    // hint stays dismissed across remounts for the rest of this page session.
+    townHintDismissedThisSession = true;
     setShowHint((cur) => {
       if (cur) {
         try {
           localStorage.setItem(TOWN_HINT_KEY, "1");
         } catch {
-          /* private mode / storage disabled — just hide it for this session */
+          /* private mode / storage disabled — the session flag above covers it */
         }
       }
       return false;
