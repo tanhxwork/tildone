@@ -13,19 +13,13 @@ import type { SpotKind } from "./world";
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
 import grass2Url from "./assets/world/grass2.png";
-import dirtUrl from "./assets/world/dirt.png";
 import roofLUrl from "./assets/world/roofL.png";
 import roofMUrl from "./assets/world/roofM.png";
 import roofRUrl from "./assets/world/roofR.png";
-import wallUrl from "./assets/world/wall.png";
-import door2Url from "./assets/world/door2.png";
-import windowUrl from "./assets/world/window.png";
 import treePineUrl from "./assets/world/tree_pine.png";
 import treeOrangeUrl from "./assets/world/tree_orange.png";
 import bushUrl from "./assets/world/bush.png";
 import mushroomsUrl from "./assets/world/mushrooms.png";
-import fenceUrl from "./assets/world/fence.png";
-import barrelUrl from "./assets/world/barrel.png";
 
 export type Dir = "down" | "up" | "left" | "right";
 
@@ -33,24 +27,21 @@ export type Dir = "down" | "up" | "left" | "right";
  *  renderer cycles all frames while the character is moving. */
 export type DirFrames = Record<Dir, Texture[]>;
 
-/** Kenney Tiny Town world tiles the renderer composes from. */
+/** Kenney Tiny Town world tiles the renderer composes from. The house bodies
+ *  are now drawn as furnished cutaways from `InteriorTiles` (see drawBuilding),
+ *  so only the ground, the tinted roof and the scattered green decorations come
+ *  from Kenney tiles. */
 export interface WorldTiles {
   /** Grass variants — [plain, detail, flowers] — for ground variation. */
   grass: Texture[];
-  dirt: Texture;
   /** Grey shingle roof left/mid/right (tinted per project by the renderer). */
   roofL: Texture;
   roofM: Texture;
   roofR: Texture;
-  wall: Texture;
-  door: Texture;
-  window: Texture;
   /** Scatterable green decorations. */
   trees: Texture[];
   bush: Texture;
   mushrooms: Texture;
-  fence: Texture;
-  barrel: Texture;
 }
 
 /** Procedural CC0 interior furnishings the renderer composes each house's
@@ -383,19 +374,13 @@ export async function loadTownTextures(): Promise<TownTextures> {
     grass0: grass0Url,
     grass1: grass1Url,
     grass2: grass2Url,
-    dirt: dirtUrl,
     roofL: roofLUrl,
     roofM: roofMUrl,
     roofR: roofRUrl,
-    wall: wallUrl,
-    door2: door2Url,
-    window: windowUrl,
     treePine: treePineUrl,
     treeOrange: treeOrangeUrl,
     bush: bushUrl,
     mushrooms: mushroomsUrl,
-    fence: fenceUrl,
-    barrel: barrelUrl,
   };
   const loaded: Record<string, Texture> = {};
   await Promise.all(
@@ -412,18 +397,12 @@ export async function loadTownTextures(): Promise<TownTextures> {
   cache = {
     world: {
       grass: [loaded.grass0, loaded.grass1, loaded.grass2],
-      dirt: loaded.dirt,
       roofL: loaded.roofL,
       roofM: loaded.roofM,
       roofR: loaded.roofR,
-      wall: loaded.wall,
-      door: loaded.door2,
-      window: loaded.window,
       trees: [loaded.treePine, loaded.treeOrange],
       bush: loaded.bush,
       mushrooms: loaded.mushrooms,
-      fence: loaded.fence,
-      barrel: loaded.barrel,
     },
     chars,
     spots: {

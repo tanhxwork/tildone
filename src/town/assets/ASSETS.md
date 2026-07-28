@@ -9,19 +9,17 @@ domain); full text in `world/Kenney-TinyTown-License.txt`. Selected 16×16 tiles
 live in `world/` (original Tiny Town tile index → our name):
 
 - 0 → `grass0.png`, 1 → `grass1.png`, 2 → `grass2.png` — grass ground + variation
-- 12 → `dirt.png` — the dirt doorstep under each door
 - 48 → `roofL.png`, 49 → `roofM.png`, 50 → `roofR.png` — grey shingle roof,
   **tinted per project** by the renderer (neutral grey so any colour reads)
-- 72 → `wall.png` — house wall body
-- 73 → `door2.png` — the arched door
-- 55 → `window.png` — house window
 - 3 → `tree_orange.png`, 4 → `tree_pine.png` — scattered trees
 - 5 → `bush.png`, 29 → `mushrooms.png` — scattered decorations
-- 44 → `fence.png`, 57 → `barrel.png` — props
 
-The renderer (`pixiScene.ts`) composes houses from wall + tinted-roof + door +
-window tiles, tiles the ground in grass (with sprinkled variation), and scatters
-the tree/bush/mushroom decorations deterministically across the green.
+The renderer (`pixiScene.ts`) uses the Kenney tiles only for the ground (grass
+with sprinkled variation), the project-tinted roof over each house, and the
+tree/bush/mushroom decorations scattered deterministically across the green.
+The house bodies below the roof are furnished cutaways drawn from the
+procedural interior tiles (next section) — so the former exterior wall / door /
+window / dirt-doorstep Kenney tiles are no longer used.
 
 ## Characters, leisure props & interiors — procedurally generated (CC0)
 
