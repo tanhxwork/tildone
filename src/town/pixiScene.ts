@@ -106,19 +106,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const { tx, ty, tw, th } = place;
     const tint = roofTint(place);
     const int = tex.interior;
-    // A dollhouse cutaway: the top row is the project-tinted shingle roof, the
-    // front is open, and inside is a furnished office — a desk with a computer
-    // in the door column (where the `working` character sits, facing up into
-    // it) flanked by homey props, so a house reads as a lived-in room.
-    const doorCol = tx + Math.floor(tw / 2);
-    const floorRow = ty + th - 1;
+    // An open-front dollhouse office: the top row is the project-tinted shingle
+    // roof; below it a room with a long desk counter carrying one monitor per
+    // workstation, and a wood-floor aisle where the workers sit (rendered by the
+    // character layer, facing up into their monitor). Several sessions on one
+    // project fill several desks, so a busy project reads as a busy office.
+    const wallTop = ty + 1;
+    const floorRow = ty + th - 1; // the walkable aisle / seat row
+    const deskRow = floorRow - 1;
 
-    // Interior back wall on the rows between roof and floor; wood floor on the
-    // bottom row (its front edge is open — no exterior wall drawn over it).
-    for (let ry = ty + 1; ry < floorRow; ry++) {
+    // Interior walls fill the rows between roof and aisle; the aisle's seat tiles
+    // get a wood floor over the wall fill (its front edge is open).
+    for (let ry = wallTop; ry <= floorRow; ry++) {
       for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.wall, tx + rx, ry));
     }
-    for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.floor, tx + rx, floorRow));
+    for (const s of place.seats) g.addChild(tile(int.floor, s.x, s.y));
 
     // Project-tinted roof.
     for (let rx = 0; rx < tw; rx++) {
@@ -126,21 +128,20 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       g.addChild(tile(roof, tx + rx, ty, tint));
     }
 
-    // Framed wall art on the topmost interior row.
-    g.addChild(tile(int.artA, tx, ty + 1));
-    g.addChild(tile(int.artB, tx + tw - 1, ty + 1));
+    // Framed wall art + a plant in each back corner soften the room.
+    g.addChild(tile(int.artA, tx + 1, wallTop));
+    g.addChild(tile(int.artB, tx + tw - 2, wallTop));
+    g.addChild(tile(int.plant, tx, wallTop));
+    g.addChild(tile(int.plant, tx + tw - 1, wallTop));
 
-    // Floor furnishings: the desk spans the door column and its left neighbour,
-    // plants at the corners, a rug under the desk. The monitor lifts a few px so
-    // it sits on the desk surface rather than on the floor.
-    g.addChild(tile(int.rug, doorCol - 1, floorRow));
-    g.addChild(tile(int.plant, tx, floorRow));
-    g.addChild(tile(int.plant, tx + tw - 1, floorRow));
-    g.addChild(tile(int.deskL, doorCol - 1, floorRow));
-    g.addChild(tile(int.deskR, doorCol, floorRow));
-    const comp = tile(int.computer, doorCol, floorRow);
-    comp.y -= 5 * scale;
-    g.addChild(comp);
+    // A long desk counter across the workstation columns, with a monitor lifted
+    // a few px onto each desk surface. Alternating table halves tile the counter.
+    place.desks.forEach((d, i) => {
+      g.addChild(tile(i % 2 === 0 ? int.deskL : int.deskR, d.x, deskRow));
+      const comp = tile(int.computer, d.x, deskRow);
+      comp.y -= 5 * scale;
+      g.addChild(comp);
+    });
 
     const label = new Text({
       text: place.room.name,
@@ -263,9 +264,10 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
       const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
       const seq = frames[c.facing];
-      // Lingering at a leisure spot (claimed, not walking) → a gentle activity
-      // loop, not a frozen frame (spec: "play a loop").
-      const dwelling = c.spotId !== null && !c.moving;
+      // Lingering at a leisure spot, or seated heads-down at a desk (both not
+      // walking) → a gentle activity loop, not a frozen frame (spec: "play a
+      // loop"). Seated work reads as typing: a slow frame cycle + a tiny bob.
+      const dwelling = (c.spotId !== null || c.seated) && !c.moving;
       if (c.moving && !theme.reducedMotion) {
         v.anim += dtMs;
         v.sprite.texture = seq[Math.floor(v.anim / FRAME_MS) % seq.length];

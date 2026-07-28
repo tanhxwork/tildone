@@ -101,6 +101,21 @@ describe("town view", () => {
     });
     expect(canvasMounted).toBe(true);
 
+    // Let the sim run so the working character walks in from the door and sits at
+    // its desk — the screenshot then shows it seated at a monitor (the whole
+    // point of the work-sim), not caught mid-spawn on the threshold.
+    await browser.pause(2000);
+
+    // The working character should now be sitting at its desk — its overlay node
+    // has moved up off the door row (y = ty+th) onto the interior seat row
+    // (y = ty+th-1), one tile higher. Assert it left the threshold and went in.
+    const doorTop = await browser.execute(() => {
+      const c = document.querySelector('[data-building="0"]') as HTMLElement | null;
+      return c?.style.top ?? "";
+    });
+    // door row y=5 → top 158px; seat row y=4 → top 126px. It must be at/above the seat.
+    expect(parseInt(doorTop, 10)).toBeLessThanOrEqual(126);
+
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");
   });

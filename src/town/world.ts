@@ -18,14 +18,27 @@ import type { TownModel, TownRoom } from "../selectors";
 export const TILE_PX = 16;
 
 /** One project's building cell, in tiles: a footprint plus a green margin so
- *  buildings never touch and there is always a walkable ring to path around. */
-const BUILDING_W = 4;
-const BUILDING_H = 3;
+ *  buildings never touch and there is always a walkable ring to path around.
+ *
+ *  The house is a small open-front office. Its rows are:
+ *    ty            roof (tinted per project)
+ *    ty+1          back wall (framed art)
+ *    ty+2          desk row — one desk + monitor per workstation column
+ *    ty+3 (=aisle) walkable interior floor — the seats, where workers sit
+ *  and its columns are `tx` (left wall) … `tx+BUILDING_W-1` (right wall) with
+ *  the interior columns `tx+1 … tx+BUILDING_W-2` between them. Only the aisle
+ *  row's interior columns are walkable; the door at the bottom-centre is the one
+ *  opening into that pocket, so it is a cul-de-sac off the green — working
+ *  characters walk in to sit, and wanderers never route through it. */
+const BUILDING_W = 6;
+const BUILDING_H = 4;
+/** Interior columns (between the two side walls) = the workstation count. */
+const INTERIOR_W = BUILDING_W - 2; // 4 desks/seats
 const MARGIN_X = 2; // green on each side → cell is BUILDING_W + 2*MARGIN_X wide
 const MARGIN_TOP = 1;
 const MARGIN_BOTTOM = 3; // extra green below for the door/desk apron + paths
-export const CELL_W = BUILDING_W + MARGIN_X * 2; // 8
-export const CELL_H = BUILDING_H + MARGIN_TOP + MARGIN_BOTTOM; // 7
+export const CELL_W = BUILDING_W + MARGIN_X * 2; // 10
+export const CELL_H = BUILDING_H + MARGIN_TOP + MARGIN_BOTTOM; // 8
 
 export interface Tile {
   x: number;
@@ -34,14 +47,21 @@ export interface Tile {
 
 export interface BuildingPlacement {
   room: TownRoom;
-  /** Footprint top-left tile and size (obstacle tiles). */
+  /** Footprint top-left tile and size (mostly obstacle tiles; the interior
+   *  aisle row is walkable — see `seats`). */
   tx: number;
   ty: number;
   tw: number;
   th: number;
-  /** Walkable tile directly in front of the building — where a `working`
-   *  character stands, and the entry a spawning character appears at. */
+  /** Walkable tile directly in front of the building — the entry a spawning
+   *  character appears at, and the one opening into the interior aisle. */
   door: Tile;
+  /** Interior seat tiles (walkable), one per workstation, left→right along the
+   *  aisle row. A `working` character sits on one, facing up into the monitor on
+   *  the desk row directly above. */
+  seats: Tile[];
+  /** Desk tiles (blocked) directly above each seat — where a monitor is drawn. */
+  desks: Tile[];
 }
 
 /** A shared leisure activity an idle character can visit. */
@@ -107,26 +127,40 @@ export function buildWorld(
     const cellY = row * CELL_H;
     const tx = cellX + MARGIN_X;
     const ty = cellY + MARGIN_TOP;
+    const aisleRow = ty + BUILDING_H - 1; // interior floor = the seat row
+    const deskRow = aisleRow - 1;
     for (let dy = 0; dy < BUILDING_H; dy++) {
       for (let dx = 0; dx < BUILDING_W; dx++) {
-        blocked[idx(tx + dx, ty + dy, cols)] = true;
+        // Block the whole footprint EXCEPT the interior columns of the aisle row,
+        // which are the walkable seats reachable only via the door below.
+        const isAisleInterior =
+          ty + dy === aisleRow && dx >= 1 && dx <= INTERIOR_W;
+        blocked[idx(tx + dx, ty + dy, cols)] = !isAisleInterior;
       }
     }
-    // Door: the walkable tile centred just below the footprint.
-    const door: Tile = { x: tx + Math.floor(BUILDING_W / 2), y: ty + BUILDING_H };
-    return { room, tx, ty, tw: BUILDING_W, th: BUILDING_H, door };
+    const seats: Tile[] = [];
+    const desks: Tile[] = [];
+    for (let i = 0; i < INTERIOR_W; i++) {
+      seats.push({ x: tx + 1 + i, y: aisleRow });
+      desks.push({ x: tx + 1 + i, y: deskRow });
+    }
+    // Door: the walkable green tile centred just below the footprint, directly
+    // under one of the interior seats so it opens into the aisle.
+    const door: Tile = { x: tx + 1 + Math.floor((INTERIOR_W - 1) / 2), y: ty + BUILDING_H };
+    return { room, tx, ty, tw: BUILDING_W, th: BUILDING_H, door, seats, desks };
   });
 
   // Shared leisure spots: one per building cell, tucked into the cell's
-  // lower-right green (col 6 is outside the footprint cols 2..5; the cell's last
-  // row is below the footprint) — always walkable, and spread across the map so
-  // idle characters have somewhere to go. Kinds cycle bench/pond/campfire/garden.
+  // lower-right green (the footprint spans cols MARGIN_X..MARGIN_X+BUILDING_W-1,
+  // so the right margin and the rows below the footprint are always green) —
+  // spread across the map so idle characters have somewhere to go. Kinds cycle
+  // bench/pond/campfire/garden.
   const spots: LeisureSpot[] = model.rooms.map((_, i) => {
     const col = i % perRow;
     const row = Math.floor(i / perRow);
     return {
       id: i,
-      tile: { x: col * CELL_W + 6, y: row * CELL_H + CELL_H - 1 },
+      tile: { x: col * CELL_W + CELL_W - 2, y: row * CELL_H + CELL_H - 1 },
       kind: SPOT_KINDS[i % SPOT_KINDS.length],
     };
   });

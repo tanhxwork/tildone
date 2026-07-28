@@ -32,17 +32,19 @@ so grid `(col,row)` is at pixel `(col*17, row*17)`; `sub()` does the slice).
 composed by `pixiScene.ts → drawBuilding` into each house's open cutaway — a
 project-tinted roof over a furnished office:
 
-- `floor` = `24,0` (wood plank floor)
+- `floor` = `24,0` (wood plank floor — the walkable aisle the workers sit on)
 - `wall` = `18,4` **from RPG Urban** (tan brick back wall)
-- `deskL`/`deskR` = `0,0` / `1,0` (a two-tile table = the desk)
-- `plant` = `16,0` (potted plant, at both corners)
-- `rug` = `5,9` (bordered rug under the desk)
+- `deskL`/`deskR` = `0,0` / `1,0` (two table halves, tiled to form a long desk
+  counter across the workstation columns)
+- `plant` = `16,0` (potted plant, at both back corners)
+- `rug` = `5,9` (bordered rug)
 - `artA`/`artB` = `20,12` / `19,12` (framed landscapes on the back wall)
 
 The **desktop computer** is the one interior piece drawn in code (`assets.ts →
-drawComputer`) — the rustic roguelike packs ship no monitor — so it stays CC0
-and sits on the desk in the door column, where the `working` character rests
-facing up into it.
+drawComputer`) — the rustic roguelike packs ship no monitor — so it stays CC0.
+One monitor sits on the desk counter at **each** workstation column; a `working`
+character walks in and sits on the seat tile directly below its monitor, facing
+up into it (several sessions on one project fill several desks).
 
 **Characters** (`assets.ts → sliceChar`) come from RPG Urban, which stacks six
 people three walk-frame rows each, with columns left/down/up/right at grid cols

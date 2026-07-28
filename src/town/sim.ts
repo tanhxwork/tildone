@@ -8,11 +8,17 @@
 // ticker calls it each frame; a store reload only feeds it a fresh roster.
 //
 // Behaviour spine (a re-reading of presence — no new agent data):
-//   working                 → home at its building's door (heads-down)
+//   working                 → walks inside and sits at its own desk (heads-down)
 //   quiet & live (idle)     → walks out and wanders the green
-//   quiet & not live (rest) → stands at home (no live heartbeat to wander)
+//   quiet & not live (rest) → sits at its desk (no live heartbeat to wander)
 //   blocked                 → paces just outside its own building
 //   roster drops it (ended) → walks off to the world edge and despawns
+//
+// "Sits at its own desk": each building has a row of interior seat tiles (one
+// per workstation). A working/resting character claims a seat (deterministic by
+// task id within the building) and paths in through the door to sit on it,
+// facing up into the monitor — several sessions on one project fill several
+// desks, not one. Overflow past the seat count rests at the door.
 //
 // Under prefers-reduced-motion the whole thing collapses to a still tableau:
 // every character snapped to its resting tile, no paths, no motion.
@@ -56,6 +62,13 @@ export interface CharAgent {
   spotId: number | null;
   /** Remaining time (ms) to linger at the claimed spot. */
   dwellMs: number;
+  /** The interior desk seat this character works at (its building's seat tile),
+   *  or null when it has no seat (idle/leaving, or overflow past the desk count).
+   *  Set each step by the seat assignment; the work target when non-null. */
+  seat: Tile | null;
+  /** True once the character is sitting on its `seat` — drives the desk "typing"
+   *  animation and tells the renderer it is heads-down at the monitor. */
+  seated: boolean;
 }
 
 export interface SimState {
@@ -112,10 +125,43 @@ function intentOf(state: PresenceState, live: boolean): Intent {
   return "home"; // working, or quiet-not-live (rest at home)
 }
 
-/** The tile a character rests on for a given intent — its building's door. */
+/** The building door — a character's outside entry/rest tile. */
 function homeTile(world: TownWorld, buildingIndex: number): Tile {
   const b = world.buildings[buildingIndex] ?? world.buildings[0];
   return b ? b.door : { x: 0, y: 0 };
+}
+
+/** Where a `home` character heads: its claimed desk seat if it has one, else the
+ *  door (overflow past the desk count, or a building with no seats). */
+function workTile(world: TownWorld, c: CharAgent): Tile {
+  return c.seat ?? homeTile(world, c.buildingIndex);
+}
+
+/**
+ * Assign each `home`-intent character an interior desk seat in its building.
+ * Deterministic and stable: within a building, home characters sorted by task id
+ * take seats left→right; anyone past the seat count gets `seat = null` (rests at
+ * the door). Non-home characters hold no seat. Two workers therefore never share
+ * a desk, and the same worker keeps the same desk across steps.
+ */
+function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterChar>) {
+  const homeByBuilding = new Map<number, number[]>();
+  for (const [id, c] of sim.chars) {
+    if (c.intent === "home" && byId.has(id)) {
+      const list = homeByBuilding.get(c.buildingIndex) ?? [];
+      list.push(id);
+      homeByBuilding.set(c.buildingIndex, list);
+    } else {
+      c.seat = null;
+    }
+  }
+  for (const [buildingIndex, ids] of homeByBuilding) {
+    ids.sort((a, b) => a - b);
+    const seats = world.buildings[buildingIndex]?.seats ?? [];
+    ids.forEach((id, i) => {
+      sim.chars.get(id)!.seat = i < seats.length ? seats[i] : null;
+    });
+  }
 }
 
 function facingOf(dx: number, dy: number, fallback: Facing): Facing {
@@ -193,6 +239,15 @@ export function stepTownSim(
   // momentarily stands on — a spot another character is occupying.
   const avoidSpots = (target: Tile) => (x: number, y: number) =>
     spotTiles.has(`${x},${y}`) && !(x === target.x && y === target.y);
+  // Interior seat tiles are the only walkable tiles inside a house (a cul-de-sac
+  // off the green). Wanderers must never step onto them — only a `home`
+  // character heading to *its* seat enters, via an explicit path. So wander's
+  // random steps avoid them, and a character standing inside (its intent just
+  // flipped away from work) is first walked back out to the door.
+  const interiorTiles = new Set(
+    world.buildings.flatMap((b) => b.seats.map((s) => `${s.x},${s.y}`)),
+  );
+  const insideKey = (t: Tile) => interiorTiles.has(`${t.x},${t.y}`);
 
   // --- Spawn newcomers at their building door. ---
   for (const r of roster) {
@@ -224,8 +279,13 @@ export function stepTownSim(
       wanderPauseMs: 0,
       spotId: null,
       dwellMs: 0,
+      seat: null,
+      seated: false,
     });
   }
+
+  // Assign interior desk seats to working/resting characters (see assignSeats).
+  assignSeats(sim, world, byId);
 
   // Safety net: drop spot claims held by characters that no longer exist, so a
   // missed release can never leave a spot permanently blocked.
@@ -241,11 +301,14 @@ export function stepTownSim(
         sim.chars.delete(id); // gone characters simply vanish (no walk-off)
         continue;
       }
-      const home = homeTile(world, c.buildingIndex);
-      c.pos = { x: home.x, y: home.y };
+      // Home characters snap to their desk seat (sitting), everyone else to the
+      // door — a still tableau of workers at their monitors.
+      const rest = c.intent === "home" ? workTile(world, c) : homeTile(world, c.buildingIndex);
+      c.pos = { x: rest.x, y: rest.y };
       c.path = [];
       c.moving = false;
       c.facing = "up";
+      c.seated = c.intent === "home" && c.seat !== null;
       c.spotId = null;
       c.dwellMs = 0;
     }
@@ -270,15 +333,24 @@ export function stepTownSim(
     // Any non-wander intent gives up a held spot (resumed work, blocked, off).
     if (c.intent !== "wander" && c.spotId !== null) releaseSpot(sim, c);
 
+    // A character that just stopped working (now wandering or pacing) is sitting
+    // inside — walk it back out to the door before it does anything else, since
+    // the interior's only exit is that door and wander/pace steps never enter it.
+    if ((c.intent === "wander" || c.intent === "pace") && c.path.length === 0 && insideKey(here)) {
+      const door = homeTile(world, c.buildingIndex);
+      c.path = findPath(world, here, door, avoidSpots(door)).slice(1);
+      c.seated = false;
+    }
+
     if (c.intent === "home") {
-      const home = homeTile(world, c.buildingIndex);
+      const target = workTile(world, c); // its desk seat, or the door on overflow
       if (c.path.length === 0) {
-        if (!sameTile(here, home)) {
-          c.path = findPath(world, here, home, avoidSpots(home)).slice(1);
-        } else if (c.pos.x !== home.x || c.pos.y !== home.y) {
-          // On the home tile but stopped mid-tile (e.g. path cleared by an
+        if (!sameTile(here, target)) {
+          c.path = findPath(world, here, target, avoidSpots(target)).slice(1);
+        } else if (c.pos.x !== target.x || c.pos.y !== target.y) {
+          // On the target tile but stopped mid-tile (e.g. path cleared by an
           // intent flip) — snap the residual float to the exact rest tile.
-          c.pos = { x: home.x, y: home.y };
+          c.pos = { x: target.x, y: target.y };
         }
       }
     } else if (c.intent === "wander") {
@@ -294,7 +366,7 @@ export function stepTownSim(
           } else if (onSpot) {
             // Done lingering — step off to an adjacent non-spot tile.
             const step = randomAdjacentStep(world, here, rng, (t) =>
-              spotTiles.has(`${t.x},${t.y}`),
+              spotTiles.has(`${t.x},${t.y}`) || insideKey(t),
             );
             if (step) c.path = [step];
           } else {
@@ -321,7 +393,7 @@ export function stepTownSim(
             }
           } else {
             const step = randomAdjacentStep(world, here, rng, (t) =>
-              spotTiles.has(`${t.x},${t.y}`),
+              spotTiles.has(`${t.x},${t.y}`) || insideKey(t),
             );
             if (step) c.path = [step];
             c.wanderPauseMs = WANDER_PAUSE_MS;
@@ -343,6 +415,7 @@ export function stepTownSim(
     if (c.path.length > 0) {
       let budget = (SPEED * dt) / 1000; // tiles this frame
       c.moving = true;
+      c.seated = false;
       while (budget > 0 && c.path.length > 0) {
         const next = c.path[0];
         const dx = next.x - c.pos.x;
@@ -366,8 +439,14 @@ export function stepTownSim(
       }
     } else {
       c.moving = false;
-      // Resting at home → face up, into the building (a "working at the desk" read).
-      if (c.intent === "home") c.facing = "up";
+      // Resting at its desk → face up into the monitor, and mark it seated once
+      // it is actually on its seat tile (drives the desk "typing" animation).
+      if (c.intent === "home") {
+        c.facing = "up";
+        c.seated = c.seat !== null && sameTile(here, c.seat);
+      } else {
+        c.seated = false;
+      }
     }
   }
 

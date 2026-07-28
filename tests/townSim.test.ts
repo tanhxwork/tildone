@@ -58,13 +58,17 @@ describe("stepTownSim", () => {
     expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(world.buildings[0].door);
   });
 
-  it("keeps a working character home at its door", () => {
+  it("walks a working character inside to sit at its desk seat", () => {
     const world = world2();
     const sim = createSim();
     run(sim, [roster(1, "working", true)], world, 60, mulberry32(2));
     const c = sim.chars.get(1)!;
-    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(world.buildings[0].door);
+    // It has left the door and is sitting on its building's first seat, facing
+    // up into the monitor.
+    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(world.buildings[0].seats[0]);
     expect(c.moving).toBe(false);
+    expect(c.seated).toBe(true);
+    expect(c.facing).toBe("up");
   });
 
   it("walks an idle (quiet+live) character out to wander", () => {
@@ -79,17 +83,18 @@ describe("stepTownSim", () => {
     expect(here).not.toEqual(door);
   });
 
-  it("walks a resuming (quiet→working) character back home", () => {
+  it("walks a resuming (quiet→working) character back home to its desk seat", () => {
     const world = world2();
-    const door = world.buildings[0].door;
+    const seat = world.buildings[0].seats[0];
     const sim = createSim();
     const rng = mulberry32(4);
     run(sim, [roster(1, "quiet", true)], world, 200, rng); // wander away first
     const away = sim.chars.get(1)!;
-    expect({ x: Math.round(away.pos.x), y: Math.round(away.pos.y) }).not.toEqual(door);
+    expect({ x: Math.round(away.pos.x), y: Math.round(away.pos.y) }).not.toEqual(seat);
     run(sim, [roster(1, "working", true)], world, 400, rng); // now resume work
     const c = sim.chars.get(1)!;
-    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(door);
+    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(seat);
+    expect(c.seated).toBe(true);
   });
 
   it("paces a blocked character across its building frontage only", () => {
@@ -151,6 +156,47 @@ describe("stepTownSim", () => {
     expect({ x: Math.round(sim.chars.get(2)!.pos.x), y: Math.round(sim.chars.get(2)!.pos.y) }).toEqual(
       world.buildings[1].door,
     );
+  });
+});
+
+describe("stepTownSim — desk seating (work-sim)", () => {
+  it("seats two workers in one building at distinct desks", () => {
+    const world = world2();
+    const seats = world.buildings[0].seats;
+    const sim = createSim();
+    const rng = mulberry32(21);
+    run(sim, [roster(1, "working", true, 0), roster(2, "working", true, 0)], world, 120, rng);
+    const a = sim.chars.get(1)!;
+    const b = sim.chars.get(2)!;
+    const seatKeys = new Set(seats.map((s) => `${s.x},${s.y}`));
+    for (const c of [a, b]) {
+      expect(c.seated).toBe(true);
+      const here = `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`;
+      expect(seatKeys.has(here)).toBe(true); // sitting on a real desk seat
+    }
+    // The two workers are not on the same desk.
+    expect(`${Math.round(a.pos.x)},${Math.round(a.pos.y)}`).not.toBe(
+      `${Math.round(b.pos.x)},${Math.round(b.pos.y)}`,
+    );
+  });
+
+  it("gives up its desk and walks back out when the session goes idle", () => {
+    const world = world2();
+    const seat = world.buildings[0].seats[0];
+    const sim = createSim();
+    const rng = mulberry32(22);
+    run(sim, [roster(1, "working", true)], world, 120, rng); // sit down
+    expect(sim.chars.get(1)!.seated).toBe(true);
+    // Goes idle (quiet+live) → must leave the seat and end up outside the house.
+    run(sim, [roster(1, "quiet", true)], world, 400, rng);
+    const c = sim.chars.get(1)!;
+    expect(c.seated).toBe(false);
+    const here = { x: Math.round(c.pos.x), y: Math.round(c.pos.y) };
+    expect(here).not.toEqual(seat);
+    // It is no longer inside the footprint (walked out through the door).
+    const b = world.buildings[0];
+    const inside = here.x >= b.tx && here.x < b.tx + b.tw && here.y >= b.ty && here.y < b.ty + b.th;
+    expect(inside).toBe(false);
   });
 });
 
@@ -236,20 +282,20 @@ describe("stepTownSim — leisure spots (v2b)", () => {
     }
   });
 
-  it("snaps to the exact home tile when work resumes mid-step (no off-tile rest)", () => {
+  it("snaps to the exact seat tile when work resumes mid-step (no off-tile rest)", () => {
     const world = world2();
-    const door = world.buildings[0].door;
+    const seat = world.buildings[0].seats[0];
     const sim = createSim();
     // rng→0 makes it head to a spot immediately, so after one step it sits at a
     // fractional position, mid-tile.
     stepTownSim(sim, [roster(1, "quiet", true)], 16, world, () => 0);
     const midPos = sim.chars.get(1)!.pos;
     expect(Number.isInteger(midPos.x) && Number.isInteger(midPos.y)).toBe(false);
-    // Work resumes → it must reach its exact home tile, not rest a fraction off.
+    // Work resumes → it must reach its exact seat tile, not rest a fraction off.
     for (let i = 0; i < 200; i++) {
       stepTownSim(sim, [roster(1, "working", true)], 16, world, () => 0);
     }
     const c = sim.chars.get(1)!;
-    expect(c.pos).toEqual({ x: door.x, y: door.y });
+    expect(c.pos).toEqual({ x: seat.x, y: seat.y });
   });
 });

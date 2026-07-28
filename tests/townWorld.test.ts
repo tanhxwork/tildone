@@ -46,13 +46,17 @@ describe("buildWorld", () => {
     expect(world.rows).toBe(CELL_H * 2);
   });
 
-  it("blocks exactly the building footprints and leaves margins walkable", () => {
+  it("blocks the footprint except the interior seat aisle, and leaves margins walkable", () => {
     const world = buildWorld(model("A"), 10_000, 2); // 1 building, wide
     const b = world.buildings[0];
-    // Every footprint tile is blocked.
+    const seatKeys = new Set(b.seats.map((s) => `${s.x},${s.y}`));
+    // Every footprint tile is blocked EXCEPT the interior seat tiles (the
+    // walkable aisle a working character walks in to sit on).
     for (let dy = 0; dy < b.th; dy++) {
       for (let dx = 0; dx < b.tw; dx++) {
-        expect(isWalkable(world, b.tx + dx, b.ty + dy)).toBe(false);
+        const x = b.tx + dx;
+        const y = b.ty + dy;
+        expect(isWalkable(world, x, y)).toBe(seatKeys.has(`${x},${y}`));
       }
     }
     // The margin ring around it is walkable.
@@ -60,11 +64,27 @@ describe("buildWorld", () => {
     expect(isWalkable(world, b.tx, b.ty + b.th)).toBe(true); // apron below
   });
 
-  it("places the door on a walkable tile directly below the footprint", () => {
+  it("gives each building one desk + seat per workstation, seats walkable and desks above", () => {
+    const world = buildWorld(model("A"), 10_000, 2);
+    const b = world.buildings[0];
+    expect(b.seats.length).toBeGreaterThan(1); // multiple workstations per house
+    expect(b.desks).toHaveLength(b.seats.length);
+    b.seats.forEach((s, i) => {
+      expect(isWalkable(world, s.x, s.y)).toBe(true); // sit-able
+      expect(b.desks[i].x).toBe(s.x); // desk directly above its seat
+      expect(b.desks[i].y).toBe(s.y - 1);
+      expect(isWalkable(world, b.desks[i].x, b.desks[i].y)).toBe(false); // desk blocks
+    });
+  });
+
+  it("places the door on a walkable tile below the footprint, opening into the aisle", () => {
     const world = buildWorld(model("A"), 10_000, 2);
     const b = world.buildings[0];
     expect(b.door.y).toBe(b.ty + b.th);
     expect(isWalkable(world, b.door.x, b.door.y)).toBe(true);
+    // The tile directly above the door is an interior seat — the one opening in.
+    expect(isWalkable(world, b.door.x, b.door.y - 1)).toBe(true);
+    expect(b.seats.some((s) => s.x === b.door.x && s.y === b.door.y - 1)).toBe(true);
   });
 
   it("puts the walk-off edge on a walkable bottom tile", () => {
