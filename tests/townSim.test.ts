@@ -322,12 +322,43 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
     const world = world2(); // building 0 has only 2 desks
     const sim = createSim();
     const rng = mulberry32(32);
-    const r = [1, 2, 3, 4].map((id) => roster(id, "working", true, 0));
+    // Ids 3 and 6 both hit `id % frontage.length === 0` — the old overflow
+    // aliasing stacked them both on the door tile. They must now be distinct.
+    const r = [1, 2, 3, 6].map((id) => roster(id, "working", true, 0));
     run(sim, r, world, 200, rng);
     const positions = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
     expect(new Set(positions).size).toBe(positions.length); // all distinct — no pile-up
     const seated = [...sim.chars.values()].filter((c) => c.seated);
     expect(seated).toHaveLength(2); // exactly the two desks are filled
+  });
+
+  it("frees a desk for a waiting overflow worker when a seated session ends", () => {
+    const world = world2(); // 2 desks
+    const sim = createSim();
+    const rng = mulberry32(34);
+    run(sim, [1, 2, 3].map((id) => roster(id, "working", true, 0)), world, 200, rng);
+    expect(sim.chars.get(3)!.seat).toBeNull(); // id 3 is the overflow
+    // Id 1 leaves the roster → its desk frees; id 3 should claim it and sit
+    // (id 1 itself is meanwhile walking off toward the edge).
+    run(sim, [2, 3].map((id) => roster(id, "working", true, 0)), world, 300, rng);
+    expect(sim.chars.get(3)!.seat).not.toBeNull();
+    expect(sim.chars.get(3)!.seated).toBe(true);
+  });
+
+  it("keeps idle wanderers out of building interiors entirely", () => {
+    const world = world2();
+    const interior = new Set(
+      world.buildings.flatMap((b) => b.seats.map((s) => `${s.x},${s.y}`)),
+    );
+    const sim = createSim();
+    const rng = mulberry32(35);
+    const r = [1, 2, 3].map((id) => roster(id, "quiet", true, id % 2));
+    for (let i = 0; i < 1200; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      for (const c of sim.chars.values()) {
+        expect(interior.has(`${Math.round(c.pos.x)},${Math.round(c.pos.y)}`)).toBe(false);
+      }
+    }
   });
 
   it("gathers idle characters into the plaza rather than scattering", () => {

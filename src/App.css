@@ -6487,6 +6487,22 @@ textarea:focus-visible,
   outline-offset: 1px;
 }
 
+/* Transparent hit-target over each building — click to frame that project. Sits
+   below the character buttons so a character inside stays clickable. */
+.town-building {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.town-building:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* The character the camera is following (click to toggle). */
 .town-char.following {
   outline: 2px solid var(--accent);

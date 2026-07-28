@@ -68,6 +68,10 @@ export interface CharAgent {
    *  or null when it has no seat (idle/leaving, or overflow past the desk count).
    *  Set each step by the seat assignment; the work target when non-null. */
   seat: Tile | null;
+  /** Where an overflow worker (home, but no free desk) waits — a distinct tile
+   *  near its building, assigned so two overflow workers never share one. Null
+   *  unless this character is overflow. */
+  restTile: Tile | null;
   /** True once the character is sitting on its `seat` — drives the desk "typing"
    *  animation and tells the renderer it is heads-down at the monitor. */
   seated: boolean;
@@ -133,13 +137,43 @@ function homeTile(world: TownWorld, buildingIndex: number): Tile {
   return b ? b.door : { x: 0, y: 0 };
 }
 
-/** Where a `home` character heads: its claimed desk seat if it has one, else a
- *  frontage tile spread by task id (overflow past the desk count — so several
- *  seatless workers wait outside on distinct tiles, never stacked on the door). */
+/** Where a `home` character heads: its claimed desk seat if it has one, else its
+ *  assigned overflow rest tile (distinct per worker — see assignSeats), or the
+ *  door as a last resort. */
 function workTile(world: TownWorld, c: CharAgent): Tile {
-  if (c.seat) return c.seat;
-  const f = frontage(world, c.buildingIndex);
-  return f.length ? f[c.taskId % f.length] : homeTile(world, c.buildingIndex);
+  return c.seat ?? c.restTile ?? homeTile(world, c.buildingIndex);
+}
+
+/** `count` distinct walkable tiles near a building's door, nearest first, for
+ *  overflow workers to wait on — a BFS out from the door that skips interior
+ *  seats/doorways and leisure spots, so two overflow workers never share a tile
+ *  (the old `taskId % frontage` aliased ids like 3 and 6 onto the door). */
+function nearbyRestTiles(world: TownWorld, buildingIndex: number, count: number): Tile[] {
+  const door = homeTile(world, buildingIndex);
+  const interior = new Set(
+    world.buildings.flatMap((b) => [
+      ...b.seats.map((s) => `${s.x},${s.y}`),
+      `${b.door.x},${b.door.y - 1}`,
+    ]),
+  );
+  const spots = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+  const seen = new Set<string>([`${door.x},${door.y}`]);
+  const queue: Tile[] = [door];
+  const out: Tile[] = [];
+  while (queue.length && out.length < count) {
+    const t = queue.shift()!;
+    const key = `${t.x},${t.y}`;
+    if (isWalkable(world, t.x, t.y) && !interior.has(key) && !spots.has(key)) out.push(t);
+    for (const [dx, dy] of STEPS) {
+      const n = { x: t.x + dx, y: t.y + dy };
+      const k = `${n.x},${n.y}`;
+      if (!seen.has(k) && isWalkable(world, n.x, n.y)) {
+        seen.add(k);
+        queue.push(n);
+      }
+    }
+  }
+  return out.length ? out : [door];
 }
 
 /**
@@ -158,6 +192,7 @@ function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterCh
   for (const [id, c] of sim.chars) {
     if (c.intent !== "home" || !byId.has(id)) {
       c.seat = null;
+      c.restTile = null;
       continue;
     }
     if (c.seat) {
@@ -168,7 +203,8 @@ function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterCh
     list.push(id);
     homeByBuilding.set(c.buildingIndex, list);
   }
-  // 2. Fill free seats with the seatless, keeping already-held seats put (sticky).
+  // 2. Fill free seats with the seatless, keeping already-held seats put (sticky);
+  //    workers past the desk count become overflow on distinct rest tiles.
   for (const [buildingIndex, ids] of homeByBuilding) {
     const seats = world.buildings[buildingIndex]?.seats ?? [];
     const taken = new Set<string>();
@@ -178,9 +214,27 @@ function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterCh
     }
     const free = seats.filter((s) => !taken.has(`${s.x},${s.y}`));
     const needy = ids.filter((id) => !sim.chars.get(id)!.seat).sort((a, b) => a - b);
+    const overflow: number[] = [];
     needy.forEach((id, i) => {
-      sim.chars.get(id)!.seat = i < free.length ? free[i] : null;
+      const c = sim.chars.get(id)!;
+      if (i < free.length) {
+        c.seat = free[i];
+        c.restTile = null;
+      } else {
+        c.seat = null;
+        overflow.push(id);
+      }
     });
+    if (overflow.length) {
+      const tiles = nearbyRestTiles(world, buildingIndex, overflow.length);
+      overflow.forEach((id, i) => {
+        sim.chars.get(id)!.restTile = tiles[Math.min(i, tiles.length - 1)];
+      });
+    }
+    for (const id of ids) {
+      const c = sim.chars.get(id)!;
+      if (c.seat) c.restTile = null;
+    }
   }
 }
 
@@ -320,6 +374,7 @@ export function stepTownSim(
       spotId: null,
       dwellMs: 0,
       seat: null,
+      restTile: null,
       seated: false,
     });
   }

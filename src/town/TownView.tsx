@@ -101,6 +101,7 @@ export function TownView() {
   const sceneRef = useRef<ReturnType<typeof createTownScene> | null>(null);
   const simRef = useRef(createSim());
   const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
+  const buildingRefs = useRef(new Map<number, HTMLButtonElement>());
   const [view, setView] = useState({ w: 0, h: 0 });
   const [followId, setFollowId] = useState<number | null>(null);
   // Flips true once the async Pixi init + textures are ready, so the render
@@ -124,10 +125,11 @@ export function TownView() {
   viewRef.current = view;
   followRef.current = followId;
 
-  // Which buildings have a live session → their windows are lit.
+  // Which buildings have an actively *working* session → their windows are lit.
+  // A quiet building (even a quiet-but-live idler wandering the plaza) stays dark.
   const liveBuildingsRef = useRef<Set<number>>(new Set());
   liveBuildingsRef.current = useMemo(
-    () => new Set(roster.filter((r) => r.live).map((r) => r.buildingIndex)),
+    () => new Set(roster.filter((r) => r.state === "working").map((r) => r.buildingIndex)),
     [roster],
   );
 
@@ -268,6 +270,7 @@ export function TownView() {
     const app = appRef.current;
     if (!app || !ready || view.w === 0) return;
     app.renderer.resize(view.w, view.h);
+    sceneRef.current?.resize(view.w, view.h);
     camRef.current = clampCamera(camRef.current, worldPx, view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, worldPx, ready]);
@@ -297,6 +300,10 @@ export function TownView() {
     let lastX = 0;
     let lastY = 0;
     const onDown = (e: PointerEvent) => {
+      // A pointerdown that reaches the canvas is on the background — the
+      // character/building buttons stopPropagation. So it releases any follow
+      // (spec: cleared by a background click / drag) and begins a pan.
+      setFollowId(null);
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -308,8 +315,10 @@ export function TownView() {
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
-      if (dx !== 0 || dy !== 0) setFollowId(null); // taking manual control
       camRef.current = panBy(camRef.current, { x: dx, y: dy }, worldPxRef.current, viewRef.current);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFollowId(null); // spec: Escape releases follow
     };
     const onUp = (e: PointerEvent) => {
       dragging = false;
@@ -331,16 +340,33 @@ export function TownView() {
     wrap.addEventListener("pointerup", onUp);
     wrap.addEventListener("pointercancel", onUp);
     wrap.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKey);
     return () => {
       wrap.removeEventListener("pointerdown", onDown);
       wrap.removeEventListener("pointermove", onMove);
       wrap.removeEventListener("pointerup", onUp);
       wrap.removeEventListener("pointercancel", onUp);
       wrap.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKey);
     };
   }, []);
 
-  /** Move each overlay node onto its character's on-screen position (camera-aware). */
+  /** Frame a building: centre + step-zoom the camera on it, releasing follow. */
+  function frameBuilding(index: number) {
+    setFollowId(null);
+    const b = worldRef.current.buildings[index];
+    if (!b) return;
+    const zoom = 2;
+    const cx = (b.tx + b.tw / 2) * BASE_TILE;
+    const cy = (b.ty + b.th / 2) * BASE_TILE;
+    camRef.current = clampCamera(
+      { x: cx - viewRef.current.w / zoom / 2, y: cy - viewRef.current.h / zoom / 2, zoom },
+      worldPxRef.current,
+      viewRef.current,
+    );
+  }
+
+  /** Move each overlay node onto its character/building on-screen rect (camera-aware). */
   function positionOverlay() {
     const sim = simRef.current;
     const cam = camRef.current;
@@ -356,12 +382,40 @@ export function TownView() {
       node.style.left = `${sx - 18}px`;
       node.style.top = `${sy - 34}px`;
     }
+    for (const [i, node] of buildingRefs.current) {
+      const b = worldRef.current.buildings[i];
+      if (!b) {
+        node.style.display = "none";
+        continue;
+      }
+      node.style.display = "block";
+      node.style.left = `${(b.tx * BASE_TILE - cam.x) * cam.zoom}px`;
+      node.style.top = `${(b.ty * BASE_TILE - cam.y) * cam.zoom}px`;
+      node.style.width = `${b.tw * BASE_TILE * cam.zoom}px`;
+      node.style.height = `${b.th * BASE_TILE * cam.zoom}px`;
+    }
   }
 
   return (
     <div className="town" ref={hostRef}>
       <div className="town-canvas" ref={wrapRef} style={{ width: "100%", height: "100%" }}>
         <div className="town-overlay" aria-label="Agent town">
+          {world.buildings.map((b, i) => (
+            <button
+              key={`building-${i}`}
+              ref={(el) => {
+                if (el) buildingRefs.current.set(i, el);
+                else buildingRefs.current.delete(i);
+              }}
+              className="town-building"
+              data-testid={`town-building-${i}`}
+              aria-label={`Frame ${b.room.name}`}
+              title={`Frame ${b.room.name}`}
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => frameBuilding(i)}
+            />
+          ))}
           {roster.map((r) => {
             const { label } = agentIdentity(r.agentName);
             const detail = r.lastLog ?? r.state;

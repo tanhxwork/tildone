@@ -138,5 +138,41 @@ describe("town view", () => {
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");
+
+    // Escape releases the follow (spec: cleared by background click / Escape).
+    await browser.execute(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 5; i++) step?.(16);
+    });
+    await expect(char).not.toHaveElementClass("following", { containing: true });
+
+    // A wheel over the canvas zooms the camera, which re-projects the overlay —
+    // proof the pan/zoom camera transform is live (not a static full-size layout).
+    // Follow is off now, so a moved node means the transform actually changed.
+    const before = await browser.execute(
+      () => (document.querySelector(".town-char") as HTMLElement | null)?.style.left ?? "",
+    );
+    await browser.execute(() => {
+      const c = document.querySelector(".town-canvas") as HTMLElement;
+      const rect = c.getBoundingClientRect();
+      // Pivot the zoom near a corner (not the centre) so the node definitively
+      // shifts even if the camera happened to be centred on it.
+      c.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -300,
+          clientX: rect.left + 24,
+          clientY: rect.top + 24,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 5; i++) step?.(16);
+    });
+    const after = await browser.execute(
+      () => (document.querySelector(".town-char") as HTMLElement | null)?.style.left ?? "",
+    );
+    expect(after).not.toBe(before);
   });
 });

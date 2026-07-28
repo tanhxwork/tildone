@@ -62,9 +62,12 @@ interface CharView {
   agentKey: string;
 }
 
-/** A window-glow sprite tagged with the building it belongs to. */
+/** A window-glow sprite tagged with the building it belongs to and its world
+ *  tile (projected to screen each frame, since it lives at the stage). */
 interface Glow {
   buildingIndex: number;
+  wx: number;
+  wy: number;
   sprite: Sprite;
 }
 
@@ -89,13 +92,18 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   const charLayer = new Container();
   const glowLayer = new Container();
   const nightOverlay = new Graphics();
+  nightOverlay.alpha = 0;
   charLayer.sortableChildren = true;
-  // Night darkens everything (incl. characters); window glow punches back through.
-  world.addChild(ground, buildings, charLayer, nightOverlay, glowLayer);
-  app.stage.addChild(world);
+  world.addChild(ground, buildings, charLayer);
+  // The night tint + window glow live at the STAGE (screen space), above the
+  // camera-transformed world — so the tint fills the whole viewport (not just the
+  // world's extent, which can be smaller) and the glow punches through the night.
+  // Glow sprites are projected onto screen each frame with the current camera.
+  app.stage.addChild(world, nightOverlay, glowLayer);
 
   const views = new Map<number, CharView>();
   let glows: Glow[] = [];
+  let currentCam: Camera = { x: 0, y: 0, zoom: 1 };
 
   const titleStyle = (fill: number) =>
     new TextStyle({ fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: "600", fill });
@@ -173,16 +181,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
 
     buildings.addChild(g);
 
-    // Window-glow sprites (hidden until setAmbience lights a live office); the
-    // caller tags each with the building index.
+    // Window-glow sprites (hidden until setAmbience lights a working office).
+    // They live at the stage, so they carry their world tile and are projected +
+    // scaled to screen each frame by setAmbience.
     return winCols.map((wx) => {
       const sprite = new Sprite(tex.facade.windowGlow);
-      sprite.scale.set(scale);
-      sprite.position.set(wx * tilePx, wallTop * tilePx);
       sprite.alpha = 0;
       sprite.blendMode = "add";
       glowLayer.addChild(sprite);
-      return sprite;
+      return { wx, wy: wallTop, sprite };
     });
   }
 
@@ -217,7 +224,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
 
     w.buildings.forEach((b, i) => {
       const winGlows = drawBuilding(b, theme);
-      for (const sprite of winGlows) glows.push({ buildingIndex: i, sprite });
+      for (const g of winGlows) glows.push({ buildingIndex: i, ...g });
     });
 
     // Scatter decorations on free green tiles (never on roads/plaza/footprints).
@@ -257,12 +264,6 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
       buildings.addChild(prop);
     }
-
-    // Size the night overlay to the whole world (it lives in the world container,
-    // so it pans/zooms with everything under it).
-    nightOverlay.clear();
-    nightOverlay.rect(0, 0, w.cols * tilePx, w.rows * tilePx).fill(0xffffff);
-    nightOverlay.alpha = 0;
   }
 
   function makeView(agentKey: string): CharView {
@@ -341,14 +342,26 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     syncChars,
     /** Apply the camera pan/zoom to the whole world (screen = (world - cam)*zoom). */
     setCamera(cam: Camera) {
+      currentCam = cam;
       world.scale.set(cam.zoom);
       world.position.set(-cam.x * cam.zoom, -cam.y * cam.zoom);
     },
-    /** Drive day/night: darken the map, and warm the windows of live offices. */
+    /** Size the screen-space night overlay to the viewport (call on resize). */
+    resize(vw: number, vh: number) {
+      nightOverlay.clear();
+      nightOverlay.rect(0, 0, vw, vh).fill(0xffffff);
+    },
+    /** Drive day/night: darken the whole viewport, and warm the windows of
+     *  actively working offices (projected to screen with the current camera). */
     setAmbience(a: Ambience, isLive: (buildingIndex: number) => boolean) {
       nightOverlay.tint = a.tint;
       nightOverlay.alpha = a.darkness;
       for (const g of glows) {
+        g.sprite.position.set(
+          (g.wx * tilePx - currentCam.x) * currentCam.zoom,
+          (g.wy * tilePx - currentCam.y) * currentCam.zoom,
+        );
+        g.sprite.scale.set(scale * currentCam.zoom);
         g.sprite.alpha = isLive(g.buildingIndex) ? 0.15 + 0.85 * a.glow : 0;
       }
     },
