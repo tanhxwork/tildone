@@ -101,6 +101,8 @@ export interface TownTextures {
   fountain: Texture[];
   /** Self-authored street lamp (lit by a warm glow at night). */
   lamp: Texture;
+  /** Self-authored soft cloud shadow that drifts across the terrain. */
+  cloud: Texture;
 }
 
 const FRAME = 16;
@@ -287,6 +289,25 @@ function drawLamp(c: CanvasRenderingContext2D) {
   c.fillRect(6, 1, 4, 1);
 }
 
+/** A soft cloud shadow — a feathered dark blob of a few overlapping radial
+ *  gradients, drawn on a larger-than-tile canvas. Drifts across the terrain
+ *  (see pixiScene) to give the world weather. Self-authored → CC0. */
+const CLOUD_W = 64;
+const CLOUD_H = 36;
+function drawCloudShadow(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, CLOUD_W, CLOUD_H);
+  const blob = (cx: number, cy: number, r: number, a: number) => {
+    const g = c.createRadialGradient(cx, cy, r * 0.2, cx, cy, r);
+    g.addColorStop(0, `rgba(0,0,0,${a})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g;
+    c.fillRect(0, 0, CLOUD_W, CLOUD_H);
+  };
+  blob(26, 18, 20, 0.22);
+  blob(40, 16, 16, 0.2);
+  blob(34, 22, 14, 0.16);
+}
+
 /** A wooden door filling the front-wall gap. */
 function drawDoor(c: CanvasRenderingContext2D) {
   c.clearRect(0, 0, FRAME, FRAME);
@@ -334,6 +355,20 @@ function canvasTexture(draw: (ctx: CanvasRenderingContext2D) => void): Texture {
   const tex = Texture.from(canvas);
   tex.source.scaleMode = "nearest";
   return tex;
+}
+
+/** Like `canvasTexture` but for a larger, non-tile-sized texture (e.g. the cloud
+ *  shadow). Uses linear filtering so its soft gradient stays smooth when scaled. */
+function canvasTextureSized(
+  w: number,
+  h: number,
+  draw: (ctx: CanvasRenderingContext2D) => void,
+): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  draw(canvas.getContext("2d")!);
+  return Texture.from(canvas);
 }
 
 /**
@@ -434,6 +469,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
     },
     fountain: [0, 1, 2].map((f) => canvasTexture((c) => drawFountain(c, f))),
     lamp: canvasTexture(drawLamp),
+    cloud: canvasTextureSized(CLOUD_W, CLOUD_H, drawCloudShadow),
   };
   return cache;
 }

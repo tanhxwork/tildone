@@ -74,7 +74,10 @@ the water. **Street lamps**
 `pixiScene.ts` gives each a warm glow that the day/night cycle lights at dusk
 (reusing the window-glow texture), so the streets come alive at night too. Lamp
 positions come from `world.ts` (`TownWorld.lamps`) and are blocked tiles, so
-pathfinding routes characters around a post rather than through it.
+pathfinding routes characters around a post rather than through it. Soft
+**cloud shadows** (`assets.ts → drawCloudShadow`, self-authored → CC0) drift
+slowly across the terrain — a render-only layer between the ground and the
+buildings, so shadows sweep the land without muddying the sprites on top.
 
 ### Swapping art
 

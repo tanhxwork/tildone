@@ -88,13 +88,16 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   const tilePx = TILE_PX * scale;
   const world = new Container();
   const ground = new Container();
+  const cloudLayer = new Container();
   const buildings = new Container();
   const charLayer = new Container();
   const glowLayer = new Container();
   const nightOverlay = new Graphics();
   nightOverlay.alpha = 0;
   charLayer.sortableChildren = true;
-  world.addChild(ground, buildings, charLayer);
+  // Cloud shadows sit above the ground but below buildings/characters, so they
+  // sweep over the terrain without muddying the sprites on top of it.
+  world.addChild(ground, cloudLayer, buildings, charLayer);
   // The night tint + window glow live at the STAGE (screen space), above the
   // camera-transformed world — so the tint fills the whole viewport (not just the
   // world's extent, which can be smaller) and the glow punches through the night.
@@ -110,6 +113,10 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   let fountainSprite: Sprite | null = null;
   /** Leisure-spot sprites with more than one frame (campfire, pond) — cycled. */
   let animatedSpots: { sprite: Sprite; frames: Texture[] }[] = [];
+  /** Cloud shadows drifting across the terrain (world-px positions + speeds). */
+  let clouds: { sprite: Sprite; speed: number }[] = [];
+  /** World width in px — the wrap point for drifting clouds. */
+  let worldPxW = 0;
   let propAnim = 0;
   let currentCam: Camera = { x: 0, y: 0, zoom: 1 };
 
@@ -225,12 +232,14 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   function renderWorld(w: TownWorld, _theme: TownTheme) {
     // Destroy detached display objects (not just detach) so resizes don't leak GPU.
     ground.removeChildren().forEach((c) => c.destroy({ children: true }));
+    cloudLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
     glowLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     glows = [];
     lampGlows = [];
     fountainSprite = null;
     animatedSpots = [];
+    clouds = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -331,6 +340,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       glowLayer.addChild(glow);
       lampGlows.push({ gx: l.x * tilePx + tilePx / 2, gy: l.y * tilePx + 3 * scale, sprite: glow });
     }
+
+    // Drifting cloud shadows, scaled in number to the world size. Deterministic
+    // scatter; drift + wrap happen per frame (see the syncChars tail).
+    worldPxW = w.cols * tilePx;
+    const worldPxH = w.rows * tilePx;
+    const cloudCount = Math.max(3, Math.round((w.cols * w.rows) / 260));
+    for (let i = 0; i < cloudCount; i++) {
+      const cloud = new Sprite(tex.cloud);
+      cloud.anchor.set(0.5, 0.5);
+      cloud.scale.set(6 + hash(i * 31 + 3, 7) * 6); // 6..12× → big, soft blobs
+      cloud.alpha = 0.5;
+      cloud.position.set(hash(i, 11) * worldPxW, hash(i * 17 + 5, 23) * worldPxH);
+      cloudLayer.addChild(cloud);
+      clouds.push({ sprite: cloud, speed: 0.004 + hash(i * 13 + 1, 41) * 0.006 });
+    }
   }
 
   function makeView(agentKey: string): CharView {
@@ -417,6 +441,12 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       for (const a of animatedSpots) {
         a.sprite.texture = a.frames[Math.floor(propAnim / 300) % a.frames.length];
       }
+      // Drift cloud shadows on the wind, wrapping back once fully off the east edge.
+      for (const cl of clouds) {
+        cl.sprite.x += cl.speed * dtMs;
+        const halfW = cl.sprite.width / 2;
+        if (cl.sprite.x - halfW > worldPxW) cl.sprite.x = -halfW;
+      }
     }
   }
 
@@ -470,6 +500,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       lampGlows = [];
       fountainSprite = null;
       animatedSpots = [];
+      clouds = [];
     },
   };
 }
