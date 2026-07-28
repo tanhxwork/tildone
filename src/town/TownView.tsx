@@ -37,6 +37,8 @@ const SCALE = 2;
 const BASE_TILE = TILE_PX * SCALE; // world px per tile before zoom
 const DEFAULT_ZOOM = 1.5;
 const FOLLOW_EASE = 0.12;
+/** Per-frame ease for the click-a-building camera glide (snaps when very close). */
+const FRAME_EASE = 0.18;
 /** Fixed simulation step (ms); MAX_SIM_STEPS caps catch-up so a slow frame can't spiral. */
 const SIM_STEP_MS = 16;
 const MAX_SIM_STEPS = 5;
@@ -118,6 +120,9 @@ export function TownView() {
   const worldPxRef = useRef(worldPx);
   const viewRef = useRef(view);
   const camRef = useRef<Camera>({ x: 0, y: 0, zoom: DEFAULT_ZOOM });
+  /** A pending camera destination (clicking a building) the loop glides toward;
+   *  null when idle. Cleared the instant the user takes manual control. */
+  const camTargetRef = useRef<Camera | null>(null);
   const followRef = useRef<number | null>(followId);
   rosterRef.current = roster;
   worldRef.current = world;
@@ -205,9 +210,11 @@ export function TownView() {
           }
           if (steps === MAX_SIM_STEPS) accRef.current = 0;
 
-          // Follow the focused character (eased), then apply the camera.
+          // Resolve the camera: following a character overrides any pending
+          // building-glide; otherwise ease toward a pending destination.
           const fid = followRef.current;
           if (fid !== null) {
+            camTargetRef.current = null; // following wins over a building glide
             const c = simRef.current.chars.get(fid);
             if (c) {
               const target = {
@@ -216,6 +223,18 @@ export function TownView() {
               };
               camRef.current = followCam(camRef.current, target, worldPxRef.current, viewRef.current, FOLLOW_EASE);
             }
+          } else if (camTargetRef.current) {
+            const t = camTargetRef.current;
+            const cam = camRef.current;
+            const nx = cam.x + (t.x - cam.x) * FRAME_EASE;
+            const ny = cam.y + (t.y - cam.y) * FRAME_EASE;
+            const nz = cam.zoom + (t.zoom - cam.zoom) * FRAME_EASE;
+            const done =
+              Math.abs(t.x - nx) < 0.5 && Math.abs(t.y - ny) < 0.5 && Math.abs(t.zoom - nz) < 0.001;
+            camRef.current = done
+              ? t
+              : clampCamera({ x: nx, y: ny, zoom: nz }, worldPxRef.current, viewRef.current);
+            if (done) camTargetRef.current = null;
           }
           scene.setCamera(camRef.current);
           scene.syncChars(simRef.current, styleRef.current, dtMs, theme);
@@ -304,6 +323,7 @@ export function TownView() {
       // character/building buttons stopPropagation. So it releases any follow
       // (spec: cleared by a background click / drag) and begins a pan.
       setFollowId(null);
+      camTargetRef.current = null; // manual pan cancels a building glide
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -318,7 +338,10 @@ export function TownView() {
       camRef.current = panBy(camRef.current, { x: dx, y: dy }, worldPxRef.current, viewRef.current);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFollowId(null); // spec: Escape releases follow
+      if (e.key === "Escape") {
+        setFollowId(null); // spec: Escape releases follow
+        camTargetRef.current = null; // and cancels a building glide
+      }
     };
     const onUp = (e: PointerEvent) => {
       dragging = false;
@@ -332,6 +355,7 @@ export function TownView() {
       e.preventDefault();
       const rect = wrap.getBoundingClientRect();
       const pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      camTargetRef.current = null; // manual zoom cancels a building glide
       const nz = nextZoom(camRef.current.zoom, e.deltaY < 0 ? 1 : -1);
       camRef.current = zoomTo(camRef.current, nz, pointer, worldPxRef.current, viewRef.current);
     };
@@ -361,7 +385,9 @@ export function TownView() {
     const zoom = Math.max(camRef.current.zoom, 2);
     const cx = (b.tx + b.tw / 2) * BASE_TILE;
     const cy = (b.ty + b.th / 2) * BASE_TILE;
-    camRef.current = clampCamera(
+    // Glide there over the next frames (the loop eases camRef toward this),
+    // rather than snapping — matches the eased character-follow feel.
+    camTargetRef.current = clampCamera(
       { x: cx - viewRef.current.w / zoom / 2, y: cy - viewRef.current.h / zoom / 2, zoom },
       worldPxRef.current,
       viewRef.current,

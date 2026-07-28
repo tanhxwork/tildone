@@ -174,5 +174,37 @@ describe("town view", () => {
       () => (document.querySelector(".town-char") as HTMLElement | null)?.style.left ?? "",
     );
     expect(after).not.toBe(before);
+
+    // Clicking a building GLIDES the camera in (eased), it does not snap. Zoom
+    // out first so the glide has a guaranteed zoom-in to ease through, then click
+    // building 0 and assert its overlay keeps growing across frames — a snap
+    // would reach final size on the first frame and not change afterwards.
+    await browser.execute(() => {
+      const c = document.querySelector(".town-canvas") as HTMLElement;
+      const rect = c.getBoundingClientRect();
+      for (let i = 0; i < 4; i++)
+        c.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: 300,
+            clientX: rect.left + 40,
+            clientY: rect.top + 40,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 5; i++) step?.(16);
+      (document.querySelector('[data-testid="town-building-0"]') as HTMLElement).click();
+    });
+    const buildingWidth = (frames: number) =>
+      browser.execute((n) => {
+        const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+        for (let i = 0; i < n; i++) step?.(16);
+        const el = document.querySelector('[data-testid="town-building-0"]') as HTMLElement | null;
+        return parseFloat(el?.style.width || "0");
+      }, frames);
+    const wEarly = await buildingWidth(1);
+    const wSettled = await buildingWidth(60);
+    expect(wSettled).toBeGreaterThan(wEarly);
   });
 });
