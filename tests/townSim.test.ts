@@ -153,3 +153,64 @@ describe("stepTownSim", () => {
     );
   });
 });
+
+describe("stepTownSim — leisure spots (v2b)", () => {
+  it("sends an idle character to a free spot, then releases it after lingering", () => {
+    const world = world2(); // 2 buildings → 2 shared spots
+    expect(world.spots.length).toBeGreaterThan(0);
+    const sim = createSim();
+    const rng = mulberry32(11);
+    let claimed = false;
+    let releasedAfterClaim = false;
+    for (let i = 0; i < 1500; i++) {
+      stepTownSim(sim, [roster(1, "quiet", true)], 16, world, rng);
+      const c = sim.chars.get(1)!;
+      if (c.spotId !== null) {
+        claimed = true;
+        // While claimed, the occupancy map points the spot back at this char.
+        expect(sim.occupied.get(c.spotId)).toBe(1);
+      } else if (claimed) {
+        releasedAfterClaim = true;
+      }
+    }
+    expect(claimed).toBe(true);
+    expect(releasedAfterClaim).toBe(true);
+    // Nothing left holding a spot it isn't at.
+    expect(sim.occupied.size).toBeLessThanOrEqual(world.spots.length);
+  });
+
+  it("never lets two idle characters occupy the same spot", () => {
+    const world = world2();
+    const sim = createSim();
+    const rng = mulberry32(12);
+    const r = [roster(1, "quiet", true, 0), roster(2, "quiet", true, 1)];
+    for (let i = 0; i < 1500; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      const a = sim.chars.get(1)!;
+      const b = sim.chars.get(2)!;
+      if (a.spotId !== null && b.spotId !== null) {
+        expect(a.spotId).not.toBe(b.spotId);
+      }
+      // The occupancy map is a strict 1:1 (no spot claimed by two tasks).
+      const taskIds = [...sim.occupied.values()];
+      expect(new Set(taskIds).size).toBe(taskIds.length);
+    }
+  });
+
+  it("makes a character give up its spot when its session resumes work", () => {
+    const world = world2();
+    const sim = createSim();
+    const rng = mulberry32(13);
+    // Wander until it has claimed a spot.
+    let steps = 0;
+    while (sim.chars.get(1)?.spotId == null && steps < 2000) {
+      stepTownSim(sim, [roster(1, "quiet", true)], 16, world, rng);
+      steps++;
+    }
+    expect(sim.chars.get(1)!.spotId).not.toBeNull();
+    // Session goes active → it must release the spot and head home.
+    stepTownSim(sim, [roster(1, "working", true)], 16, world, rng);
+    expect(sim.chars.get(1)!.spotId).toBeNull();
+    expect(sim.occupied.size).toBe(0);
+  });
+});

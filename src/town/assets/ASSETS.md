@@ -13,13 +13,15 @@ domain). Full text in `Kenney-License.txt`. Selected 16×16 tiles
 - 72 → `desk.png`
 - 46 → `door.png` — the door on each building's front
 
-## Characters — procedurally generated (CC0)
+## Characters & leisure props — procedurally generated (CC0)
 
 The walking characters are **generated in code** (`assets.ts` →
 `buildCharFrames`): a self-authored 4-direction walk cycle (down/up/left/right,
 stand + two step frames) drawn to a canvas, tinted per agent identity
-(Claude / Codex / Cursor / Secretary / generic). Being authored here they are
-CC0 by construction, and v2a ships with real directional walk animation and
+(Claude / Codex / Cursor / Secretary / generic). The shared leisure-spot props
+(bench / pond / campfire / garden) are likewise drawn in code
+(`drawSpot`). Being authored here they are CC0 by construction, and the town
+ships with real directional walk animation + leisure props and
 **zero new asset downloads**.
 
 ### Swapping in richer art

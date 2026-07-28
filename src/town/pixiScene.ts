@@ -94,12 +94,18 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         ? parseInt(place.room.color.slice(1), 16)
         : theme.roof;
     g.addChild(new Graphics().roundRect(x, y, w, tilePx, 4).fill(tint));
-    // Door on the bottom-centre of the wall.
+    // A desk against the front wall — where the working character sits — with
+    // the door beside it. The working character stands on the door tile just
+    // below, facing up into the desk, so "home" reads as "at the desk".
+    const desk = new Sprite(tex.desk);
+    desk.anchor.set(0.5, 1);
+    desk.scale.set(scale);
+    desk.position.set(x + w / 2, y + h - 2);
     const door = new Sprite(tex.door);
     door.anchor.set(0.5, 1);
     door.scale.set(scale);
-    door.position.set(x + w / 2, y + h);
-    g.addChild(door);
+    door.position.set(x + w - scale * 5, y + h);
+    g.addChild(desk, door);
 
     // Project label above the roof.
     const label = new Text({
@@ -114,8 +120,10 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   }
 
   function renderWorld(w: TownWorld, theme: TownTheme) {
-    ground.removeChildren();
-    buildings.removeChildren();
+    // Destroy the detached display objects, not just detach them — otherwise
+    // each resize / project-set change leaks their GPU resources until GC.
+    ground.removeChildren().forEach((c) => c.destroy({ children: true }));
+    buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
     const gw = w.cols * tilePx;
     const gh = w.rows * tilePx;
     // Base green wash, then the tiled floor texture over it.
@@ -125,6 +133,14 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     tile.alpha = 0.5;
     ground.addChild(tile);
     for (const b of w.buildings) drawBuilding(b, theme);
+    // Shared leisure props dotted across the green (below the character layer).
+    for (const s of w.spots) {
+      const prop = new Sprite(tex.spots[s.kind]);
+      prop.anchor.set(0.5, 0.9);
+      prop.scale.set(scale);
+      prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
+      buildings.addChild(prop);
+    }
   }
 
   function makeView(agentKey: string): CharView {
@@ -179,7 +195,12 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       v.container.zIndex = c.pos.y;
       const st = style?.state;
       v.ring.visible = st === "blocked";
-      v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
+      if (c.intent === "off") {
+        // Leaving: fade out as it walks off (it despawns at the world edge).
+        v.sprite.alpha = Math.max(0.1, v.sprite.alpha - dtMs / 1500);
+      } else {
+        v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
+      }
     }
   }
 

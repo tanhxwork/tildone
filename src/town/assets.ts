@@ -10,6 +10,7 @@
 // consumes DirFrames and never sees how they were made.
 
 import { Assets, Texture } from "pixi.js";
+import type { SpotKind } from "./world";
 import floorUrl from "./assets/floor.png";
 import wallUrl from "./assets/wall.png";
 import deskUrl from "./assets/desk.png";
@@ -29,6 +30,8 @@ export interface TownTextures {
   desk: Texture;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
   chars: Record<string, DirFrames>;
+  /** Procedural CC0 leisure-spot props, by kind. */
+  spots: Record<SpotKind, Texture>;
 }
 
 /** Placeholder character palette by agent key — mirrors the agent-identity
@@ -113,6 +116,62 @@ function buildCharFrames(color: string): DirFrames {
   return out;
 }
 
+/** Draw one 16×16 leisure prop. Procedural + self-authored → CC0, like the
+ *  characters; swaps out for real art the same way (a texture per kind). */
+function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind) {
+  ctx.clearRect(0, 0, FRAME, FRAME);
+  ctx.fillStyle = "rgba(0,0,0,0.15)";
+  ctx.beginPath();
+  ctx.ellipse(8, 13, 5, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (kind === "bench") {
+    ctx.fillStyle = "#8a5a2b"; // seat + back planks
+    ctx.fillRect(3, 8, 10, 2);
+    ctx.fillRect(3, 6, 10, 1);
+    ctx.fillStyle = "#5e3d1c"; // legs
+    ctx.fillRect(4, 10, 1, 3);
+    ctx.fillRect(11, 10, 1, 3);
+  } else if (kind === "pond") {
+    ctx.fillStyle = "#3f7fb0";
+    ctx.beginPath();
+    ctx.ellipse(8, 9, 6, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#8fc4e6"; // glint
+    ctx.fillRect(6, 7, 2, 1);
+  } else if (kind === "campfire") {
+    ctx.fillStyle = "#5e3d1c"; // logs
+    ctx.fillRect(4, 11, 8, 2);
+    ctx.fillStyle = "#e8791f"; // flame
+    ctx.beginPath();
+    ctx.moveTo(8, 4);
+    ctx.lineTo(11, 11);
+    ctx.lineTo(5, 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#f6c33b";
+    ctx.fillRect(7, 8, 2, 3);
+  } else {
+    // garden plot
+    ctx.fillStyle = "#7a5230";
+    ctx.fillRect(3, 8, 10, 5);
+    ctx.fillStyle = "#4f9d4f"; // sprouts
+    ctx.fillRect(5, 6, 1, 3);
+    ctx.fillRect(8, 5, 1, 4);
+    ctx.fillRect(11, 7, 1, 2);
+  }
+}
+
+function spotTexture(kind: SpotKind): Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = FRAME;
+  canvas.height = FRAME;
+  const ctx = canvas.getContext("2d")!;
+  drawSpot(ctx, kind);
+  const tex = Texture.from(canvas);
+  tex.source.scaleMode = "nearest";
+  return tex;
+}
+
 let cache: TownTextures | null = null;
 
 export async function loadTownTextures(): Promise<TownTextures> {
@@ -141,6 +200,12 @@ export async function loadTownTextures(): Promise<TownTextures> {
     door: loaded.door,
     desk: loaded.desk,
     chars,
+    spots: {
+      bench: spotTexture("bench"),
+      pond: spotTexture("pond"),
+      campfire: spotTexture("campfire"),
+      garden: spotTexture("garden"),
+    },
   };
   return cache;
 }

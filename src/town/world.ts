@@ -44,6 +44,17 @@ export interface BuildingPlacement {
   door: Tile;
 }
 
+/** A shared leisure activity an idle character can visit. */
+export type SpotKind = "bench" | "pond" | "campfire" | "garden";
+
+export interface LeisureSpot {
+  id: number;
+  tile: Tile;
+  kind: SpotKind;
+}
+
+const SPOT_KINDS: SpotKind[] = ["bench", "pond", "campfire", "garden"];
+
 export interface TownWorld {
   /** Grid extent in tiles. */
   cols: number;
@@ -54,6 +65,9 @@ export interface TownWorld {
   blocked: boolean[];
   /** A walkable tile at the bottom-centre edge — the despawn / walk-off target. */
   edge: Tile;
+  /** Shared leisure spots dotted across the green. Not per-project — any idle
+   *  character walks to whichever is free (see stepTownSim). */
+  spots: LeisureSpot[];
 }
 
 /** How many building cells fit across the given viewport width (≥1). */
@@ -103,12 +117,27 @@ export function buildWorld(
     return { room, tx, ty, tw: BUILDING_W, th: BUILDING_H, door };
   });
 
+  // Shared leisure spots: one per building cell, tucked into the cell's
+  // lower-right green (col 6 is outside the footprint cols 2..5; the cell's last
+  // row is below the footprint) — always walkable, and spread across the map so
+  // idle characters have somewhere to go. Kinds cycle bench/pond/campfire/garden.
+  const spots: LeisureSpot[] = model.rooms.map((_, i) => {
+    const col = i % perRow;
+    const row = Math.floor(i / perRow);
+    return {
+      id: i,
+      tile: { x: col * CELL_W + 6, y: row * CELL_H + CELL_H - 1 },
+      kind: SPOT_KINDS[i % SPOT_KINDS.length],
+    };
+  });
+
   return {
     cols,
     rows,
     buildings,
     blocked,
     edge: { x: Math.floor(cols / 2), y: rows - 1 },
+    spots,
   };
 }
 

@@ -25,6 +25,10 @@ import { loadTownTextures, type TownTextures } from "./assets";
 
 const SCALE = 2;
 const TILE_PX = 16 * SCALE;
+/** Fixed simulation step (ms) — the sim advances in these chunks regardless of
+ *  frame rate; MAX_SIM_STEPS caps catch-up so a slow frame can't spiral. */
+const SIM_STEP_MS = 16;
+const MAX_SIM_STEPS = 5;
 
 /** Parse "#rrggbb" to a Pixi hex number, or null. */
 function cssColorToHex(css: string): number | null {
@@ -114,6 +118,13 @@ export function TownView() {
   const styleRef = useRef(styleOf);
   styleRef.current = styleOf;
 
+  // Fixed-timestep accumulator, a signature of the current grid geometry (to
+  // detect real layout changes vs. mere presence churn), and the visibility
+  // listener's teardown (registered inside the async init).
+  const accRef = useRef(0);
+  const worldSigRef = useRef("");
+  const visibilityCleanup = useRef<() => void>(() => {});
+
   // Create the Pixi app once; drive the sim from its ticker.
   useEffect(() => {
     const host = hostRef.current;
@@ -148,13 +159,35 @@ export function TownView() {
           // Pause on genuine invisibility (minimize / hidden tab) — NOT on focus
           // loss, so a window on a second monitor keeps living.
           if (document.hidden) return;
-          const dt = ticker.deltaMS;
-          stepTownSim(simRef.current, rosterRef.current, dt, worldRef.current, Math.random, {
-            reducedMotion: theme.reducedMotion,
-          });
-          scene.syncChars(simRef.current, styleRef.current, dt, theme);
+          // Fixed-timestep: accumulate real elapsed time, advance the sim in
+          // fixed SIM_STEP_MS chunks (frame-rate independent, deterministic),
+          // capped so a stalled frame can't trigger a spiral of death.
+          accRef.current += ticker.deltaMS;
+          let steps = 0;
+          while (accRef.current >= SIM_STEP_MS && steps < MAX_SIM_STEPS) {
+            stepTownSim(simRef.current, rosterRef.current, SIM_STEP_MS, worldRef.current, Math.random, {
+              reducedMotion: theme.reducedMotion,
+            });
+            accRef.current -= SIM_STEP_MS;
+            steps++;
+          }
+          if (steps === MAX_SIM_STEPS) accRef.current = 0; // fell behind → drop backlog
+          scene.syncChars(simRef.current, styleRef.current, ticker.deltaMS, theme);
           positionOverlay();
         });
+
+        // Snap to a valid resting state when the tab becomes visible again
+        // (spec: reconcile + snap on visibility restore). A fresh sim respawns
+        // everyone at their doors on the next tick.
+        const onVisibility = () => {
+          if (!document.hidden) {
+            simRef.current = createSim();
+            accRef.current = 0;
+          }
+        };
+        document.addEventListener("visibilitychange", onVisibility);
+        visibilityCleanup.current = () =>
+          document.removeEventListener("visibilitychange", onVisibility);
       })
       .catch((err) => {
         // WebGL can be unavailable (e.g. a GPU-less test webview). The pixel
@@ -167,6 +200,7 @@ export function TownView() {
     return () => {
       disposed = true;
       ro.disconnect();
+      visibilityCleanup.current();
       sceneRef.current?.destroy();
       sceneRef.current = null;
       appRef.current?.destroy(true);
@@ -183,6 +217,17 @@ export function TownView() {
     if (!host || !app || !scene) return;
     app.renderer.resize(world.cols * TILE_PX, world.rows * TILE_PX);
     scene.renderWorld(world, resolveTheme(host));
+    // If the grid geometry actually changed (resize / project set) — not just
+    // presence churn — the old sim positions may be off the new grid; snap by
+    // respawning everyone at their doors. Signature keys on geometry only.
+    const sig = `${world.cols}x${world.rows}:${world.buildings
+      .map((b) => `${b.door.x},${b.door.y}`)
+      .join(";")}`;
+    if (sig !== worldSigRef.current) {
+      worldSigRef.current = sig;
+      simRef.current = createSim();
+      accRef.current = 0;
+    }
   }, [world]);
 
   /** Move each overlay node onto its character's current sim position. */

@@ -86,3 +86,27 @@ describe("buildWorld", () => {
     expect(isWalkable(world, 0, world.rows)).toBe(false);
   });
 });
+
+describe("buildWorld — leisure spots (v2b)", () => {
+  it("places every leisure spot on a walkable, non-building tile", () => {
+    const world = buildWorld(model("A", "B", "C"), CELL_W * 2 * 32, 2);
+    expect(world.spots.length).toBeGreaterThan(0);
+    for (const s of world.spots) {
+      expect(isWalkable(world, s.tile.x, s.tile.y)).toBe(true);
+      // Not sitting inside any building footprint.
+      for (const b of world.buildings) {
+        const inside =
+          s.tile.x >= b.tx && s.tile.x < b.tx + b.tw && s.tile.y >= b.ty && s.tile.y < b.ty + b.th;
+        expect(inside).toBe(false);
+      }
+    }
+  });
+
+  it("gives distinct spots distinct tiles and cycles the four kinds", () => {
+    const world = buildWorld(model("A", "B", "C", "D", "E"), 10_000, 2);
+    const keys = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+    expect(keys.size).toBe(world.spots.length); // no two spots share a tile
+    // With ≥4 spots, all four kinds appear.
+    expect(new Set(world.spots.map((s) => s.kind)).size).toBe(4);
+  });
+});

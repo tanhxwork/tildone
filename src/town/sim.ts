@@ -19,14 +19,16 @@
 
 import type { PresenceState } from "../utils/presence";
 import { findPath } from "./pathfind";
-import { isWalkable, type Tile, type TownWorld } from "./world";
+import { isWalkable, type LeisureSpot, type Tile, type TownWorld } from "./world";
 
 /** Tiles traversed per second while walking. */
 const SPEED = 2.4;
-/** How far (tiles) an idle wanderer picks its next waypoint. */
-const WANDER_RADIUS = 3;
-/** Pause (ms) between reaching a wander waypoint and choosing the next. */
+/** Pause (ms) between reaching a wander step and taking the next. */
 const WANDER_PAUSE_MS = 900;
+/** Chance an idle character heads to a free leisure spot vs a plain waypoint. */
+const SPOT_CHANCE = 0.5;
+/** How long (ms) a character lingers at a leisure spot before wandering on. */
+const DWELL_MS = 2600;
 /** dt is clamped so a long pause/resume can't teleport anyone across the map. */
 const MAX_DT_MS = 100;
 
@@ -49,10 +51,18 @@ export interface CharAgent {
   moving: boolean;
   /** Countdown until the next wander waypoint while standing idle. */
   wanderPauseMs: number;
+  /** The leisure spot this character has claimed (walking to or sitting at), or
+   *  null when it is not visiting one. */
+  spotId: number | null;
+  /** Remaining time (ms) to linger at the claimed spot. */
+  dwellMs: number;
 }
 
 export interface SimState {
   chars: Map<number, CharAgent>;
+  /** Which character currently holds each leisure spot (spotId → taskId). A spot
+   *  in this map is taken; that is what keeps two idlers off the same spot. */
+  occupied: Map<number, number>;
 }
 
 /** One roster entry the sim consumes — a townModel character plus its building. */
@@ -69,7 +79,31 @@ export interface StepOpts {
 }
 
 export function createSim(): SimState {
-  return { chars: new Map() };
+  return { chars: new Map(), occupied: new Map() };
+}
+
+/** Release any leisure spot this character holds. */
+function releaseSpot(sim: SimState, c: CharAgent) {
+  if (c.spotId !== null) {
+    sim.occupied.delete(c.spotId);
+    c.spotId = null;
+    c.dwellMs = 0;
+  }
+}
+
+/** The nearest free leisure spot to `from`, or null if all are taken. */
+function freeSpot(world: TownWorld, sim: SimState, from: Tile): LeisureSpot | null {
+  let best: LeisureSpot | null = null;
+  let bestDist = Infinity;
+  for (const s of world.spots) {
+    if (sim.occupied.has(s.id)) continue;
+    const d = Math.abs(s.tile.x - from.x) + Math.abs(s.tile.y - from.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+  return best;
 }
 
 function intentOf(state: PresenceState, live: boolean): Intent {
@@ -107,13 +141,22 @@ function frontage(world: TownWorld, buildingIndex: number): Tile[] {
   );
 }
 
-/** Pick a walkable wander waypoint within WANDER_RADIUS, or null after retries. */
-function wanderTarget(world: TownWorld, from: Tile, rng: () => number): Tile | null {
-  for (let i = 0; i < 8; i++) {
-    const dx = Math.floor(rng() * (WANDER_RADIUS * 2 + 1)) - WANDER_RADIUS;
-    const dy = Math.floor(rng() * (WANDER_RADIUS * 2 + 1)) - WANDER_RADIUS;
+const STEPS: Array<[number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+/** A single random walkable step to a 4-neighbour, or null if hemmed in. Wander
+ *  is deliberately these cheap adjacent steps — not A* to a distant waypoint
+ *  (A* is reserved for going to a specific target: home, a spot, the edge). */
+function randomAdjacentStep(world: TownWorld, from: Tile, rng: () => number): Tile | null {
+  const start = Math.floor(rng() * STEPS.length);
+  for (let i = 0; i < STEPS.length; i++) {
+    const [dx, dy] = STEPS[(start + i) % STEPS.length];
     const t = { x: from.x + dx, y: from.y + dy };
-    if ((dx !== 0 || dy !== 0) && isWalkable(world, t.x, t.y)) return t;
+    if (isWalkable(world, t.x, t.y)) return t;
   }
   return null;
 }
@@ -141,8 +184,16 @@ export function stepTownSim(
     if (sim.chars.has(r.taskId)) {
       const c = sim.chars.get(r.taskId)!;
       c.agentName = r.agentName;
+      const newIntent = intentOf(r.state, r.live);
+      // A changed intent (or building) invalidates the current path — drop it so
+      // the new state is honoured next resolve, not after a stale walk finishes.
+      if (newIntent !== c.intent || r.buildingIndex !== c.buildingIndex) {
+        c.path = [];
+        c.wanderPauseMs = 0;
+        releaseSpot(sim, c);
+      }
       c.buildingIndex = r.buildingIndex;
-      c.intent = intentOf(r.state, r.live);
+      c.intent = newIntent;
       continue;
     }
     const door = homeTile(world, r.buildingIndex);
@@ -156,11 +207,20 @@ export function stepTownSim(
       intent: intentOf(r.state, r.live),
       moving: false,
       wanderPauseMs: 0,
+      spotId: null,
+      dwellMs: 0,
     });
+  }
+
+  // Safety net: drop spot claims held by characters that no longer exist, so a
+  // missed release can never leave a spot permanently blocked.
+  for (const [spotId, taskId] of sim.occupied) {
+    if (!sim.chars.has(taskId)) sim.occupied.delete(spotId);
   }
 
   // --- Reduced motion: still tableau. Snap everyone home, no motion. ---
   if (opts.reducedMotion) {
+    sim.occupied.clear(); // nobody is out using a spot in the still tableau
     for (const [id, c] of sim.chars) {
       if (!byId.has(id)) {
         sim.chars.delete(id); // gone characters simply vanish (no walk-off)
@@ -171,6 +231,8 @@ export function stepTownSim(
       c.path = [];
       c.moving = false;
       c.facing = "up";
+      c.spotId = null;
+      c.dwellMs = 0;
     }
     return sim;
   }
@@ -180,6 +242,7 @@ export function stepTownSim(
     if (byId.has(id)) continue;
     if (c.intent !== "off") {
       c.intent = "off";
+      releaseSpot(sim, c); // give up any spot on the way out
       c.path = findPath(world, round(c.pos), world.edge).slice(1);
       if (c.path.length === 0) sim.chars.delete(id); // already at edge / stuck
     }
@@ -189,19 +252,45 @@ export function stepTownSim(
   for (const [id, c] of sim.chars) {
     const here = round(c.pos);
 
+    // Any non-wander intent gives up a held spot (resumed work, blocked, off).
+    if (c.intent !== "wander" && c.spotId !== null) releaseSpot(sim, c);
+
     if (c.intent === "home") {
       const home = homeTile(world, c.buildingIndex);
       if (c.path.length === 0 && !sameTile(here, home)) {
         c.path = findPath(world, here, home).slice(1);
       }
     } else if (c.intent === "wander") {
-      if (c.path.length === 0) {
+      if (c.spotId !== null) {
+        // Claimed a spot: walk to it, then linger, then release and wander on.
+        if (c.path.length === 0) {
+          c.dwellMs -= dt;
+          if (c.dwellMs <= 0) {
+            releaseSpot(sim, c);
+            c.wanderPauseMs = WANDER_PAUSE_MS;
+          }
+        }
+      } else if (c.path.length === 0) {
         if (c.wanderPauseMs > 0) {
           c.wanderPauseMs -= dt;
         } else {
-          const target = wanderTarget(world, here, rng);
-          if (target) c.path = findPath(world, here, target).slice(1);
-          c.wanderPauseMs = WANDER_PAUSE_MS;
+          // Head to a free leisure spot, or take a plain wander waypoint.
+          const spot = rng() < SPOT_CHANCE ? freeSpot(world, sim, here) : null;
+          if (spot) {
+            const path = findPath(world, here, spot.tile).slice(1);
+            if (path.length > 0) {
+              sim.occupied.set(spot.id, c.taskId);
+              c.spotId = spot.id;
+              c.dwellMs = DWELL_MS;
+              c.path = path;
+            } else {
+              c.wanderPauseMs = WANDER_PAUSE_MS; // unreachable — try again later
+            }
+          } else {
+            const step = randomAdjacentStep(world, here, rng);
+            if (step) c.path = [step];
+            c.wanderPauseMs = WANDER_PAUSE_MS;
+          }
         }
       }
     } else if (c.intent === "pace") {
