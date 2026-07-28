@@ -254,7 +254,8 @@ function inPlaza(world: TownWorld, t: Tile): boolean {
   return p.w > 0 && t.x >= p.x && t.x < p.x + p.w && t.y >= p.y && t.y < p.y + p.h;
 }
 
-/** A random walkable plaza tile to gather at (falls back to the plaza centre). */
+/** A random walkable plaza tile to gather at (the centre is the blocked fountain,
+ *  so fall back to the first walkable tile, not the geometric centre). */
 function randomPlazaTile(world: TownWorld, rng: () => number): Tile {
   const p = world.plaza;
   for (let i = 0; i < 8; i++) {
@@ -262,7 +263,12 @@ function randomPlazaTile(world: TownWorld, rng: () => number): Tile {
     const y = p.y + Math.floor(rng() * p.h);
     if (isWalkable(world, x, y)) return { x, y };
   }
-  return { x: p.x + Math.floor(p.w / 2), y: p.y + Math.floor(p.h / 2) };
+  for (let dy = 0; dy < p.h; dy++) {
+    for (let dx = 0; dx < p.w; dx++) {
+      if (isWalkable(world, p.x + dx, p.y + dy)) return { x: p.x + dx, y: p.y + dy };
+    }
+  }
+  return { x: p.x, y: p.y };
 }
 
 function facingOf(dx: number, dy: number, fallback: Facing): Facing {

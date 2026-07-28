@@ -112,14 +112,21 @@ describe("buildWorld — enclosed single-door office", () => {
 });
 
 describe("buildWorld — roads & plaza", () => {
-  it("carves a central walkable plaza on the road network", () => {
+  it("carves a central paved plaza, walkable except the fountain centre", () => {
     const world = buildWorld(model("A", "B", "C"));
     const p = world.plaza;
+    const c = world.plazaCenter!;
+    expect(c).not.toBeNull();
     expect(p.w).toBeGreaterThan(0);
     for (let dy = 0; dy < p.h; dy++) {
       for (let dx = 0; dx < p.w; dx++) {
-        expect(isWalkable(world, p.x + dx, p.y + dy)).toBe(true);
-        expect(isRoad(world, p.x + dx, p.y + dy)).toBe(true);
+        const x = p.x + dx;
+        const y = p.y + dy;
+        const isCentre = x === c.x && y === c.y;
+        // Pavement is painted under the whole plaza (incl. beneath the fountain);
+        // every tile is walkable except the centre, which the fountain blocks.
+        expect(isRoad(world, x, y)).toBe(true);
+        expect(isWalkable(world, x, y)).toBe(!isCentre);
       }
     }
     // No building sits on the plaza.
@@ -129,11 +136,24 @@ describe("buildWorld — roads & plaza", () => {
     }
   });
 
+  it("keeps a walkable ring around the blocked fountain centre", () => {
+    const world = buildWorld(model("A", "B", "C"));
+    const c = world.plazaCenter!;
+    expect(isWalkable(world, c.x, c.y)).toBe(false);
+    // A tile beside the fountain is walkable and still reachable from a door —
+    // blocking the centre must not island the commons.
+    const beside = { x: c.x - 1, y: c.y };
+    expect(isWalkable(world, beside.x, beside.y)).toBe(true);
+    expect(findPath(world, world.buildings[0].door, beside).length).toBeGreaterThan(0);
+  });
+
   it("connects every building's door to the plaza by road", () => {
     const world = buildWorld(model("A", "B", "C", "D"));
-    const plazaCentre = { x: world.plaza.x + Math.floor(world.plaza.w / 2), y: world.plaza.y + Math.floor(world.plaza.h / 2) };
+    // Target a walkable plaza corner (the geometric centre is the blocked fountain).
+    const target = { x: world.plaza.x, y: world.plaza.y };
+    expect(isWalkable(world, target.x, target.y)).toBe(true);
     for (const b of world.buildings) {
-      const path = findPath(world, b.door, plazaCentre);
+      const path = findPath(world, b.door, target);
       expect(path.length).toBeGreaterThan(0);
     }
   });

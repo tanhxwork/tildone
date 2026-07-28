@@ -130,7 +130,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       : 0xcc5b3a;
   }
 
-  function drawBuilding(place: TownWorld["buildings"][number], theme: TownTheme) {
+  function drawBuilding(place: TownWorld["buildings"][number]) {
     const g = new Container();
     const { tx, ty, tw, th } = place;
     const tint = roofTint(place);
@@ -171,13 +171,34 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     // The single door in the front wall (over the wall tile already laid down).
     g.addChild(tile(tex.facade.door, place.door.x, frontRow));
 
-    const label = new Text({
-      text: place.room.name,
-      style: titleStyle(place.room.characters.length ? theme.title : theme.inkMuted),
-    });
-    label.anchor.set(0.5, 1);
-    label.position.set((tx + tw / 2) * tilePx, ty * tilePx - 3);
-    g.addChild(label);
+    // Nameplate: a project-tinted dot + the project name on a dark rounded plate,
+    // floated just above the roof. The plate is what makes the label readable —
+    // bare text washed out against roof/grass (the v3 nameplates were near
+    // invisible). Dim the whole plate when the office is empty (no characters).
+    const occupied = place.room.characters.length > 0;
+    const plate = new Container();
+    const label = new Text({ text: place.room.name, style: titleStyle(0xf5f2ea) });
+    label.anchor.set(0, 0.5);
+    const padX = 5 * scale;
+    const padY = 3 * scale;
+    const dot = 5 * scale;
+    const gap = 3 * scale;
+    const plateW = padX * 2 + dot + gap + label.width;
+    const plateH = padY * 2 + label.height;
+    const cx = (tx + tw / 2) * tilePx;
+    const plateX = cx - plateW / 2;
+    const plateY = ty * tilePx - 3 * scale - plateH;
+    const bg = new Graphics()
+      .roundRect(plateX, plateY, plateW, plateH, 4 * scale)
+      .fill({ color: 0x1e1b16, alpha: 0.78 });
+    const midY = plateY + plateH / 2;
+    const swatch = new Graphics()
+      .circle(plateX + padX + dot / 2, midY, dot / 2)
+      .fill({ color: tint });
+    label.position.set(plateX + padX + dot + gap, midY);
+    plate.addChild(bg, swatch, label);
+    plate.alpha = occupied ? 1 : 0.55;
+    g.addChild(plate);
 
     buildings.addChild(g);
 
@@ -193,7 +214,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     });
   }
 
-  function renderWorld(w: TownWorld, theme: TownTheme) {
+  function renderWorld(w: TownWorld, _theme: TownTheme) {
     // Destroy detached display objects (not just detach) so resizes don't leak GPU.
     ground.removeChildren().forEach((c) => c.destroy({ children: true }));
     buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
@@ -223,7 +244,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     }
 
     w.buildings.forEach((b, i) => {
-      const winGlows = drawBuilding(b, theme);
+      const winGlows = drawBuilding(b);
       for (const g of winGlows) glows.push({ buildingIndex: i, ...g });
     });
 
@@ -256,6 +277,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
 
+    // The fountain centrepiece on the plaza's (blocked) centre tile.
+    if (w.plazaCenter) {
+      const f = new Sprite(tex.fountain);
+      f.anchor.set(0.5, 0.9);
+      f.scale.set(scale);
+      f.position.set(w.plazaCenter.x * tilePx + tilePx / 2, w.plazaCenter.y * tilePx + tilePx);
+      buildings.addChild(f);
+    }
+
     // Shared leisure props in the plaza (below the character layer).
     for (const s of w.spots) {
       const prop = new Sprite(tex.spots[s.kind]);
@@ -272,9 +302,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const sprite = new Sprite(frames.down[0]);
     sprite.anchor.set(0.5, 0.9);
     sprite.scale.set(scale);
+    // A soft ground shadow so the character reads as standing on the tile, not
+    // floating over it (the v3 sprites had none). Drawn at the feet, beneath
+    // everything else in the container.
+    const shadow = new Graphics()
+      .ellipse(0, -1, 6, 2.5)
+      .fill({ color: 0x000000, alpha: 0.22 });
     const ring = new Graphics().circle(0, -6, 13).stroke({ width: 2, color: 0xe03131, alpha: 0.9 });
     ring.visible = false;
-    container.addChild(ring, sprite);
+    container.addChild(shadow, ring, sprite);
     charLayer.addChild(container);
     return { container, sprite, ring, anim: 0, agentKey };
   }

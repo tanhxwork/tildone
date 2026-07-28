@@ -109,6 +109,10 @@ export interface TownWorld {
   road: boolean[];
   /** The central open plaza (walkable) where idle characters gather. */
   plaza: Rect;
+  /** The plaza's centre tile — blocked and rendered as a fountain centrepiece
+   *  (null for a plaza too small to spare a centre tile). Idle characters gather
+   *  around it; wander already skips blocked tiles so none stands in the water. */
+  plazaCenter: Tile | null;
   /** A walkable tile at the bottom-centre edge — the despawn / walk-off target. */
   edge: Tile;
   /** Shared leisure spots, clustered in the plaza. Any idle character walks to
@@ -187,6 +191,15 @@ export function buildWorld(
     buildings.push(placeBuilding(roomForCell, cellX, cellY, cols, blocked));
   }
 
+  // A fountain centrepiece anchors the plaza: block its centre tile so the
+  // commons has a focal point idle characters gather around, not stand on. Only
+  // when the plaza can spare an interior tile (leave a walkable ring).
+  let plazaCenter: Tile | null = null;
+  if (plaza.w >= 3 && plaza.h >= 3) {
+    plazaCenter = { x: plaza.x + Math.floor(plaza.w / 2), y: plaza.y + Math.floor(plaza.h / 2) };
+    blocked[idx(plazaCenter.x, plazaCenter.y, cols)] = true;
+  }
+
   // Leisure spots cluster at the plaza corners (one of each kind). Guard tiny
   // plazas so a spot never lands outside it.
   const spots: LeisureSpot[] = [];
@@ -207,6 +220,7 @@ export function buildWorld(
     blocked,
     road,
     plaza,
+    plazaCenter,
     edge: { x: Math.floor(cols / 2), y: rows - 1 },
     spots,
   };

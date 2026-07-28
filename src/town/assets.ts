@@ -96,6 +96,8 @@ export interface TownTextures {
   pavement: PavementTiles;
   /** Self-authored door + lit-window glow. */
   facade: FacadeTiles;
+  /** Self-authored plaza fountain centrepiece. */
+  fountain: Texture;
 }
 
 const FRAME = 16;
@@ -226,6 +228,29 @@ function drawPlaza(c: CanvasRenderingContext2D) {
   c.fillStyle = "#c6bfb0";
   c.fillRect(8, 0, 1, FRAME);
   c.fillRect(0, 8, FRAME, 1);
+}
+
+/** A stone fountain — the plaza centrepiece idle characters gather around.
+ *  Self-authored → CC0. A round basin of water with a central spout + spray. */
+function drawFountain(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  const ell = (cx: number, cy: number, rx: number, ry: number, fill: string) => {
+    c.fillStyle = fill;
+    c.beginPath();
+    c.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    c.fill();
+  };
+  ell(8, 14, 6, 2, "rgba(0,0,0,0.18)"); // ground shadow
+  ell(8, 11, 7, 4, "#9a948a"); // outer stone rim
+  ell(8, 11, 6, 3.2, "#7f7a70"); // rim inner edge
+  ell(8, 11, 5, 2.6, "#3f7fb0"); // water
+  ell(8, 10.4, 3, 1.3, "#5fa0cf"); // water highlight
+  c.fillStyle = "#8f8980"; // centre column
+  c.fillRect(7, 5, 2, 6);
+  c.fillStyle = "#bfe0f2"; // spray
+  c.fillRect(7, 2, 2, 3);
+  c.fillRect(5, 5, 1, 2);
+  c.fillRect(10, 5, 1, 2);
 }
 
 /** A wooden door filling the front-wall gap. */
@@ -373,6 +398,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
       window: canvasTexture(drawWindow),
       windowGlow: canvasTexture(drawWindowGlow),
     },
+    fountain: canvasTexture(drawFountain),
   };
   return cache;
 }
