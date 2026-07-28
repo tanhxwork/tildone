@@ -1,7 +1,16 @@
-// The town view: a PixiJS canvas of rooms + characters, with a DOM overlay layer
-// carrying each character's hover tooltip, aria label, and test id. Canvas draws
-// the pixels; the overlay (same geometry, from layoutTown) is what a mouse and a
-// screen reader and e2e actually touch.
+// The living town view: a PixiJS canvas of the tiled overworld + a per-frame
+// simulation of walking characters, with a DOM overlay layer carrying each
+// character's hover tooltip, aria label, and test id.
+//
+// Split of responsibility:
+//   townModel (store → roster)  — who exists + presence state (pure).
+//   buildWorld (roster → world) — the tiled grid + building placement (pure).
+//   stepTownSim (per frame)     — where everyone physically is (pure reducer).
+//   pixiScene                   — draws world + characters from those.
+// The overlay nodes are positioned imperatively from the sim each frame (React
+// never re-renders per frame); the roster list itself only re-renders when the
+// store changes, so hover/aria/e2e see one node per live session, following its
+// sprite.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Application } from "pixi.js";
@@ -9,9 +18,13 @@ import { useStore } from "../store";
 import { townModel } from "../selectors";
 import { agentIdentity } from "../agents";
 import { timeAgo } from "../utils/dates";
-import { layoutTown } from "./layout";
-import { createTownScene, type TownTheme } from "./pixiScene";
+import { buildWorld, type TownWorld } from "./world";
+import { createSim, stepTownSim, type RosterChar } from "./sim";
+import { charKeyForAgent, createTownScene, type CharStyle, type TownTheme } from "./pixiScene";
 import { loadTownTextures, type TownTextures } from "./assets";
+
+const SCALE = 2;
+const TILE_PX = 16 * SCALE;
 
 /** Parse "#rrggbb" to a Pixi hex number, or null. */
 function cssColorToHex(css: string): number | null {
@@ -23,13 +36,42 @@ function resolveTheme(el: HTMLElement): TownTheme {
   const cs = getComputedStyle(el);
   const num = (v: string, fb: number) => cssColorToHex(cs.getPropertyValue(v)) ?? fb;
   return {
-    floor: num("--bg-card", 0xffffff),
-    wall: num("--border", 0xe5e3df),
+    ground: num("--bg-inset", 0xf6f5f4),
+    wall: num("--bg-card", 0xffffff),
+    roof: num("--border", 0xe5e3df),
     title: num("--text", 0x37352f),
     inkMuted: num("--text-muted", 0x787671),
     blocked: num("--danger", 0xe03131),
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   };
+}
+
+/** A character for the view: the sim's roster fields plus the presentation
+ *  fields the DOM overlay tooltip needs. Structurally a RosterChar, so it feeds
+ *  the sim directly while also driving the overlay. */
+interface TownChar extends RosterChar {
+  lastLog: string | null;
+  at: string;
+}
+
+/** Flatten the town model into TownChars: one per character, tagged with the
+ *  index of its building (== its room's index in model.rooms). */
+function charsFromModel(model: ReturnType<typeof townModel>): TownChar[] {
+  const out: TownChar[] = [];
+  model.rooms.forEach((room, buildingIndex) => {
+    for (const c of room.characters) {
+      out.push({
+        taskId: c.taskId,
+        agentName: c.agentName,
+        state: c.state,
+        live: c.live,
+        buildingIndex,
+        lastLog: c.lastLog,
+        at: c.at,
+      });
+    }
+  });
+  return out;
 }
 
 export function TownView() {
@@ -42,16 +84,37 @@ export function TownView() {
     () => townModel(projects, tasks, live, presence),
     [projects, tasks, live, presence],
   );
+  const roster = useMemo(() => charsFromModel(model), [model]);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<ReturnType<typeof createTownScene> | null>(null);
+  const simRef = useRef(createSim());
+  const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
   const [width, setWidth] = useState(0);
 
-  const layout = useMemo(() => layoutTown(model, width || 900), [model, width]);
+  const world = useMemo(() => buildWorld(model, width || 900, SCALE), [model, width]);
 
-  // Create the Pixi app once; measure the scroll container for the layout width.
+  // Latest-value refs so the ticker reads current state without re-subscribing.
+  const rosterRef = useRef(roster);
+  const worldRef = useRef<TownWorld>(world);
+  rosterRef.current = roster;
+  worldRef.current = world;
+
+  // Style lookup (presence-derived, per character) for the scene.
+  const styleOf = useMemo(() => {
+    const map = new Map<number, CharStyle>();
+    for (const r of roster) {
+      map.set(r.taskId, { agentKey: charKeyForAgent(r.agentName), state: r.state, live: r.live });
+    }
+    return (taskId: number) => map.get(taskId);
+  }, [roster]);
+  const styleRef = useRef(styleOf);
+  styleRef.current = styleOf;
+
+  // Create the Pixi app once; drive the sim from its ticker.
   useEffect(() => {
     const host = hostRef.current;
     const wrap = wrapRef.current;
@@ -74,13 +137,28 @@ export function TownView() {
         wrap.appendChild(app.canvas);
         app.canvas.style.display = "block";
         appRef.current = app;
-        sceneRef.current = createTownScene(app, tex);
+        const scene = createTownScene(app, tex, SCALE);
+        sceneRef.current = scene;
         setWidth(host.clientWidth);
+
+        app.ticker.add((ticker) => {
+          const h = hostRef.current;
+          if (!h) return;
+          const theme = resolveTheme(h);
+          // Pause on genuine invisibility (minimize / hidden tab) — NOT on focus
+          // loss, so a window on a second monitor keeps living.
+          if (document.hidden) return;
+          const dt = ticker.deltaMS;
+          stepTownSim(simRef.current, rosterRef.current, dt, worldRef.current, Math.random, {
+            reducedMotion: theme.reducedMotion,
+          });
+          scene.syncChars(simRef.current, styleRef.current, dt, theme);
+          positionOverlay();
+        });
       })
       .catch((err) => {
         // WebGL can be unavailable (e.g. a GPU-less test webview). The pixel
-        // layer is then skipped, but the DOM overlay still renders the roster —
-        // so the view degrades to labels-over-empty rather than crashing.
+        // layer is skipped, but the DOM overlay still renders the roster.
         console.warn("[town] renderer unavailable, showing overlay only:", err);
       });
 
@@ -94,40 +172,57 @@ export function TownView() {
       appRef.current?.destroy(true);
       appRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redraw whenever the model or size changes. Cheap: fires on store reloads and
-  // resizes, never per frame (the ticker owns animation).
+  // Redraw the (static) world when it changes; size the canvas to the world.
   useEffect(() => {
     const host = hostRef.current;
     const app = appRef.current;
     const scene = sceneRef.current;
     if (!host || !app || !scene) return;
-    app.renderer.resize(layout.width, layout.height);
-    scene.render(layout, resolveTheme(host));
-  }, [layout]);
+    app.renderer.resize(world.cols * TILE_PX, world.rows * TILE_PX);
+    scene.renderWorld(world, resolveTheme(host));
+  }, [world]);
 
-  const placements = layout.rooms.flatMap((r) => r.chars);
+  /** Move each overlay node onto its character's current sim position. */
+  function positionOverlay() {
+    const sim = simRef.current;
+    for (const [taskId, node] of nodeRefs.current) {
+      const c = sim.chars.get(taskId);
+      if (!c) {
+        node.style.display = "none";
+        continue;
+      }
+      node.style.display = "block";
+      node.style.left = `${c.pos.x * TILE_PX + TILE_PX / 2 - 18}px`;
+      node.style.top = `${c.pos.y * TILE_PX + TILE_PX - 34}px`;
+    }
+  }
 
   return (
     <div className="town" ref={hostRef}>
       <div
         className="town-canvas"
         ref={wrapRef}
-        style={{ width: layout.width, height: layout.height }}
+        style={{ width: world.cols * TILE_PX, height: world.rows * TILE_PX }}
       >
-        <div className="town-overlay" aria-label="Agent town">
-          {placements.map(({ char, x, y }) => {
-            const { label } = agentIdentity(char.agentName);
-            const detail = char.lastLog ?? char.state;
-            const title = `${label} · ${detail} · ${timeAgo(char.at)}`;
+        <div className="town-overlay" aria-label="Agent town" ref={overlayRef}>
+          {roster.map((r) => {
+            const { label } = agentIdentity(r.agentName);
+            const detail = r.lastLog ?? r.state;
+            const title = `${label} · ${detail} · ${timeAgo(r.at)}`;
             return (
               <button
-                key={char.taskId}
-                className={`town-char ${char.state}${char.live ? " live" : ""}`}
-                data-testid={`town-char-${char.taskId}`}
-                data-state={char.state}
-                style={{ left: x - 18, top: y - 26 }}
+                key={r.taskId}
+                ref={(el) => {
+                  if (el) nodeRefs.current.set(r.taskId, el);
+                  else nodeRefs.current.delete(r.taskId);
+                }}
+                className={`town-char ${r.state}${r.live ? " live" : ""}`}
+                data-testid={`town-char-${r.taskId}`}
+                data-state={r.state}
+                data-building={r.buildingIndex}
                 title={title}
                 aria-label={title}
                 type="button"
@@ -136,7 +231,7 @@ export function TownView() {
           })}
         </div>
       </div>
-      {model.rooms.every((r) => r.characters.length === 0) && (
+      {roster.length === 0 && (
         <div className="town-empty">
           No agents at work right now. Claim a task and its character appears here.
         </div>

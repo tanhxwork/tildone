@@ -2,12 +2,15 @@ import { browser, $, expect } from "@wdio/globals";
 import { mkdirSync } from "node:fs";
 import { resetAppState } from "./support/reset.js";
 
-// The town re-renders the board's presence state as pixel rooms. The pixels live
-// on a canvas (not asserted here), but every character carries a DOM overlay node
-// (hover/aria/testid) — so this drives the real app to prove the view mounts and
-// that an agent-touched task surfaces as a character in its project's room. Live
-// presence needs the agent server; the activity *fallback* does not, so we seed a
-// recent agent activity row and let cardPresence resolve a quiet character.
+// The living town re-renders the board's presence state as characters that walk
+// a tiled overworld. The pixels live on a canvas (not asserted here); every
+// character carries a DOM overlay node (hover/aria/testid) that FOLLOWS its
+// moving sprite — so this drives the real app to prove the view mounts and that
+// an agent-touched task surfaces as a character tagged with its presence state
+// and its building. Positions are dynamic now, so we assert the node's identity
+// and attributes, never a fixed coordinate or canvas pixels. Live presence needs
+// the agent server; the activity *fallback* does not, so we seed a recent agent
+// activity row and let cardPresence resolve a quiet character.
 
 async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   return browser.execute(
@@ -49,7 +52,7 @@ describe("town view", () => {
     await resetAppState();
   });
 
-  it("mounts the town and shows a character for an agent-touched task in its project room", async () => {
+  it("mounts the living town and shows a character tagged with its state and building for an agent-touched task", async () => {
     await exec(
       "INSERT INTO projects (name, color, position, created_at, code) VALUES ($1,$2,$3,$4,$5)",
       ["Townproj", "#5645d4", 0, "2026-01-01T00:00:00Z", "TWN"],
@@ -80,8 +83,13 @@ describe("town view", () => {
     // Assert the DOM overlay, not the canvas: the pixel layer needs WebGL (absent
     // in a GPU-less test webview), but the overlay renders from the model either
     // way — and it is what carries hover/aria/hit-testing. The agent-touched task
-    // must appear as a character node, proving the model → room → character path.
-    await $(`[data-testid="town-char-${tid}"]`).waitForExist();
+    // must appear as a character node, proving the model → roster → character path.
+    const char = $(`[data-testid="town-char-${tid}"]`);
+    await char.waitForExist();
+    // The node is tagged with its presence state (the fallback resolves quiet)
+    // and the index of its building (its only project → building 0).
+    await expect(char).toHaveAttribute("data-state", "quiet");
+    await expect(char).toHaveAttribute("data-building", "0");
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");

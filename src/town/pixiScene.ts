@@ -1,15 +1,15 @@
-// The town's Pixi layer — a dumb renderer of a TownLayout over a set of textures.
+// The town's Pixi layer — a dumb renderer of the tiled world + the live sim.
 //
-// Rooms are a Tildone card shell (rounded floor + hairline border, so the chrome
-// stays on-brand) wrapping a tiled Kenney floor, a desk, and a door. Each
-// character is a distinct Tiny Dungeon person chosen by agent, with a state glyph
-// (⌨️/⚠️/💤) above — the ref image's vocabulary. Textures are passed in, so this
-// file imports no PNGs and the standalone demo can supply its own set.
+// Two responsibilities, both pure rendering over inputs it is handed:
+//   renderWorld(world) — tiles the ground and draws each building once per
+//     world change / resize (buildings are few; never per frame).
+//   syncChars(sim, …)  — every frame, reconciles one sprite view per live
+//     character against SimState, moves it to its tile position, and advances
+//     its 4-direction walk cycle from the sim's facing + moving flag.
 //
-// Reconciliation is rebuild-on-render: rooms/characters are few and a render only
-// fires on a store change or resize (never per frame), so clearing and redrawing
-// cannot drift. Per-frame animation is applied by the ticker to the character
-// views the last render produced.
+// It owns no simulation and no timing beyond the walk-frame counter: TownView's
+// ticker steps the sim and calls syncChars. Textures are passed in, so this file
+// imports no assets.
 
 import {
   Application,
@@ -21,39 +21,40 @@ import {
   TilingSprite,
 } from "pixi.js";
 import type { PresenceState } from "../utils/presence";
-import type { TownTextures } from "./assets";
-import type { TownLayout } from "./layout";
+import type { DirFrames, TownTextures } from "./assets";
+import type { SimState } from "./sim";
+import { TILE_PX, type TownWorld } from "./world";
 
 export interface TownTheme {
-  floor: number;
+  ground: number;
   wall: number;
+  roof: number;
   title: number;
   inkMuted: number;
   blocked: number;
   reducedMotion: boolean;
 }
 
+/** Per-character render styling the sim doesn't carry (presence-derived). */
+export interface CharStyle {
+  agentKey: string;
+  state: PresenceState;
+  /** A live heartbeat placed it (vs a faded fallback write). */
+  live: boolean;
+}
+
 interface CharView {
   container: Container;
   sprite: Sprite;
-  icon: Text;
-  state: PresenceState;
-  phase: number;
-  baseY: number;
+  ring: Graphics;
+  anim: number;
+  agentKey: string;
 }
 
-const STATE_ICON: Record<PresenceState, string> = {
-  working: "⌨️",
-  blocked: "⚠️",
-  quiet: "💤",
-};
+/** ms per walk frame. */
+const FRAME_MS = 130;
 
-const TITLE_H = 30;
-const TILE = 32; // 16px art drawn at 2×
-const CHAR_SCALE = 2;
-
-/** Character sprite key by agent name — mirrors agents.tsx RULES. Kept here so the
- *  scene has no dependency on the PNG-importing assets module. */
+/** Character sprite key by agent name — mirrors agents.tsx RULES. */
 export function charKeyForAgent(name: string | null | undefined): string {
   const n = (name ?? "").toLowerCase();
   if (n.includes("tildone-ai")) return "secretary";
@@ -63,131 +64,133 @@ export function charKeyForAgent(name: string | null | undefined): string {
   return "generic";
 }
 
-export function createTownScene(app: Application, tex: TownTextures) {
+export function createTownScene(app: Application, tex: TownTextures, scale = 2) {
+  const tilePx = TILE_PX * scale;
   const world = new Container();
+  const ground = new Container();
+  const buildings = new Container();
+  const charLayer = new Container();
+  charLayer.sortableChildren = true;
+  world.addChild(ground, buildings, charLayer);
   app.stage.addChild(world);
-  let views: CharView[] = [];
-  let elapsed = 0;
-  let reduced = false;
+
+  const views = new Map<number, CharView>();
 
   const titleStyle = (fill: number) =>
-    new TextStyle({ fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: "600", fill });
+    new TextStyle({ fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: "600", fill });
 
-  function drawRoom(place: TownLayout["rooms"][number], theme: TownTheme) {
-    const room = new Container();
-    room.x = place.x;
-    room.y = place.y;
-    const { w, h } = place;
+  function drawBuilding(place: TownWorld["buildings"][number], theme: TownTheme) {
+    const g = new Container();
+    const x = place.tx * tilePx;
+    const y = place.ty * tilePx;
+    const w = place.tw * tilePx;
+    const h = place.th * tilePx;
 
-    // Base floor colour + rounded shell.
-    room.addChild(new Graphics().roundRect(0, 0, w, h, 8).fill(theme.floor));
-
-    // Tiled pixel floor in the interior (below the title bar, inside the walls),
-    // clipped to a rounded rect so it never pokes past the shell corners.
-    const ix = 6;
-    const iy = TITLE_H;
-    const iw = w - 12;
-    const ih = h - TITLE_H - 6;
-    const floor = new TilingSprite({ texture: tex.floor, width: iw, height: ih });
-    floor.tileScale.set(TILE / tex.floor.width);
-    floor.position.set(ix, iy);
-    const clip = new Graphics().roundRect(ix, iy, iw, ih, 6).fill(0xffffff);
-    floor.mask = clip;
-    room.addChild(floor, clip);
-
-    // A desk the characters work at, and a door on the wall.
-    const desk = new Sprite(tex.desk);
-    desk.anchor.set(0.5, 1);
-    desk.scale.set(2);
-    desk.position.set(w / 2, h - 12);
-    room.addChild(desk);
-
+    // Wall body.
+    g.addChild(new Graphics().roundRect(x, y, w, h, 4).fill(theme.wall));
+    // Roof band tinted by the project colour (falls back to theme roof).
+    const tint =
+      place.room.color && /^#[0-9a-f]{6}$/i.test(place.room.color)
+        ? parseInt(place.room.color.slice(1), 16)
+        : theme.roof;
+    g.addChild(new Graphics().roundRect(x, y, w, tilePx, 4).fill(tint));
+    // Door on the bottom-centre of the wall.
     const door = new Sprite(tex.door);
     door.anchor.set(0.5, 1);
-    door.scale.set(1.6);
-    door.position.set(w - 26, h - 4);
-    room.addChild(door);
+    door.scale.set(scale);
+    door.position.set(x + w / 2, y + h);
+    g.addChild(door);
 
-    // Hairline border on top of the floor edge, then the project title.
-    room.addChild(
-      new Graphics().roundRect(0.5, 0.5, w - 1, h - 1, 8).stroke({ width: 1, color: theme.wall }),
-    );
+    // Project label above the roof.
     const label = new Text({
       text: place.room.name,
       style: titleStyle(place.room.characters.length ? theme.title : theme.inkMuted),
     });
-    label.x = 10;
-    label.y = 9;
-    room.addChild(label);
+    label.anchor.set(0.5, 1);
+    label.position.set(x + w / 2, y - 3);
+    g.addChild(label);
 
-    world.addChild(room);
+    buildings.addChild(g);
   }
 
-  function drawCharacter(x: number, y: number, agentName: string | null, state: PresenceState, theme: TownTheme): CharView {
+  function renderWorld(w: TownWorld, theme: TownTheme) {
+    ground.removeChildren();
+    buildings.removeChildren();
+    const gw = w.cols * tilePx;
+    const gh = w.rows * tilePx;
+    // Base green wash, then the tiled floor texture over it.
+    ground.addChild(new Graphics().rect(0, 0, gw, gh).fill(theme.ground));
+    const tile = new TilingSprite({ texture: tex.ground, width: gw, height: gh });
+    tile.tileScale.set(tilePx / tex.ground.width);
+    tile.alpha = 0.5;
+    ground.addChild(tile);
+    for (const b of w.buildings) drawBuilding(b, theme);
+  }
+
+  function makeView(agentKey: string): CharView {
     const container = new Container();
-    container.x = x;
-    container.y = y;
-
-    const sprite = new Sprite(tex.chars[charKeyForAgent(agentName)] ?? tex.chars.generic);
-    sprite.anchor.set(0.5, 0.82);
-    sprite.scale.set(CHAR_SCALE);
-    if (state === "quiet") sprite.alpha = 0.55;
-    container.addChild(sprite);
-
-    if (state === "blocked") {
-      container.addChild(
-        new Graphics().circle(0, -4, 16).stroke({ width: 2, color: theme.blocked, alpha: 0.9 }),
-      );
-    }
-
-    const icon = new Text({
-      text: STATE_ICON[state],
-      style: new TextStyle({ fontFamily: "sans-serif", fontSize: 14 }),
-    });
-    icon.anchor.set(0.5, 1);
-    icon.y = -22;
-    container.addChild(icon);
-
-    world.addChild(container);
-    return { container, sprite, icon, state, phase: Math.random() * Math.PI * 2, baseY: y };
+    const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
+    const sprite = new Sprite(frames.down[0]);
+    sprite.anchor.set(0.5, 0.9);
+    sprite.scale.set(scale);
+    const ring = new Graphics().circle(0, -6, 13).stroke({ width: 2, color: 0xe03131, alpha: 0.9 });
+    ring.visible = false;
+    container.addChild(ring, sprite);
+    charLayer.addChild(container);
+    return { container, sprite, ring, anim: 0, agentKey };
   }
 
-  function render(layout: TownLayout, theme: TownTheme) {
-    world.removeChildren();
-    views.forEach((v) => v.container.destroy({ children: true }));
-    views = [];
-    for (const place of layout.rooms) {
-      drawRoom(place, theme);
-      for (const c of place.chars) {
-        views.push(drawCharacter(c.x, c.y, c.char.agentName, c.char.state, theme));
+  function syncChars(
+    sim: SimState,
+    styleOf: (taskId: number) => CharStyle | undefined,
+    dtMs: number,
+    theme: TownTheme,
+  ) {
+    // Remove views for characters the sim dropped.
+    for (const [id, v] of views) {
+      if (!sim.chars.has(id)) {
+        v.container.destroy({ children: true });
+        views.delete(id);
       }
+    }
+    for (const [id, c] of sim.chars) {
+      const style = styleOf(id);
+      const agentKey = style?.agentKey ?? charKeyForAgent(c.agentName);
+      let v = views.get(id);
+      if (!v || v.agentKey !== agentKey) {
+        if (v) {
+          v.container.destroy({ children: true });
+          views.delete(id);
+        }
+        v = makeView(agentKey);
+        views.set(id, v);
+      }
+      const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
+      const seq = frames[c.facing];
+      if (c.moving && !theme.reducedMotion) {
+        v.anim += dtMs;
+        v.sprite.texture = seq[Math.floor(v.anim / FRAME_MS) % seq.length];
+      } else {
+        v.anim = 0;
+        v.sprite.texture = seq[0];
+      }
+      v.container.x = c.pos.x * tilePx + tilePx / 2;
+      v.container.y = c.pos.y * tilePx + tilePx;
+      v.container.zIndex = c.pos.y;
+      const st = style?.state;
+      v.ring.visible = st === "blocked";
+      v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
     }
   }
-
-  // Ambient motion: working bobs, quiet's 💤 drifts, blocked ticks a small alarm.
-  app.ticker.add((ticker) => {
-    if (reduced) return;
-    elapsed += ticker.deltaMS / 1000;
-    for (const v of views) {
-      const t = elapsed + v.phase;
-      if (v.state === "working") {
-        v.container.y = v.baseY + Math.sin(t * 3) * 1.5;
-      } else if (v.state === "quiet") {
-        v.icon.y = -22 + Math.sin(t * 1.5) * 3;
-        v.icon.alpha = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(t * 1.5));
-      } else if (v.state === "blocked") {
-        v.icon.x = Math.sin(t * 12) * 1.2;
-      }
-    }
-  });
 
   return {
-    render(layout: TownLayout, theme: TownTheme) {
-      reduced = theme.reducedMotion;
-      render(layout, theme);
+    renderWorld(w: TownWorld, theme: TownTheme) {
+      renderWorld(w, theme);
     },
+    syncChars,
     destroy() {
       world.destroy({ children: true });
+      views.clear();
     },
   };
 }
