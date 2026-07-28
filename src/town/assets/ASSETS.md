@@ -66,7 +66,11 @@ The shared **leisure-spot props** (bench / pond / campfire / garden) are still
 drawn in code (`assets.ts → drawSpot`) — also CC0. The plaza's **fountain**
 centrepiece (`assets.ts → drawFountain`) is likewise self-authored → CC0; it
 sits on the plaza's centre tile, which `world.ts` blocks so idle characters
-gather around it rather than stand in the water.
+gather around it rather than stand in the water. **Street lamps**
+(`assets.ts → drawLamp`, self-authored → CC0) line the south side of the roads;
+`pixiScene.ts` gives each a warm glow that the day/night cycle lights at dusk
+(reusing the window-glow texture), so the streets come alive at night too. Lamps
+are pure decoration — they don't block, so the sim ignores them.
 
 ### Swapping art
 

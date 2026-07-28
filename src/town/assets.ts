@@ -98,6 +98,8 @@ export interface TownTextures {
   facade: FacadeTiles;
   /** Self-authored plaza fountain centrepiece. */
   fountain: Texture;
+  /** Self-authored street lamp (lit by a warm glow at night). */
+  lamp: Texture;
 }
 
 const FRAME = 16;
@@ -253,6 +255,26 @@ function drawFountain(c: CanvasRenderingContext2D) {
   c.fillRect(10, 5, 1, 2);
 }
 
+/** A street lamp post — lines the roads; its glass lights up at night (a warm
+ *  glow is overlaid separately, like the office windows). Self-authored → CC0. */
+function drawLamp(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "rgba(0,0,0,0.16)"; // ground shadow
+  c.beginPath();
+  c.ellipse(8, 15, 3, 1.2, 0, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = "#3b3a37"; // post
+  c.fillRect(7, 6, 2, 9);
+  c.fillStyle = "#2c2b28"; // base
+  c.fillRect(6, 14, 4, 2);
+  c.fillStyle = "#54524d"; // lamp housing
+  c.fillRect(5, 2, 6, 5);
+  c.fillStyle = "#ffe6a0"; // glass (lit)
+  c.fillRect(6, 3, 4, 3);
+  c.fillStyle = "#3f3e3a"; // cap
+  c.fillRect(6, 1, 4, 1);
+}
+
 /** A wooden door filling the front-wall gap. */
 function drawDoor(c: CanvasRenderingContext2D) {
   c.clearRect(0, 0, FRAME, FRAME);
@@ -399,6 +421,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
       windowGlow: canvasTexture(drawWindowGlow),
     },
     fountain: canvasTexture(drawFountain),
+    lamp: canvasTexture(drawLamp),
   };
   return cache;
 }

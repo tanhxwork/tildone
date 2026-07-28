@@ -103,6 +103,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
 
   const views = new Map<number, CharView>();
   let glows: Glow[] = [];
+  /** Street-lamp glows: warm pools projected to screen each frame (world-px),
+   *  lit by the day/night cycle regardless of any office being live. */
+  let lampGlows: { gx: number; gy: number; sprite: Sprite }[] = [];
   let currentCam: Camera = { x: 0, y: 0, zoom: 1 };
 
   const titleStyle = (fill: number) =>
@@ -220,6 +223,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
     glowLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     glows = [];
+    lampGlows = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -293,6 +297,34 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       prop.scale.set(scale);
       prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
       buildings.addChild(prop);
+    }
+
+    // Street lamps line the south side of every horizontal road (a green tile
+    // with a road directly above), spaced out; each carries a warm glow that the
+    // day/night cycle lights at dusk (see setAmbience) — so the streets come
+    // alive at night, not just the office windows. Lamps are decoration: they
+    // don't block, so the sim ignores them.
+    const LAMP_GAP = 5;
+    for (let y = 1; y < w.rows; y++) {
+      for (let x = 0; x < w.cols; x++) {
+        if (x % LAMP_GAP !== 2) continue;
+        const key = `${x},${y}`;
+        const onRoad = w.road[y * w.cols + x];
+        const roadAbove = w.road[(y - 1) * w.cols + x];
+        if (onRoad || !roadAbove || isBuilding.has(key) || isSpot.has(key)) continue;
+        const lamp = new Sprite(tex.lamp);
+        lamp.anchor.set(0.5, 0.9);
+        lamp.scale.set(scale);
+        lamp.position.set(x * tilePx + tilePx / 2, y * tilePx + tilePx);
+        buildings.addChild(lamp);
+        // Glow pool centred on the lamp's glass (near the sprite top).
+        const glow = new Sprite(tex.facade.windowGlow);
+        glow.anchor.set(0.5, 0.5);
+        glow.alpha = 0;
+        glow.blendMode = "add";
+        glowLayer.addChild(glow);
+        lampGlows.push({ gx: x * tilePx + tilePx / 2, gy: y * tilePx + 3 * scale, sprite: glow });
+      }
     }
   }
 
@@ -400,11 +432,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         g.sprite.scale.set(scale * currentCam.zoom);
         g.sprite.alpha = isLive(g.buildingIndex) ? 0.15 + 0.85 * a.glow : 0;
       }
+      // Street lamps light with the cycle (not gated by any office being live).
+      for (const l of lampGlows) {
+        l.sprite.position.set(
+          (l.gx - currentCam.x) * currentCam.zoom,
+          (l.gy - currentCam.y) * currentCam.zoom,
+        );
+        l.sprite.scale.set(scale * currentCam.zoom * 1.4);
+        l.sprite.alpha = a.glow;
+      }
     },
     destroy() {
       world.destroy({ children: true });
       views.clear();
       glows = [];
+      lampGlows = [];
     },
   };
 }
