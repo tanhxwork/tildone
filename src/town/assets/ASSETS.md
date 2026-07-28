@@ -40,11 +40,21 @@ project-tinted roof over a furnished office:
 - `rug` = `5,9` (bordered rug)
 - `artA`/`artB` = `20,12` / `19,12` (framed landscapes on the back wall)
 
-The **desktop computer** is the one interior piece drawn in code (`assets.ts →
-drawComputer`) — the rustic roguelike packs ship no monitor — so it stays CC0.
-One monitor sits on the desk counter at **each** workstation column; a `working`
-character walks in and sits on the seat tile directly below its monitor, facing
-up into it (several sessions on one project fill several desks).
+The **desktop computer** is drawn in code (`assets.ts → drawComputer`) — the
+rustic roguelike packs ship no monitor — so it stays CC0. One monitor sits on
+the desk counter at **each** workstation column; a `working` character walks in
+through the building's **single door** and sits on the seat tile below its
+monitor, facing up into it (several sessions on one project fill several desks).
+Offices are now **enclosed**: the front is a wall with one door, so the aisle is
+a cul-de-sac — the size of the office (2 / 4 / 6 desks) scales with the
+project's open-task count (`world.ts → tierFor`).
+
+**Pavement & facade** (`PavementTiles` + `FacadeTiles`, all self-authored → CC0,
+drawn in `assets.ts`): `road` and `plaza` pavement tiles (the street lattice and
+the central commons), a `door` for the front-wall gap, a dark `window` on the
+facade, and a warm additive `windowGlow` the renderer lays over a window when
+the project has a live session — so a busy office literally lights up, brighter
+as the day/night cycle darkens (`daynight.ts`).
 
 **Characters** (`assets.ts → sliceChar`) come from RPG Urban, which stacks six
 people three walk-frame rows each, with columns left/down/up/right at grid cols

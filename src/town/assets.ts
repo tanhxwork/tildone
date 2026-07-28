@@ -69,6 +69,21 @@ export interface InteriorTiles {
   artB: Texture;
 }
 
+/** Self-authored (CC0) pavement + facade tiles the v3 town needs but the Kenney
+ *  packs don't ship cleanly: road/plaza floor, and a door + lit-window glow. */
+export interface PavementTiles {
+  road: Texture;
+  plaza: Texture;
+}
+export interface FacadeTiles {
+  /** The doorway in a building's front wall. */
+  door: Texture;
+  /** A dark window on the facade (drawn always). */
+  window: Texture;
+  /** A warm additive glow laid over a window when the office has a live session. */
+  windowGlow: Texture;
+}
+
 export interface TownTextures {
   world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
@@ -77,6 +92,10 @@ export interface TownTextures {
   spots: Record<SpotKind, Texture>;
   /** Kenney interior furnishings for the house cutaways. */
   interior: InteriorTiles;
+  /** Self-authored roads/plaza pavement. */
+  pavement: PavementTiles;
+  /** Self-authored door + lit-window glow. */
+  facade: FacadeTiles;
 }
 
 const FRAME = 16;
@@ -176,6 +195,78 @@ function drawComputer(x: CanvasRenderingContext2D) {
   x.fillRect(5, 11, 6, 1);
 }
 
+/** Road / pavement tile — warm grey with a few darker pebbles (deterministic). */
+function drawRoad(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#b6afa2";
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#a49c8d";
+  for (const [x, y] of [
+    [2, 3],
+    [11, 2],
+    [6, 8],
+    [13, 11],
+    [4, 12],
+  ]) {
+    c.fillRect(x, y, 2, 2);
+  }
+  c.fillStyle = "rgba(0,0,0,0.05)";
+  c.fillRect(0, 15, FRAME, 1);
+}
+
+/** Plaza floor — lighter paved stone with a subtle tile grid, so the commons
+ *  reads as a square distinct from the roads that feed it. */
+function drawPlaza(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#d2ccbe";
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.strokeStyle = "#bdb5a4";
+  c.lineWidth = 1;
+  c.strokeRect(0.5, 0.5, FRAME - 1, FRAME - 1);
+  c.fillStyle = "#c6bfb0";
+  c.fillRect(8, 0, 1, FRAME);
+  c.fillRect(0, 8, FRAME, 1);
+}
+
+/** A wooden door filling the front-wall gap. */
+function drawDoor(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#7d5a3a"; // frame
+  c.fillRect(3, 2, 10, 14);
+  c.fillStyle = "#9a6f45"; // door
+  c.fillRect(4, 3, 8, 13);
+  c.fillStyle = "#7d5a3a"; // panel line
+  c.fillRect(8, 3, 1, 13);
+  c.fillStyle = "#e8c24a"; // knob
+  c.fillRect(6, 9, 1, 2);
+}
+
+/** A dark facade window (a lit glow is overlaid separately when the office is
+ *  live — see FacadeTiles.windowGlow). */
+function drawWindow(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#5a4632"; // frame
+  c.fillRect(3, 4, 10, 8);
+  c.fillStyle = "#2b3346"; // dark glass
+  c.fillRect(4, 5, 8, 6);
+  c.fillStyle = "#4a5468"; // muntins
+  c.fillRect(7, 5, 1, 6);
+  c.fillRect(4, 7, 8, 1);
+}
+
+/** Warm window glow — a soft rounded rectangle, drawn additively over a window
+ *  when the office has a live session (alpha scaled by night + liveness). */
+function drawWindowGlow(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  const g = c.createRadialGradient(8, 8, 1, 8, 8, 7);
+  g.addColorStop(0, "rgba(255,214,130,0.95)");
+  g.addColorStop(1, "rgba(255,190,90,0)");
+  c.fillStyle = g;
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "rgba(255,236,180,0.9)";
+  c.fillRect(4, 5, 8, 6);
+}
+
 function canvasTexture(draw: (ctx: CanvasRenderingContext2D) => void): Texture {
   const canvas = document.createElement("canvas");
   canvas.width = FRAME;
@@ -272,6 +363,15 @@ export async function loadTownTextures(): Promise<TownTextures> {
       rug: sub(indoors, 5, 9), // bordered rug
       artA: sub(indoors, 20, 12), // framed landscape (cream)
       artB: sub(indoors, 19, 12), // framed landscape (green)
+    },
+    pavement: {
+      road: canvasTexture(drawRoad),
+      plaza: canvasTexture(drawPlaza),
+    },
+    facade: {
+      door: canvasTexture(drawDoor),
+      window: canvasTexture(drawWindow),
+      windowGlow: canvasTexture(drawWindowGlow),
     },
   };
   return cache;

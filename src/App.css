@@ -6440,12 +6440,21 @@ textarea:focus-visible,
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-inset);
 }
 
+/* The canvas fills the viewport; the camera pans/zooms the world inside it, so
+   the frame clips and drags-to-pan get a grab cursor. */
 .town-canvas {
   position: relative;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.town-canvas:active {
+  cursor: grabbing;
 }
 
 /* The overlay layer is click-through; only the character hit-targets take input. */
@@ -6476,6 +6485,13 @@ textarea:focus-visible,
 .town-char:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* The character the camera is following (click to toggle). */
+.town-char.following {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  background: var(--bg-hover);
 }
 
 .town-empty {

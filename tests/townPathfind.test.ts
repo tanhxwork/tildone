@@ -8,7 +8,7 @@ import type { TownModel, TownRoom } from "../src/selectors";
 // start == goal. Prior art: the pure-selector unit tests (townModel).
 
 function room(name: string): TownRoom {
-  return { projectId: 1, name, color: null, characters: [] };
+  return { projectId: 1, name, color: null, characters: [], openTaskCount: 1 };
 }
 function model(...names: string[]): TownModel {
   return { rooms: names.map(room) };

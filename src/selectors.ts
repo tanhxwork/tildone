@@ -154,6 +154,10 @@ export interface TownRoom {
   /** The project's colour dot, for tinting room chrome; null for Inbox. */
   color: string | null;
   characters: TownCharacter[];
+  /** Open (todo/doing, non-deleted) task count in this project — the project's
+   *  activity/backlog size. The town scales a building's footprint by it, so a
+   *  busy project reads as a bigger building. Independent of who is live. */
+  openTaskCount: number;
 }
 
 export interface TownModel {
@@ -183,17 +187,31 @@ export function townModel(
 
   const rooms = new Map<number | null, TownRoom>();
   for (const p of ordered) {
-    rooms.set(p.id, { projectId: p.id, name: p.name, color: p.color, characters: [] });
+    rooms.set(p.id, {
+      projectId: p.id,
+      name: p.name,
+      color: p.color,
+      characters: [],
+      openTaskCount: 0,
+    });
   }
-  const inbox: TownRoom = { projectId: null, name: "Inbox", color: null, characters: [] };
+  const inbox: TownRoom = {
+    projectId: null,
+    name: "Inbox",
+    color: null,
+    characters: [],
+    openTaskCount: 0,
+  };
   rooms.set(null, inbox);
 
   for (const t of tasks) {
     if (t.deleted_at !== null) continue;
-    const presence = cardPresence(t.id, live, fallback);
-    if (!presence) continue;
     // An unknown project_id (orphan row) lands in Inbox rather than vanishing.
     const room = rooms.get(t.project_id) ?? inbox;
+    // Backlog size counts every open card, present agent or not.
+    if (t.status !== "done") room.openTaskCount += 1;
+    const presence = cardPresence(t.id, live, fallback);
+    if (!presence) continue;
     room.characters.push({
       taskId: t.id,
       sessionId: live[t.id]?.session_id ?? null,

@@ -1,14 +1,17 @@
 // The town's Pixi layer — a dumb renderer of the tiled world + the live sim.
 //
-// Two responsibilities, both pure rendering over inputs it is handed:
-//   renderWorld(world) — tiles the ground and draws each building once per
-//     world change / resize (buildings are few; never per frame).
-//   syncChars(sim, …)  — every frame, reconciles one sprite view per live
-//     character against SimState, moves it to its tile position, and advances
-//     its 4-direction walk cycle from the sim's facing + moving flag.
+// Responsibilities, all pure rendering over inputs it is handed:
+//   renderWorld(world)  — tiles ground/roads/plaza and draws each building once
+//     per world change / resize (buildings are few; never per frame).
+//   syncChars(sim, …)   — every frame, reconciles one sprite view per live
+//     character against SimState and advances its walk / desk-typing animation.
+//   setCamera(cam)      — every frame, applies the pan/zoom transform to the
+//     whole world container (canvas is viewport-sized; the world scrolls under it).
+//   setAmbience(day, …) — every frame, drives the day/night tint overlay and the
+//     warm window glow of offices with a live session.
 //
-// It owns no simulation and no timing beyond the walk-frame counter: TownView's
-// ticker steps the sim and calls syncChars. Textures are passed in, so this file
+// It owns no simulation and no timing beyond the walk-frame counter; TownView's
+// ticker steps the sim and calls these. Textures are passed in, so this file
 // imports no assets.
 
 import {
@@ -21,6 +24,7 @@ import {
   Texture,
 } from "pixi.js";
 import type { PresenceState } from "../utils/presence";
+import type { Camera } from "./camera";
 import type { DirFrames, TownTextures } from "./assets";
 import type { SimState } from "./sim";
 import { TILE_PX, type TownWorld } from "./world";
@@ -33,6 +37,13 @@ export interface TownTheme {
   inkMuted: number;
   blocked: number;
   reducedMotion: boolean;
+}
+
+/** Day/night ambience the renderer overlays (from daynight.ts). */
+export interface Ambience {
+  darkness: number;
+  tint: number;
+  glow: number;
 }
 
 /** Per-character render styling the sim doesn't carry (presence-derived). */
@@ -49,6 +60,12 @@ interface CharView {
   ring: Graphics;
   anim: number;
   agentKey: string;
+}
+
+/** A window-glow sprite tagged with the building it belongs to. */
+interface Glow {
+  buildingIndex: number;
+  sprite: Sprite;
 }
 
 /** ms per walk frame. */
@@ -70,11 +87,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   const ground = new Container();
   const buildings = new Container();
   const charLayer = new Container();
+  const glowLayer = new Container();
+  const nightOverlay = new Graphics();
   charLayer.sortableChildren = true;
-  world.addChild(ground, buildings, charLayer);
+  // Night darkens everything (incl. characters); window glow punches back through.
+  world.addChild(ground, buildings, charLayer, nightOverlay, glowLayer);
   app.stage.addChild(world);
 
   const views = new Map<number, CharView>();
+  let glows: Glow[] = [];
 
   const titleStyle = (fill: number) =>
     new TextStyle({ fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: "600", fill });
@@ -106,18 +127,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const { tx, ty, tw, th } = place;
     const tint = roofTint(place);
     const int = tex.interior;
-    // An open-front dollhouse office: the top row is the project-tinted shingle
-    // roof; below it a room with a long desk counter carrying one monitor per
-    // workstation, and a wood-floor aisle where the workers sit (rendered by the
-    // character layer, facing up into their monitor). Several sessions on one
-    // project fill several desks, so a busy project reads as a busy office.
+    // An enclosed open-front office: roof row on top, a facade of walls with
+    // windows, a desk counter (one monitor per workstation) behind the wood-floor
+    // aisle where workers sit, and a front wall with a single door onto the road.
     const wallTop = ty + 1;
-    const floorRow = ty + th - 1; // the walkable aisle / seat row
-    const deskRow = floorRow - 1;
+    const deskRow = place.desks[0]?.y ?? ty + 2;
+    const frontRow = ty + th - 1;
 
-    // Interior walls fill the rows between roof and aisle; the aisle's seat tiles
-    // get a wood floor over the wall fill (its front edge is open).
-    for (let ry = wallTop; ry <= floorRow; ry++) {
+    // Walls fill everything between roof and the front wall; seats get wood floor.
+    for (let ry = wallTop; ry <= frontRow; ry++) {
       for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.wall, tx + rx, ry));
     }
     for (const s of place.seats) g.addChild(tile(int.floor, s.x, s.y));
@@ -128,20 +146,22 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       g.addChild(tile(roof, tx + rx, ty, tint));
     }
 
-    // Framed wall art + a plant in each back corner soften the room.
-    g.addChild(tile(int.artA, tx + 1, wallTop));
-    g.addChild(tile(int.artB, tx + tw - 2, wallTop));
+    // Facade: potted plants at the corners, windows between them.
+    const winCols = [tx + 1, tx + tw - 2];
     g.addChild(tile(int.plant, tx, wallTop));
     g.addChild(tile(int.plant, tx + tw - 1, wallTop));
+    for (const wx of winCols) g.addChild(tile(tex.facade.window, wx, wallTop));
 
-    // A long desk counter across the workstation columns, with a monitor lifted
-    // a few px onto each desk surface. Alternating table halves tile the counter.
+    // A long desk counter with a monitor lifted onto each desk surface.
     place.desks.forEach((d, i) => {
       g.addChild(tile(i % 2 === 0 ? int.deskL : int.deskR, d.x, deskRow));
       const comp = tile(int.computer, d.x, deskRow);
       comp.y -= 5 * scale;
       g.addChild(comp);
     });
+
+    // The single door in the front wall (over the wall tile already laid down).
+    g.addChild(tile(tex.facade.door, place.door.x, frontRow));
 
     const label = new Text({
       text: place.room.name,
@@ -152,13 +172,26 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     g.addChild(label);
 
     buildings.addChild(g);
+
+    // Window-glow sprites (hidden until setAmbience lights a live office); the
+    // caller tags each with the building index.
+    return winCols.map((wx) => {
+      const sprite = new Sprite(tex.facade.windowGlow);
+      sprite.scale.set(scale);
+      sprite.position.set(wx * tilePx, wallTop * tilePx);
+      sprite.alpha = 0;
+      sprite.blendMode = "add";
+      glowLayer.addChild(sprite);
+      return sprite;
+    });
   }
 
   function renderWorld(w: TownWorld, theme: TownTheme) {
-    // Destroy the detached display objects, not just detach them — otherwise
-    // each resize / project-set change leaks their GPU resources until GC.
+    // Destroy detached display objects (not just detach) so resizes don't leak GPU.
     ground.removeChildren().forEach((c) => c.destroy({ children: true }));
     buildings.removeChildren().forEach((c) => c.destroy({ children: true }));
+    glowLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
+    glows = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -167,29 +200,31 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
     const isSpot = new Set(w.spots.map((s) => `${s.tile.x},${s.tile.y}`));
-    const isApron = new Set(w.buildings.map((b) => `${b.door.x},${b.door.y}`));
+    const inPlaza = (x: number, y: number) =>
+      x >= w.plaza.x && x < w.plaza.x + w.plaza.w && y >= w.plaza.y && y < w.plaza.y + w.plaza.h;
 
-    // Grass ground with light per-tile variation (flowers/detail sprinkled in).
+    // Ground: grass with light per-tile variation, then roads and the plaza floor
+    // painted over it where the world says so.
     for (let y = 0; y < w.rows; y++) {
       for (let x = 0; x < w.cols; x++) {
         const r = hash(x, y);
         const g = r < 0.06 ? tex.world.grass[2] : r < 0.18 ? tex.world.grass[1] : tex.world.grass[0];
         ground.addChild(tile(g, x, y));
+        if (inPlaza(x, y)) ground.addChild(tile(tex.pavement.plaza, x, y));
+        else if (w.road[y * w.cols + x]) ground.addChild(tile(tex.pavement.road, x, y));
       }
     }
-    // A wood threshold on each doorstep — continuous with the room's floor, so
-    // the working character sits on the interior, not on grass.
-    for (const b of w.buildings) ground.addChild(tile(tex.interior.floor, b.door.x, b.door.y));
 
-    for (const b of w.buildings) drawBuilding(b, theme);
+    w.buildings.forEach((b, i) => {
+      const winGlows = drawBuilding(b, theme);
+      for (const sprite of winGlows) glows.push({ buildingIndex: i, sprite });
+    });
 
-    // Scatter decorations on free green tiles (below the character layer, which
-    // always draws over them). Trees are anchored at their base so they stand a
-    // little over the tile above.
+    // Scatter decorations on free green tiles (never on roads/plaza/footprints).
     for (let y = 0; y < w.rows; y++) {
       for (let x = 0; x < w.cols; x++) {
         const key = `${x},${y}`;
-        if (isBuilding.has(key) || isSpot.has(key) || isApron.has(key)) continue;
+        if (isBuilding.has(key) || isSpot.has(key) || w.road[y * w.cols + x]) continue;
         const r = hash(x * 7 + 1, y * 13 + 5);
         let dec: Texture | null = null;
         let tall = false;
@@ -214,7 +249,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
     }
 
-    // Shared leisure props (below the character layer).
+    // Shared leisure props in the plaza (below the character layer).
     for (const s of w.spots) {
       const prop = new Sprite(tex.spots[s.kind]);
       prop.anchor.set(0.5, 0.9);
@@ -222,6 +257,12 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
       buildings.addChild(prop);
     }
+
+    // Size the night overlay to the whole world (it lives in the world container,
+    // so it pans/zooms with everything under it).
+    nightOverlay.clear();
+    nightOverlay.rect(0, 0, w.cols * tilePx, w.rows * tilePx).fill(0xffffff);
+    nightOverlay.alpha = 0;
   }
 
   function makeView(agentKey: string): CharView {
@@ -243,7 +284,6 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     dtMs: number,
     theme: TownTheme,
   ) {
-    // Remove views for characters the sim dropped.
     for (const [id, v] of views) {
       if (!sim.chars.has(id)) {
         v.container.destroy({ children: true });
@@ -265,8 +305,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
       const seq = frames[c.facing];
       // Lingering at a leisure spot, or seated heads-down at a desk (both not
-      // walking) → a gentle activity loop, not a frozen frame (spec: "play a
-      // loop"). Seated work reads as typing: a slow frame cycle + a tiny bob.
+      // walking) → a gentle activity loop, not a frozen frame. Seated work reads
+      // as typing: a slow frame cycle + a tiny bob.
       const dwelling = (c.spotId !== null || c.seated) && !c.moving;
       if (c.moving && !theme.reducedMotion) {
         v.anim += dtMs;
@@ -287,7 +327,6 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       const st = style?.state;
       v.ring.visible = st === "blocked";
       if (c.intent === "off") {
-        // Leaving: fade out as it walks off (it despawns at the world edge).
         v.sprite.alpha = Math.max(0.1, v.sprite.alpha - dtMs / 1500);
       } else {
         v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
@@ -300,9 +339,23 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       renderWorld(w, theme);
     },
     syncChars,
+    /** Apply the camera pan/zoom to the whole world (screen = (world - cam)*zoom). */
+    setCamera(cam: Camera) {
+      world.scale.set(cam.zoom);
+      world.position.set(-cam.x * cam.zoom, -cam.y * cam.zoom);
+    },
+    /** Drive day/night: darken the map, and warm the windows of live offices. */
+    setAmbience(a: Ambience, isLive: (buildingIndex: number) => boolean) {
+      nightOverlay.tint = a.tint;
+      nightOverlay.alpha = a.darkness;
+      for (const g of glows) {
+        g.sprite.alpha = isLive(g.buildingIndex) ? 0.15 + 0.85 * a.glow : 0;
+      }
+    },
     destroy() {
       world.destroy({ children: true });
       views.clear();
+      glows = [];
     },
   };
 }

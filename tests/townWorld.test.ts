@@ -1,132 +1,156 @@
 import { describe, expect, it } from "bun:test";
 import type { TownModel, TownRoom } from "../src/selectors";
-import {
-  buildWorld,
-  buildingsPerRow,
-  CELL_H,
-  CELL_W,
-  isWalkable,
-} from "../src/town/world";
+import { buildWorld, CELL_H, CELL_W, isRoad, isWalkable } from "../src/town/world";
+import { findPath } from "../src/town/pathfind";
 
-// The world turns the town roster into a contiguous tiled grid: one building
-// (obstacle footprint) per project + Inbox on a shared walkable green, wrapping
-// into cells by viewport width. These cases pin the grid extent, the footprint
-// blocking, and the door/edge anchors the sim paths to.
+// v3 world: the roster (buildings + one central plaza) wraps into a roughly
+// square lattice threaded by roads. The world is sized to the roster, not the
+// viewport. Buildings are enclosed single-door offices whose size scales with
+// the project's open-task count. These cases pin the extent, the road/plaza
+// lattice, the size tiers, and the single-door enclosure the sim relies on.
 
-function room(name: string, projectId: number | null = 1): TownRoom {
-  return { projectId, name, color: null, characters: [] };
+function room(name: string, projectId: number | null = 1, openTaskCount = 1): TownRoom {
+  return { projectId, name, color: null, characters: [], openTaskCount };
 }
 
 function model(...names: string[]): TownModel {
   return { rooms: names.map((n, i) => room(n, i + 1)) };
 }
 
-describe("buildingsPerRow", () => {
-  it("is at least 1 even for a zero/negative width", () => {
-    expect(buildingsPerRow(0, 2)).toBe(1);
-    expect(buildingsPerRow(-100, 2)).toBe(1);
-  });
-
-  it("fits floor(viewportTiles / CELL_W) cells across", () => {
-    // width in px / (TILE_PX*scale) = view tiles; /CELL_W = cells.
-    const scale = 2;
-    const tilePx = 16 * scale; // 32
-    const width = CELL_W * 3 * tilePx; // exactly 3 cells wide
-    expect(buildingsPerRow(width, scale)).toBe(3);
-  });
-});
-
-describe("buildWorld", () => {
-  it("wraps buildings into a grid and sizes the tile extent to whole cells", () => {
-    const m = model("A", "B", "C"); // 3 buildings
-    // Narrow enough for 2 per row → 2 rows.
-    const world = buildWorld(m, CELL_W * 2 * 32, 2);
-    expect(world.buildings).toHaveLength(3);
+describe("buildWorld — extent & order", () => {
+  it("sizes the world to the roster (+1 plaza cell), not the viewport", () => {
+    // 1 building + 1 plaza = 2 cells → 2 per row, 1 row.
+    const world = buildWorld(model("A"));
+    expect(world.buildings).toHaveLength(1);
     expect(world.cols).toBe(CELL_W * 2);
-    expect(world.rows).toBe(CELL_H * 2);
-  });
-
-  it("blocks the footprint except the interior seat aisle, and leaves margins walkable", () => {
-    const world = buildWorld(model("A"), 10_000, 2); // 1 building, wide
-    const b = world.buildings[0];
-    const seatKeys = new Set(b.seats.map((s) => `${s.x},${s.y}`));
-    // Every footprint tile is blocked EXCEPT the interior seat tiles (the
-    // walkable aisle a working character walks in to sit on).
-    for (let dy = 0; dy < b.th; dy++) {
-      for (let dx = 0; dx < b.tw; dx++) {
-        const x = b.tx + dx;
-        const y = b.ty + dy;
-        expect(isWalkable(world, x, y)).toBe(seatKeys.has(`${x},${y}`));
-      }
-    }
-    // The margin ring around it is walkable.
-    expect(isWalkable(world, b.tx - 1, b.ty)).toBe(true);
-    expect(isWalkable(world, b.tx, b.ty + b.th)).toBe(true); // apron below
-  });
-
-  it("gives each building one desk + seat per workstation, seats walkable and desks above", () => {
-    const world = buildWorld(model("A"), 10_000, 2);
-    const b = world.buildings[0];
-    expect(b.seats.length).toBeGreaterThan(1); // multiple workstations per house
-    expect(b.desks).toHaveLength(b.seats.length);
-    b.seats.forEach((s, i) => {
-      expect(isWalkable(world, s.x, s.y)).toBe(true); // sit-able
-      expect(b.desks[i].x).toBe(s.x); // desk directly above its seat
-      expect(b.desks[i].y).toBe(s.y - 1);
-      expect(isWalkable(world, b.desks[i].x, b.desks[i].y)).toBe(false); // desk blocks
-    });
-  });
-
-  it("places the door on a walkable tile below the footprint, opening into the aisle", () => {
-    const world = buildWorld(model("A"), 10_000, 2);
-    const b = world.buildings[0];
-    expect(b.door.y).toBe(b.ty + b.th);
-    expect(isWalkable(world, b.door.x, b.door.y)).toBe(true);
-    // The tile directly above the door is an interior seat — the one opening in.
-    expect(isWalkable(world, b.door.x, b.door.y - 1)).toBe(true);
-    expect(b.seats.some((s) => s.x === b.door.x && s.y === b.door.y - 1)).toBe(true);
-  });
-
-  it("puts the walk-off edge on a walkable bottom tile", () => {
-    const world = buildWorld(model("A", "B"), 10_000, 2);
-    expect(world.edge.y).toBe(world.rows - 1);
-    expect(isWalkable(world, world.edge.x, world.edge.y)).toBe(true);
+    expect(world.rows).toBe(CELL_H * 1);
+    // Viewport width no longer changes the layout.
+    expect(buildWorld(model("A"), 10_000, 2).cols).toBe(world.cols);
   });
 
   it("keeps model order (Inbox last stays last)", () => {
-    const m = model("Proj", "Inbox");
-    const world = buildWorld(m, 10_000, 2);
+    const world = buildWorld(model("Proj", "Inbox"));
     expect(world.buildings.map((b) => b.room.name)).toEqual(["Proj", "Inbox"]);
   });
 
   it("treats out-of-bounds tiles as unwalkable", () => {
-    const world = buildWorld(model("A"), 10_000, 2);
+    const world = buildWorld(model("A"));
     expect(isWalkable(world, -1, 0)).toBe(false);
     expect(isWalkable(world, world.cols, 0)).toBe(false);
     expect(isWalkable(world, 0, world.rows)).toBe(false);
   });
+
+  it("puts the walk-off edge on a walkable bottom tile", () => {
+    const world = buildWorld(model("A", "B"));
+    expect(world.edge.y).toBe(world.rows - 1);
+    expect(isWalkable(world, world.edge.x, world.edge.y)).toBe(true);
+  });
 });
 
-describe("buildWorld — leisure spots (v2b)", () => {
-  it("places every leisure spot on a walkable, non-building tile", () => {
-    const world = buildWorld(model("A", "B", "C"), CELL_W * 2 * 32, 2);
-    expect(world.spots.length).toBeGreaterThan(0);
-    for (const s of world.spots) {
-      expect(isWalkable(world, s.tile.x, s.tile.y)).toBe(true);
-      // Not sitting inside any building footprint.
-      for (const b of world.buildings) {
-        const inside =
-          s.tile.x >= b.tx && s.tile.x < b.tx + b.tw && s.tile.y >= b.ty && s.tile.y < b.ty + b.th;
-        expect(inside).toBe(false);
+describe("buildWorld — activity-scaled buildings", () => {
+  it("scales the office (desks) by the project's open-task count", () => {
+    const world = buildWorld({
+      rooms: [room("small", 1, 1), room("medium", 2, 4), room("large", 3, 12)],
+    });
+    const [s, m, l] = world.buildings;
+    expect(s.tier).toBe("small");
+    expect(s.seats).toHaveLength(2);
+    expect(m.tier).toBe("medium");
+    expect(m.seats).toHaveLength(4);
+    expect(l.tier).toBe("large");
+    expect(l.seats).toHaveLength(6);
+    // A larger project is a physically larger footprint.
+    expect(l.tw).toBeGreaterThan(s.tw);
+    expect(l.th).toBeGreaterThanOrEqual(s.th);
+  });
+});
+
+describe("buildWorld — enclosed single-door office", () => {
+  it("blocks the whole footprint except the interior seats and one doorway", () => {
+    const world = buildWorld(model("A"));
+    const b = world.buildings[0];
+    const seatKeys = new Set(b.seats.map((s) => `${s.x},${s.y}`));
+    const doorwayKey = `${b.door.x},${b.door.y - 1}`; // gap in the front wall
+    for (let dy = 0; dy < b.th; dy++) {
+      for (let dx = 0; dx < b.tw; dx++) {
+        const x = b.tx + dx;
+        const y = b.ty + dy;
+        const key = `${x},${y}`;
+        const walkable = seatKeys.has(key) || key === doorwayKey;
+        expect(isWalkable(world, x, y)).toBe(walkable);
       }
     }
   });
 
-  it("gives distinct spots distinct tiles and cycles the four kinds", () => {
-    const world = buildWorld(model("A", "B", "C", "D", "E"), 10_000, 2);
+  it("gives each desk a seat below it (seat walkable, desk blocking)", () => {
+    const world = buildWorld({ rooms: [room("A", 1, 4)] });
+    const b = world.buildings[0];
+    expect(b.desks).toHaveLength(b.seats.length);
+    b.seats.forEach((s, i) => {
+      expect(isWalkable(world, s.x, s.y)).toBe(true);
+      expect(b.desks[i].x).toBe(s.x);
+      expect(b.desks[i].y).toBe(s.y - 1);
+      expect(isWalkable(world, b.desks[i].x, b.desks[i].y)).toBe(false);
+    });
+  });
+
+  it("makes every seat reachable ONLY through the single door", () => {
+    // From an outside tile, the shortest path to each seat must thread the one
+    // doorway — the enclosure the TIL-178 open-front bug lacked.
+    const world = buildWorld({ rooms: [room("A", 1, 4)] });
+    const b = world.buildings[0];
+    const doorway = { x: b.door.x, y: b.door.y - 1 };
+    // The door apron is a walkable road tile just outside the doorway.
+    expect(isWalkable(world, b.door.x, b.door.y)).toBe(true);
+    expect(isWalkable(world, doorway.x, doorway.y)).toBe(true);
+    for (const seat of b.seats) {
+      const path = findPath(world, world.edge, seat);
+      expect(path.length).toBeGreaterThan(0);
+      expect(path.some((t) => t.x === doorway.x && t.y === doorway.y)).toBe(true);
+    }
+  });
+});
+
+describe("buildWorld — roads & plaza", () => {
+  it("carves a central walkable plaza on the road network", () => {
+    const world = buildWorld(model("A", "B", "C"));
+    const p = world.plaza;
+    expect(p.w).toBeGreaterThan(0);
+    for (let dy = 0; dy < p.h; dy++) {
+      for (let dx = 0; dx < p.w; dx++) {
+        expect(isWalkable(world, p.x + dx, p.y + dy)).toBe(true);
+        expect(isRoad(world, p.x + dx, p.y + dy)).toBe(true);
+      }
+    }
+    // No building sits on the plaza.
+    for (const b of world.buildings) {
+      const overlaps = p.x < b.tx + b.tw && b.tx < p.x + p.w && p.y < b.ty + b.th && b.ty < p.y + p.h;
+      expect(overlaps).toBe(false);
+    }
+  });
+
+  it("connects every building's door to the plaza by road", () => {
+    const world = buildWorld(model("A", "B", "C", "D"));
+    const plazaCentre = { x: world.plaza.x + Math.floor(world.plaza.w / 2), y: world.plaza.y + Math.floor(world.plaza.h / 2) };
+    for (const b of world.buildings) {
+      const path = findPath(world, b.door, plazaCentre);
+      expect(path.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("buildWorld — leisure spots (in the plaza)", () => {
+  it("clusters distinct spots of all four kinds on walkable plaza tiles", () => {
+    const world = buildWorld(model("A", "B", "C"));
+    expect(world.spots.length).toBe(4);
     const keys = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
-    expect(keys.size).toBe(world.spots.length); // no two spots share a tile
-    // With ≥4 spots, all four kinds appear.
+    expect(keys.size).toBe(world.spots.length); // no two share a tile
     expect(new Set(world.spots.map((s) => s.kind)).size).toBe(4);
+    for (const s of world.spots) {
+      expect(isWalkable(world, s.tile.x, s.tile.y)).toBe(true);
+      const p = world.plaza;
+      const inside = s.tile.x >= p.x && s.tile.x < p.x + p.w && s.tile.y >= p.y && s.tile.y < p.y + p.h;
+      expect(inside).toBe(true);
+    }
   });
 });

@@ -9,16 +9,18 @@
 //
 // Behaviour spine (a re-reading of presence — no new agent data):
 //   working                 → walks inside and sits at its own desk (heads-down)
-//   quiet & live (idle)     → walks out and wanders the green
+//   quiet & live (idle)     → walks out and gathers at the central plaza
 //   quiet & not live (rest) → sits at its desk (no live heartbeat to wander)
 //   blocked                 → paces just outside its own building
 //   roster drops it (ended) → walks off to the world edge and despawns
 //
 // "Sits at its own desk": each building has a row of interior seat tiles (one
-// per workstation). A working/resting character claims a seat (deterministic by
-// task id within the building) and paths in through the door to sit on it,
-// facing up into the monitor — several sessions on one project fill several
-// desks, not one. Overflow past the seat count rests at the door.
+// per workstation). A working/resting character claims a seat *stickily* — it
+// keeps the seat it holds, so a later joiner never reshuffles a seated worker
+// (TIL-178) — and paths in through the single door to sit on it, facing up into
+// the monitor. Several sessions on one project fill several desks; overflow past
+// the desk count waits on distinct frontage tiles (spread by task id, never
+// stacked on the door). Idle characters converge on the plaza and mill there.
 //
 // Under prefers-reduced-motion the whole thing collapses to a still tableau:
 // every character snapped to its resting tile, no paths, no motion.
@@ -131,37 +133,72 @@ function homeTile(world: TownWorld, buildingIndex: number): Tile {
   return b ? b.door : { x: 0, y: 0 };
 }
 
-/** Where a `home` character heads: its claimed desk seat if it has one, else the
- *  door (overflow past the desk count, or a building with no seats). */
+/** Where a `home` character heads: its claimed desk seat if it has one, else a
+ *  frontage tile spread by task id (overflow past the desk count — so several
+ *  seatless workers wait outside on distinct tiles, never stacked on the door). */
 function workTile(world: TownWorld, c: CharAgent): Tile {
-  return c.seat ?? homeTile(world, c.buildingIndex);
+  if (c.seat) return c.seat;
+  const f = frontage(world, c.buildingIndex);
+  return f.length ? f[c.taskId % f.length] : homeTile(world, c.buildingIndex);
 }
 
 /**
- * Assign each `home`-intent character an interior desk seat in its building.
- * Deterministic and stable: within a building, home characters sorted by task id
- * take seats left→right; anyone past the seat count gets `seat = null` (rests at
- * the door). Non-home characters hold no seat. Two workers therefore never share
- * a desk, and the same worker keeps the same desk across steps.
+ * Give each `home`-intent character an interior desk seat in its building —
+ * *stickily*. A character keeps the seat it already holds; only seatless home
+ * characters claim a free one (lowest task id first, deterministic). So a worker
+ * that is already seated never moves when another session joins or leaves the
+ * same project (the TIL-178 reshuffle bug). Non-home / departed / building-moved
+ * characters release their seat; overflow past the desk count gets `seat = null`
+ * and waits at a frontage tile (see workTile).
  */
 function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterChar>) {
+  // 1. Release seats no longer valid (not home, gone, or wrong building), and
+  //    collect the home characters per building.
   const homeByBuilding = new Map<number, number[]>();
   for (const [id, c] of sim.chars) {
-    if (c.intent === "home" && byId.has(id)) {
-      const list = homeByBuilding.get(c.buildingIndex) ?? [];
-      list.push(id);
-      homeByBuilding.set(c.buildingIndex, list);
-    } else {
+    if (c.intent !== "home" || !byId.has(id)) {
       c.seat = null;
+      continue;
     }
+    if (c.seat) {
+      const seats = world.buildings[c.buildingIndex]?.seats ?? [];
+      if (!seats.some((s) => s.x === c.seat!.x && s.y === c.seat!.y)) c.seat = null;
+    }
+    const list = homeByBuilding.get(c.buildingIndex) ?? [];
+    list.push(id);
+    homeByBuilding.set(c.buildingIndex, list);
   }
+  // 2. Fill free seats with the seatless, keeping already-held seats put (sticky).
   for (const [buildingIndex, ids] of homeByBuilding) {
-    ids.sort((a, b) => a - b);
     const seats = world.buildings[buildingIndex]?.seats ?? [];
-    ids.forEach((id, i) => {
-      sim.chars.get(id)!.seat = i < seats.length ? seats[i] : null;
+    const taken = new Set<string>();
+    for (const id of ids) {
+      const s = sim.chars.get(id)!.seat;
+      if (s) taken.add(`${s.x},${s.y}`);
+    }
+    const free = seats.filter((s) => !taken.has(`${s.x},${s.y}`));
+    const needy = ids.filter((id) => !sim.chars.get(id)!.seat).sort((a, b) => a - b);
+    needy.forEach((id, i) => {
+      sim.chars.get(id)!.seat = i < free.length ? free[i] : null;
     });
   }
+}
+
+/** Is tile `t` within the plaza rectangle? */
+function inPlaza(world: TownWorld, t: Tile): boolean {
+  const p = world.plaza;
+  return p.w > 0 && t.x >= p.x && t.x < p.x + p.w && t.y >= p.y && t.y < p.y + p.h;
+}
+
+/** A random walkable plaza tile to gather at (falls back to the plaza centre). */
+function randomPlazaTile(world: TownWorld, rng: () => number): Tile {
+  const p = world.plaza;
+  for (let i = 0; i < 8; i++) {
+    const x = p.x + Math.floor(rng() * p.w);
+    const y = p.y + Math.floor(rng() * p.h);
+    if (isWalkable(world, x, y)) return { x, y };
+  }
+  return { x: p.x + Math.floor(p.w / 2), y: p.y + Math.floor(p.h / 2) };
 }
 
 function facingOf(dx: number, dy: number, fallback: Facing): Facing {
@@ -245,7 +282,10 @@ export function stepTownSim(
   // random steps avoid them, and a character standing inside (its intent just
   // flipped away from work) is first walked back out to the door.
   const interiorTiles = new Set(
-    world.buildings.flatMap((b) => b.seats.map((s) => `${s.x},${s.y}`)),
+    world.buildings.flatMap((b) => [
+      ...b.seats.map((s) => `${s.x},${s.y}`),
+      `${b.door.x},${b.door.y - 1}`, // the doorway (front-wall gap) is inside too
+    ]),
   );
   const insideKey = (t: Tile) => interiorTiles.has(`${t.x},${t.y}`);
 
@@ -391,9 +431,19 @@ export function stepTownSim(
             } else {
               c.wanderPauseMs = WANDER_PAUSE_MS; // unreachable — try again later
             }
+          } else if (world.plaza.w > 0 && !inPlaza(world, here)) {
+            // Not at the plaza yet — head there to gather with the others.
+            const target = randomPlazaTile(world, rng);
+            const path = findPath(world, here, target, avoidSpots(target)).slice(1);
+            if (path.length > 0) c.path = path;
+            c.wanderPauseMs = WANDER_PAUSE_MS;
           } else {
+            // Milling about the plaza (or nowhere to gather): a small step that
+            // stays in the plaza and off spot/interior tiles.
             const step = randomAdjacentStep(world, here, rng, (t) =>
-              spotTiles.has(`${t.x},${t.y}`) || insideKey(t),
+              spotTiles.has(`${t.x},${t.y}`) ||
+              insideKey(t) ||
+              (world.plaza.w > 0 && !inPlaza(world, t)),
             );
             if (step) c.path = [step];
             c.wanderPauseMs = WANDER_PAUSE_MS;

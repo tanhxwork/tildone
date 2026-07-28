@@ -1,16 +1,17 @@
 // The living town view: a PixiJS canvas of the tiled overworld + a per-frame
-// simulation of walking characters, with a DOM overlay layer carrying each
-// character's hover tooltip, aria label, and test id.
+// simulation of walking characters, seen through a pan/zoom camera, with a DOM
+// overlay layer carrying each character's tooltip, aria label and test id.
 //
 // Split of responsibility:
 //   townModel (store → roster)  — who exists + presence state (pure).
 //   buildWorld (roster → world) — the tiled grid + building placement (pure).
 //   stepTownSim (per frame)     — where everyone physically is (pure reducer).
-//   pixiScene                   — draws world + characters from those.
-// The overlay nodes are positioned imperatively from the sim each frame (React
-// never re-renders per frame); the roster list itself only re-renders when the
-// store changes, so hover/aria/e2e see one node per live session, following its
-// sprite.
+//   camera.ts                   — pan/zoom/follow math (pure).
+//   daynight.ts                 — hour → tint/glow (pure).
+//   pixiScene                   — draws world + characters + ambience from those.
+// The canvas is sized to the VIEWPORT; the world is larger and the camera
+// scrolls it. Overlay nodes are positioned imperatively from the sim + camera
+// each frame (React never re-renders per frame).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Application } from "pixi.js";
@@ -18,19 +19,28 @@ import { useStore } from "../store";
 import { townModel } from "../selectors";
 import { agentIdentity } from "../agents";
 import { timeAgo } from "../utils/dates";
-import { buildWorld, type TownWorld } from "./world";
+import { buildWorld, TILE_PX, type TownWorld } from "./world";
 import { createSim, stepTownSim, type RosterChar } from "./sim";
 import { charKeyForAgent, createTownScene, type CharStyle, type TownTheme } from "./pixiScene";
 import { loadTownTextures, type TownTextures } from "./assets";
+import {
+  clampCamera,
+  follow as followCam,
+  nextZoom,
+  panBy,
+  zoomTo,
+  type Camera,
+} from "./camera";
+import { dayNightPhase } from "./daynight";
 
 const SCALE = 2;
-const TILE_PX = 16 * SCALE;
-/** Fixed simulation step (ms) — the sim advances in these chunks regardless of
- *  frame rate; MAX_SIM_STEPS caps catch-up so a slow frame can't spiral. */
+const BASE_TILE = TILE_PX * SCALE; // world px per tile before zoom
+const DEFAULT_ZOOM = 1.5;
+const FOLLOW_EASE = 0.12;
+/** Fixed simulation step (ms); MAX_SIM_STEPS caps catch-up so a slow frame can't spiral. */
 const SIM_STEP_MS = 16;
 const MAX_SIM_STEPS = 5;
 
-/** Parse "#rrggbb" to a Pixi hex number, or null. */
 function cssColorToHex(css: string): number | null {
   const m = css.trim().match(/^#([0-9a-f]{6})$/i);
   return m ? parseInt(m[1], 16) : null;
@@ -50,16 +60,11 @@ function resolveTheme(el: HTMLElement): TownTheme {
   };
 }
 
-/** A character for the view: the sim's roster fields plus the presentation
- *  fields the DOM overlay tooltip needs. Structurally a RosterChar, so it feeds
- *  the sim directly while also driving the overlay. */
 interface TownChar extends RosterChar {
   lastLog: string | null;
   at: string;
 }
 
-/** Flatten the town model into TownChars: one per character, tagged with the
- *  index of its building (== its room's index in model.rooms). */
 function charsFromModel(model: ReturnType<typeof townModel>): TownChar[] {
   const out: TownChar[] = [];
   model.rooms.forEach((room, buildingIndex) => {
@@ -92,22 +97,40 @@ export function TownView() {
 
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<ReturnType<typeof createTownScene> | null>(null);
   const simRef = useRef(createSim());
   const nodeRefs = useRef(new Map<number, HTMLButtonElement>());
-  const [width, setWidth] = useState(0);
+  const [view, setView] = useState({ w: 0, h: 0 });
+  const [followId, setFollowId] = useState<number | null>(null);
+  // Flips true once the async Pixi init + textures are ready, so the render
+  // effect (which needs the scene) re-runs and actually draws the world.
+  const [ready, setReady] = useState(false);
 
-  const world = useMemo(() => buildWorld(model, width || 900, SCALE), [model, width]);
+  // World is roster-driven (not viewport-driven) — resizing must not rebuild it.
+  const world = useMemo(() => buildWorld(model), [model]);
+  const worldPx = useMemo(() => ({ w: world.cols * BASE_TILE, h: world.rows * BASE_TILE }), [world]);
 
   // Latest-value refs so the ticker reads current state without re-subscribing.
   const rosterRef = useRef(roster);
   const worldRef = useRef<TownWorld>(world);
+  const worldPxRef = useRef(worldPx);
+  const viewRef = useRef(view);
+  const camRef = useRef<Camera>({ x: 0, y: 0, zoom: DEFAULT_ZOOM });
+  const followRef = useRef<number | null>(followId);
   rosterRef.current = roster;
   worldRef.current = world;
+  worldPxRef.current = worldPx;
+  viewRef.current = view;
+  followRef.current = followId;
 
-  // Style lookup (presence-derived, per character) for the scene.
+  // Which buildings have a live session → their windows are lit.
+  const liveBuildingsRef = useRef<Set<number>>(new Set());
+  liveBuildingsRef.current = useMemo(
+    () => new Set(roster.filter((r) => r.live).map((r) => r.buildingIndex)),
+    [roster],
+  );
+
   const styleOf = useMemo(() => {
     const map = new Map<number, CharStyle>();
     for (const r of roster) {
@@ -118,14 +141,23 @@ export function TownView() {
   const styleRef = useRef(styleOf);
   styleRef.current = styleOf;
 
-  // Fixed-timestep accumulator, a signature of the current grid geometry (to
-  // detect real layout changes vs. mere presence churn), and the visibility
-  // listener's teardown (registered inside the async init).
   const accRef = useRef(0);
   const worldSigRef = useRef("");
   const visibilityCleanup = useRef<() => void>(() => {});
 
-  // Create the Pixi app once; drive the sim from its ticker.
+  /** Centre the camera on the world (used on first mount and geometry changes). */
+  function centreCamera() {
+    const v = viewRef.current;
+    if (v.w === 0) return;
+    const zoom = camRef.current.zoom;
+    camRef.current = clampCamera(
+      { x: (worldPxRef.current.w - v.w / zoom) / 2, y: (worldPxRef.current.h - v.h / zoom) / 2, zoom },
+      worldPxRef.current,
+      v,
+    );
+  }
+
+  // Create the Pixi app once; drive the sim + camera + ambience from its ticker.
   useEffect(() => {
     const host = hostRef.current;
     const wrap = wrapRef.current;
@@ -150,19 +182,17 @@ export function TownView() {
         appRef.current = app;
         const scene = createTownScene(app, tex, SCALE);
         sceneRef.current = scene;
-        setWidth(host.clientWidth);
+        setView({ w: host.clientWidth, h: host.clientHeight });
+        setReady(true);
 
-        app.ticker.add((ticker) => {
+        // One simulation + camera + render frame. Driven every rAF tick by the
+        // Pixi ticker; also exposed as __townStep so an automated webview whose
+        // rAF is throttled (never composited) can pump frames deterministically.
+        const runFrame = (dtMs: number) => {
           const h = hostRef.current;
           if (!h) return;
           const theme = resolveTheme(h);
-          // Pause on genuine invisibility (minimize / hidden tab) — NOT on focus
-          // loss, so a window on a second monitor keeps living.
-          if (document.hidden) return;
-          // Fixed-timestep: accumulate real elapsed time, advance the sim in
-          // fixed SIM_STEP_MS chunks (frame-rate independent, deterministic),
-          // capped so a stalled frame can't trigger a spiral of death.
-          accRef.current += ticker.deltaMS;
+          accRef.current += dtMs;
           let steps = 0;
           while (accRef.current >= SIM_STEP_MS && steps < MAX_SIM_STEPS) {
             stepTownSim(simRef.current, rosterRef.current, SIM_STEP_MS, worldRef.current, Math.random, {
@@ -171,14 +201,40 @@ export function TownView() {
             accRef.current -= SIM_STEP_MS;
             steps++;
           }
-          if (steps === MAX_SIM_STEPS) accRef.current = 0; // fell behind → drop backlog
-          scene.syncChars(simRef.current, styleRef.current, ticker.deltaMS, theme);
-          positionOverlay();
-        });
+          if (steps === MAX_SIM_STEPS) accRef.current = 0;
 
-        // Snap to a valid resting state when the tab becomes visible again
-        // (spec: reconcile + snap on visibility restore). A fresh sim respawns
-        // everyone at their doors on the next tick.
+          // Follow the focused character (eased), then apply the camera.
+          const fid = followRef.current;
+          if (fid !== null) {
+            const c = simRef.current.chars.get(fid);
+            if (c) {
+              const target = {
+                x: c.pos.x * BASE_TILE + BASE_TILE / 2,
+                y: c.pos.y * BASE_TILE + BASE_TILE / 2,
+              };
+              camRef.current = followCam(camRef.current, target, worldPxRef.current, viewRef.current, FOLLOW_EASE);
+            }
+          }
+          scene.setCamera(camRef.current);
+          scene.syncChars(simRef.current, styleRef.current, dtMs, theme);
+
+          // Day/night from the wall clock; lit windows for live offices.
+          const now = new Date();
+          const amb = dayNightPhase(now.getHours() + now.getMinutes() / 60);
+          scene.setAmbience(amb, (i) => liveBuildingsRef.current.has(i));
+
+          positionOverlay();
+        };
+
+        app.ticker.add((ticker) => {
+          if (document.hidden) return;
+          runFrame(ticker.deltaMS);
+        });
+        (window as unknown as { __townStep?: (dt?: number) => void }).__townStep = (dt = 16) => {
+          runFrame(dt);
+          app.render();
+        };
+
         const onVisibility = () => {
           if (!document.hidden) {
             simRef.current = createSim();
@@ -190,12 +246,10 @@ export function TownView() {
           document.removeEventListener("visibilitychange", onVisibility);
       })
       .catch((err) => {
-        // WebGL can be unavailable (e.g. a GPU-less test webview). The pixel
-        // layer is skipped, but the DOM overlay still renders the roster.
         console.warn("[town] renderer unavailable, showing overlay only:", err);
       });
 
-    const ro = new ResizeObserver(() => setWidth(host.clientWidth));
+    const ro = new ResizeObserver(() => setView({ w: host.clientWidth, h: host.clientHeight }));
     ro.observe(host);
     return () => {
       disposed = true;
@@ -209,50 +263,105 @@ export function TownView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redraw the (static) world when it changes; size the canvas to the world.
+  // Resize the renderer to the viewport and re-clamp the camera.
+  useEffect(() => {
+    const app = appRef.current;
+    if (!app || !ready || view.w === 0) return;
+    app.renderer.resize(view.w, view.h);
+    camRef.current = clampCamera(camRef.current, worldPx, view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, worldPx, ready]);
+
+  // Redraw the (static) world when it changes or once the scene is ready;
+  // re-centre + reset the sim on geometry changes.
   useEffect(() => {
     const host = hostRef.current;
-    const app = appRef.current;
     const scene = sceneRef.current;
-    if (!host || !app || !scene) return;
-    app.renderer.resize(world.cols * TILE_PX, world.rows * TILE_PX);
+    if (!host || !scene || !ready) return;
     scene.renderWorld(world, resolveTheme(host));
-    // If the grid geometry actually changed (resize / project set) — not just
-    // presence churn — the old sim positions may be off the new grid; snap by
-    // respawning everyone at their doors. Signature keys on geometry only.
-    const sig = `${world.cols}x${world.rows}:${world.buildings
-      .map((b) => `${b.door.x},${b.door.y}`)
-      .join(";")}`;
+    const sig = `${world.cols}x${world.rows}`;
     if (sig !== worldSigRef.current) {
       worldSigRef.current = sig;
       simRef.current = createSim();
       accRef.current = 0;
+      centreCamera();
     }
-  }, [world]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [world, ready]);
 
-  /** Move each overlay node onto its character's current sim position. */
+  // Pan / zoom input on the canvas.
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    const onDown = (e: PointerEvent) => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      wrap.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (dx !== 0 || dy !== 0) setFollowId(null); // taking manual control
+      camRef.current = panBy(camRef.current, { x: dx, y: dy }, worldPxRef.current, viewRef.current);
+    };
+    const onUp = (e: PointerEvent) => {
+      dragging = false;
+      try {
+        wrap.releasePointerCapture(e.pointerId);
+      } catch {
+        /* capture may already be gone */
+      }
+    };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const nz = nextZoom(camRef.current.zoom, e.deltaY < 0 ? 1 : -1);
+      camRef.current = zoomTo(camRef.current, nz, pointer, worldPxRef.current, viewRef.current);
+    };
+    wrap.addEventListener("pointerdown", onDown);
+    wrap.addEventListener("pointermove", onMove);
+    wrap.addEventListener("pointerup", onUp);
+    wrap.addEventListener("pointercancel", onUp);
+    wrap.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      wrap.removeEventListener("pointerdown", onDown);
+      wrap.removeEventListener("pointermove", onMove);
+      wrap.removeEventListener("pointerup", onUp);
+      wrap.removeEventListener("pointercancel", onUp);
+      wrap.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+
+  /** Move each overlay node onto its character's on-screen position (camera-aware). */
   function positionOverlay() {
     const sim = simRef.current;
+    const cam = camRef.current;
     for (const [taskId, node] of nodeRefs.current) {
       const c = sim.chars.get(taskId);
       if (!c) {
         node.style.display = "none";
         continue;
       }
+      const sx = (c.pos.x * BASE_TILE + BASE_TILE / 2 - cam.x) * cam.zoom;
+      const sy = (c.pos.y * BASE_TILE + BASE_TILE - cam.y) * cam.zoom;
       node.style.display = "block";
-      node.style.left = `${c.pos.x * TILE_PX + TILE_PX / 2 - 18}px`;
-      node.style.top = `${c.pos.y * TILE_PX + TILE_PX - 34}px`;
+      node.style.left = `${sx - 18}px`;
+      node.style.top = `${sy - 34}px`;
     }
   }
 
   return (
     <div className="town" ref={hostRef}>
-      <div
-        className="town-canvas"
-        ref={wrapRef}
-        style={{ width: world.cols * TILE_PX, height: world.rows * TILE_PX }}
-      >
-        <div className="town-overlay" aria-label="Agent town" ref={overlayRef}>
+      <div className="town-canvas" ref={wrapRef} style={{ width: "100%", height: "100%" }}>
+        <div className="town-overlay" aria-label="Agent town">
           {roster.map((r) => {
             const { label } = agentIdentity(r.agentName);
             const detail = r.lastLog ?? r.state;
@@ -264,13 +373,15 @@ export function TownView() {
                   if (el) nodeRefs.current.set(r.taskId, el);
                   else nodeRefs.current.delete(r.taskId);
                 }}
-                className={`town-char ${r.state}${r.live ? " live" : ""}`}
+                className={`town-char ${r.state}${r.live ? " live" : ""}${followId === r.taskId ? " following" : ""}`}
                 data-testid={`town-char-${r.taskId}`}
                 data-state={r.state}
                 data-building={r.buildingIndex}
                 title={title}
                 aria-label={title}
                 type="button"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => setFollowId((cur) => (cur === r.taskId ? null : r.taskId))}
               />
             );
           })}

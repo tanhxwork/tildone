@@ -101,20 +101,40 @@ describe("town view", () => {
     });
     expect(canvasMounted).toBe(true);
 
-    // Let the sim run so the working character walks in from the door and sits at
-    // its desk — the screenshot then shows it seated at a monitor (the whole
-    // point of the work-sim), not caught mid-spawn on the threshold.
-    await browser.pause(2000);
-
-    // The working character should now be sitting at its desk — its overlay node
-    // has moved up off the door row (y = ty+th) onto the interior seat row
-    // (y = ty+th-1), one tile higher. Assert it left the threshold and went in.
-    const doorTop = await browser.execute(() => {
-      const c = document.querySelector('[data-building="0"]') as HTMLElement | null;
-      return c?.style.top ?? "";
+    // v3 has a camera: the canvas is sized to the VIEWPORT, not the whole world
+    // (under v2 it was world-sized and the frame scrolled). So the canvas width
+    // tracks its host, proving the world is scrolled by a camera rather than laid
+    // out flat at full size.
+    const viewportSized = await browser.execute(() => {
+      const host = document.querySelector(".town") as HTMLElement | null;
+      const canvas = document.querySelector(".town-canvas canvas") as HTMLCanvasElement | null;
+      if (!host || !canvas) return false;
+      return Math.abs(canvas.clientWidth - host.clientWidth) < 4;
     });
-    // door row y=5 → top 158px; seat row y=4 → top 126px. It must be at/above the seat.
-    expect(parseInt(doorTop, 10)).toBeLessThanOrEqual(126);
+    expect(viewportSized).toBe(true);
+
+    // Clicking a character makes the camera follow it — the node gains the
+    // `following` class (React-driven; independent of the animation frame).
+    await char.click();
+    await expect(char).toHaveElementClass("following", { containing: true });
+
+    // This automated webview is never composited, so requestAnimationFrame (and
+    // therefore Pixi's ticker) never fires — the world would stay unrendered.
+    // Pump the sim+camera+render loop manually so the pipeline runs end to end
+    // and the screenshot shows the real living town.
+    await browser.execute(() => {
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 150; i++) step?.(16);
+    });
+
+    // The overlay node now carries a real pixel offset set by the frame loop —
+    // proof the sim → camera → render pipeline ran (a black/blank canvas would
+    // leave it unpositioned). The camera also followed it after the click.
+    const positioned = await browser.execute(() => {
+      const n = document.querySelector(".town-char") as HTMLElement | null;
+      return /^-?\d/.test(n?.style.top ?? "") && /^-?\d/.test(n?.style.left ?? "");
+    });
+    expect(positioned).toBe(true);
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");

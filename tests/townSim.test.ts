@@ -26,12 +26,12 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function room(name: string): TownRoom {
-  return { projectId: 1, name, color: null, characters: [] };
+function room(name: string, openTaskCount = 1): TownRoom {
+  return { projectId: 1, name, color: null, characters: [], openTaskCount };
 }
 function world2(): TownWorld {
   const model: TownModel = { rooms: [room("A"), room("B")] };
-  return buildWorld(model, 10_000, 2); // wide → both buildings on one row
+  return buildWorld(model); // small offices (2 desks each)
 }
 
 function roster(
@@ -297,5 +297,51 @@ describe("stepTownSim — leisure spots (v2b)", () => {
     }
     const c = sim.chars.get(1)!;
     expect(c.pos).toEqual({ x: seat.x, y: seat.y });
+  });
+});
+
+describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
+  it("keeps a seated worker on its desk when another session joins the project", () => {
+    const world = world2(); // building 0 has 2 desks
+    const sim = createSim();
+    const rng = mulberry32(31);
+    // Higher-id worker (5) settles first — under the old id-sorted assignment a
+    // later lower-id joiner would steal seat 0 and shuffle 5 to seat 1.
+    run(sim, [roster(5, "working", true, 0)], world, 120, rng);
+    const held = sim.chars.get(5)!.seat;
+    expect(held).not.toBeNull();
+    // Lower-id worker (2) joins the same building.
+    run(sim, [roster(5, "working", true, 0), roster(2, "working", true, 0)], world, 120, rng);
+    // 5 keeps the exact seat it already held (sticky, no reshuffle).
+    expect(sim.chars.get(5)!.seat).toEqual(held!);
+    // 2 took the other desk — the two are not on the same seat.
+    expect(sim.chars.get(2)!.seat).not.toEqual(held!);
+  });
+
+  it("spreads overflow past the desks so no two characters share a tile", () => {
+    const world = world2(); // building 0 has only 2 desks
+    const sim = createSim();
+    const rng = mulberry32(32);
+    const r = [1, 2, 3, 4].map((id) => roster(id, "working", true, 0));
+    run(sim, r, world, 200, rng);
+    const positions = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
+    expect(new Set(positions).size).toBe(positions.length); // all distinct — no pile-up
+    const seated = [...sim.chars.values()].filter((c) => c.seated);
+    expect(seated).toHaveLength(2); // exactly the two desks are filled
+  });
+
+  it("gathers idle characters into the plaza rather than scattering", () => {
+    const world = world2();
+    const sim = createSim();
+    const rng = mulberry32(33);
+    const r = [1, 2, 3].map((id) => roster(id, "quiet", true, id % 2));
+    run(sim, r, world, 1600, rng);
+    const p = world.plaza;
+    const inPlaza = [...sim.chars.values()].filter((c) => {
+      const x = Math.round(c.pos.x);
+      const y = Math.round(c.pos.y);
+      return x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h;
+    });
+    expect(inPlaza.length).toBeGreaterThanOrEqual(2); // most have converged on the plaza
   });
 });
