@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { useAI } from "./ai";
 import { useFileDropListener } from "./fileDrop";
@@ -18,6 +18,8 @@ import { ReviewView } from "./components/ReviewView";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TableView } from "./components/TableView";
+// The town pulls in PixiJS (~450KB); code-split it so it only loads when opened.
+const TownView = lazy(() => import("./town/TownView").then((m) => ({ default: m.TownView })));
 import { TagManager } from "./components/TagManager";
 import { SessionPane } from "./components/SessionPane";
 import { SessionContextRail } from "./components/SessionContextRail";
@@ -356,6 +358,12 @@ function App() {
     content = <TableView />;
   } else if (viewMode === "calendar") {
     content = <CalendarView />;
+  } else if (viewMode === "town") {
+    content = (
+      <Suspense fallback={null}>
+        <TownView />
+      </Suspense>
+    );
   } else {
     content = <TaskList />;
   }

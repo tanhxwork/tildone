@@ -196,7 +196,7 @@ export function isPageSelection(selection: Selection): boolean {
   );
 }
 
-export type ViewMode = "list" | "board" | "table" | "calendar";
+export type ViewMode = "list" | "board" | "table" | "calendar" | "town";
 
 export const PRIORITY_LABELS: Record<number, string> = {
   0: "None",

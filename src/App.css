@@ -6432,3 +6432,59 @@ textarea:focus-visible,
     transition: none;
   }
 }
+
+/* --- Town view (ambient agent rooms) ------------------------------------- */
+/* Pixi draws the pixel world; this styles the scroll frame and the invisible
+   DOM overlay that carries each character's hover target, focus ring, and aria. */
+.town {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-inset);
+}
+
+.town-canvas {
+  position: relative;
+}
+
+/* The overlay layer is click-through; only the character hit-targets take input. */
+.town-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.town-char {
+  position: absolute;
+  width: 36px;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  pointer-events: auto;
+  transition: background 150ms;
+}
+
+.town-char:hover {
+  background: var(--bg-hover);
+}
+
+.town-char:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.town-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-faint);
+  font-size: 13px;
+  text-align: center;
+  pointer-events: none;
+}

@@ -34,6 +34,15 @@ export const IconCalendar = (p: IconProps) => (
   </Svg>
 );
 
+// The town view — a house of rooms. A door marks it as a place agents work in.
+export const IconTown = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 11l9-7 9 7" />
+    <path d="M5 10v10h14V10" />
+    <path d="M10 20v-5h4v5" />
+  </Svg>
+);
+
 export const IconInbox = (p: IconProps) => (
   <Svg {...p}>
     <path d="M22 12h-6l-2 3h-4l-2-3H2" />

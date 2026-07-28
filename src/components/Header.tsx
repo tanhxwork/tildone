@@ -12,6 +12,7 @@ import {
   IconList,
   IconSearch,
   IconTable,
+  IconTown,
   IconX,
 } from "./Icons";
 
@@ -149,6 +150,14 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
                 onClick={() => setViewMode("calendar")}
               >
                 <IconCalendar size={14} />
+              </button>
+              <button
+                className={viewMode === "town" ? "active" : ""}
+                aria-label="Town view"
+                title="Town view — agents at work"
+                onClick={() => setViewMode("town")}
+              >
+                <IconTown size={14} />
               </button>
             </div>
           </div>
