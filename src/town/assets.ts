@@ -291,7 +291,8 @@ function drawLamp(c: CanvasRenderingContext2D) {
 
 /** A soft cloud shadow — a feathered dark blob of a few overlapping radial
  *  gradients, drawn on a larger-than-tile canvas. Drifts across the terrain
- *  (see pixiScene) to give the world weather. Self-authored → CC0. */
+ *  (see pixiScene) for ambient sky motion — render-only, not a weather sim.
+ *  Self-authored → CC0. */
 const CLOUD_W = 64;
 const CLOUD_H = 36;
 function drawCloudShadow(c: CanvasRenderingContext2D) {

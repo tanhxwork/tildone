@@ -1,8 +1,10 @@
 # Town sprite assets
 
-Every shipped asset here is **CC0** — this repo is public. All art is Kenney
-(CC0 1.0 Universal, public domain); only the desktop computer and the
-leisure-spot props are self-authored (also CC0).
+Every shipped asset here is **CC0** — this repo is public. The photographic-style
+tiles (ground, roof, green decorations, characters) are Kenney (CC0 1.0
+Universal, public domain); everything drawn procedurally in `assets.ts` is
+self-authored (also CC0): the desktop computer, the leisure-spot props, the
+road/plaza/facade tiles, the fountain, the street lamp, and the cloud shadow.
 
 ## Ground, roof & decorations — Kenney "Tiny Town" (CC0 1.0)
 
