@@ -76,6 +76,12 @@ export function TownView() {
         appRef.current = app;
         sceneRef.current = createTownScene(app, tex);
         setWidth(host.clientWidth);
+      })
+      .catch((err) => {
+        // WebGL can be unavailable (e.g. a GPU-less test webview). The pixel
+        // layer is then skipped, but the DOM overlay still renders the roster —
+        // so the view degrades to labels-over-empty rather than crashing.
+        console.warn("[town] renderer unavailable, showing overlay only:", err);
       });
 
     const ro = new ResizeObserver(() => setWidth(host.clientWidth));

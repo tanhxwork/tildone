@@ -77,8 +77,10 @@ describe("town view", () => {
     await townButton.click();
 
     await $(".town").waitForExist();
-    await $(".town canvas").waitForExist();
-    // The agent-touched task appears as a character overlay node.
+    // Assert the DOM overlay, not the canvas: the pixel layer needs WebGL (absent
+    // in a GPU-less test webview), but the overlay renders from the model either
+    // way — and it is what carries hover/aria/hit-testing. The agent-touched task
+    // must appear as a character node, proving the model → room → character path.
     await $(`[data-testid="town-char-${tid}"]`).waitForExist();
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
