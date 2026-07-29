@@ -101,6 +101,35 @@ export function createSim(): SimState {
   return { chars: new Map(), occupied: new Map() };
 }
 
+/** Snap one character to "a valid resting position" (the spec's phrase): a
+ *  worker to its desk seat, everyone else to its door. No path, no motion, no
+ *  leisure claim. Shared by the reduced-motion tableau and settleSim so the two
+ *  cannot drift apart. */
+function snapToRest(c: CharAgent, world: TownWorld): void {
+  const rest = c.intent === "home" ? workTile(world, c) : homeTile(world, c.buildingIndex);
+  c.pos = { x: rest.x, y: rest.y };
+  c.path = [];
+  c.moving = false;
+  c.facing = "up";
+  c.seated = c.intent === "home" && c.seat !== null;
+  c.spotId = null;
+  c.dwellMs = 0;
+}
+
+/** Settle the sim in place: everyone at a resting tile, nothing walking, no
+ *  spot claims — while KEEPING the population, their buildings and their desk
+ *  seats. This is what becoming visible again calls for; the roster reconcile
+ *  then happens on the next step.
+ *
+ *  Not createSim(): discarding the sim makes the next step re-spawn every
+ *  character at its door, so restoring a hidden window sent the whole town
+ *  walking home from the street (TIL-190). */
+export function settleSim(sim: SimState, world: TownWorld): SimState {
+  sim.occupied.clear();
+  for (const c of sim.chars.values()) snapToRest(c, world);
+  return sim;
+}
+
 /** Release any leisure spot this character holds. */
 function releaseSpot(sim: SimState, c: CharAgent) {
   if (c.spotId !== null) {
@@ -412,16 +441,7 @@ export function stepTownSim(
         sim.chars.delete(id); // gone characters simply vanish (no walk-off)
         continue;
       }
-      // Home characters snap to their desk seat (sitting), everyone else to the
-      // door — a still tableau of workers at their monitors.
-      const rest = c.intent === "home" ? workTile(world, c) : homeTile(world, c.buildingIndex);
-      c.pos = { x: rest.x, y: rest.y };
-      c.path = [];
-      c.moving = false;
-      c.facing = "up";
-      c.seated = c.intent === "home" && c.seat !== null;
-      c.spotId = null;
-      c.dwellMs = 0;
+      snapToRest(c, world);
     }
     return sim;
   }

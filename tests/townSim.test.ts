@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   createSim,
+  settleSim,
   stepTownSim,
   type RosterChar,
   type SimState,
@@ -404,5 +405,73 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
       return x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h;
     });
     expect(inPlaza.length).toBeGreaterThanOrEqual(2); // most have converged on the plaza
+  });
+});
+
+// What "becoming visible again" runs (spec: reconcile against the roster and
+// snap everyone to a valid resting position, then resume). The bug it replaces
+// was calling createSim(), which threw the population away and let the next
+// step re-spawn everyone at their doors (TIL-190).
+describe("settleSim", () => {
+  it("keeps the population and its desk seats — nobody is re-spawned", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [roster(1, "working", true), roster(2, "working", true, 1)];
+    run(sim, r, world, 400, mulberry32(7));
+    const seatsBefore = new Map([...sim.chars].map(([id, c]) => [id, c.seat]));
+
+    settleSim(sim, world);
+
+    expect([...sim.chars.keys()].sort()).toEqual([1, 2]);
+    for (const [id, c] of sim.chars) expect(c.seat).toEqual(seatsBefore.get(id)!);
+  });
+
+  it("snaps a worker to its desk, not back to the door", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [roster(1, "working", true)];
+    run(sim, r, world, 400, mulberry32(8));
+
+    settleSim(sim, world);
+
+    const c = sim.chars.get(1)!;
+    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(world.buildings[0].seats[0]);
+    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).not.toEqual(world.buildings[0].door);
+    expect(c.moving).toBe(false);
+    expect(c.path).toEqual([]);
+    expect(c.seated).toBe(true);
+  });
+
+  it("stops mid-walk motion and releases every leisure claim", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [1, 2, 3].map((id) => roster(id, "quiet", true, id % 2));
+    run(sim, r, world, 1600, mulberry32(9));
+
+    settleSim(sim, world);
+
+    expect(sim.occupied.size).toBe(0);
+    for (const c of sim.chars.values()) {
+      expect(c.moving).toBe(false);
+      expect(c.path).toEqual([]);
+      expect(c.spotId).toBeNull();
+      expect(c.dwellMs).toBe(0);
+    }
+  });
+
+  it("resumes cleanly — the next step keeps everyone it settled", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [roster(1, "working", true), roster(2, "quiet", true, 1)];
+    run(sim, r, world, 400, mulberry32(10));
+
+    settleSim(sim, world);
+    stepTownSim(sim, r, 16, world, mulberry32(11));
+
+    expect([...sim.chars.keys()].sort()).toEqual([1, 2]);
+    // The worker is still at its desk one step later — a re-spawn would have
+    // put it back on the door tile.
+    const c = sim.chars.get(1)!;
+    expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).not.toEqual(world.buildings[0].door);
   });
 });

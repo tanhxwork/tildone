@@ -20,7 +20,7 @@ import { townModel } from "../selectors";
 import { agentIdentity } from "../agents";
 import { timeAgo } from "../utils/dates";
 import { buildWorld, TILE_PX, type TownWorld } from "./world";
-import { createSim, stepTownSim, type RosterChar } from "./sim";
+import { createSim, settleSim, stepTownSim, type RosterChar } from "./sim";
 import { charKeyForAgent, createTownScene, type CharStyle, type TownTheme } from "./pixiScene";
 import { loadTownTextures, type TownTextures } from "./assets";
 import {
@@ -210,6 +210,7 @@ export function TownView() {
     const wrap = wrapRef.current;
     if (!host || !wrap) return;
     let disposed = false;
+    let initialised = false;
     const app = new Application();
     void app
       .init({
@@ -218,7 +219,10 @@ export function TownView() {
         autoDensity: true,
         resolution: window.devicePixelRatio || 1,
       })
-      .then(() => loadTownTextures())
+      .then(() => {
+        initialised = true;
+        return loadTownTextures();
+      })
       .then((tex: TownTextures) => {
         if (disposed) {
           app.destroy(true);
@@ -304,7 +308,10 @@ export function TownView() {
 
         const onVisibility = () => {
           if (!document.hidden) {
-            simRef.current = createSim();
+            // Settle in place — keep the population, snap it to rest. Replacing
+            // the sim here re-spawned everyone at their doors, so restoring a
+            // minimised window made the whole town walk home again (TIL-190).
+            settleSim(simRef.current, worldRef.current);
             accRef.current = 0;
           }
         };
@@ -314,6 +321,11 @@ export function TownView() {
       })
       .catch((err) => {
         console.warn("[town] renderer unavailable, showing overlay only:", err);
+        // If init resolved but loading the textures (or building the scene)
+        // failed, appRef was never set — so the unmount cleanup below has
+        // nothing to destroy and the WebGL context leaks for the life of the
+        // window. Destroy it here instead (TIL-190).
+        if (initialised && appRef.current !== app) app.destroy(true);
       });
 
     const ro = new ResizeObserver(() => setView({ w: host.clientWidth, h: host.clientHeight }));
@@ -322,6 +334,9 @@ export function TownView() {
       disposed = true;
       ro.disconnect();
       visibilityCleanup.current();
+      // The step hook closes over this app; leaving it on window after unmount
+      // retains a destroyed renderer (TIL-190).
+      delete (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
       sceneRef.current?.destroy();
       sceneRef.current = null;
       appRef.current?.destroy(true);
