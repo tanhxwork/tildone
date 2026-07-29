@@ -33,21 +33,25 @@ describe("findPath", () => {
     expect(p).toHaveLength(4); // 0,1,2,3 along a clear row
   });
 
-  it("routes around a building rather than through it", () => {
-    // From the walkable tile left of the footprint to the walkable tile right
-    // of it, on the footprint's own row → the straight line is blocked.
-    const from = { x: b.tx - 1, y: b.ty };
-    const to = { x: b.tx + b.tw, y: b.ty };
+  it("routes around a building's lot rather than through it", () => {
+    // Start and finish OUTSIDE the lot fence, on the footprint's own row: the
+    // tiles immediately beside a building are the fence posts now, so the
+    // straight line is blocked by the fence as well as by the walls.
+    const from = { x: b.tx - 2, y: b.ty };
+    const to = { x: b.tx + b.tw + 1, y: b.ty };
     const p = findPath(world, from, to);
     expect(p.length).toBeGreaterThan(0);
     expect(p[0]).toEqual(from);
     expect(p[p.length - 1]).toEqual(to);
-    // No step ever lands on a blocked footprint tile.
+    // No step ever lands on a blocked footprint tile...
     for (const t of p) {
       const onFootprint =
         t.x >= b.tx && t.x < b.tx + b.tw && t.y >= b.ty && t.y < b.ty + b.th;
       expect(onFootprint).toBe(false);
     }
+    // ...nor on a fence post.
+    const fences = new Set(world.fences.map((f) => `${f.x},${f.y}`));
+    for (const t of p) expect(fences.has(`${t.x},${t.y}`)).toBe(false);
     // And it costs more than the blocked straight line (had to go around).
     expect(p.length).toBeGreaterThan(b.tw + 1);
   });
