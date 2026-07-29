@@ -313,6 +313,33 @@ describe("buildWorld — the furnished commons", () => {
     }
   });
 
+  it("keeps every door, seat and spot reachable at any roster size or tier mix", () => {
+    // buildWorld blocks tiles from several independent passes — footprints,
+    // fountain, plaza props, lot fences, street lamps — and each one can island
+    // something. This sweeps roster sizes and tier mixes because the lattice
+    // shape (perRow, which cell is the plaza) changes with the count, so a
+    // connectivity bug can hide at one size and appear at the next.
+    for (let n = 1; n <= 9; n++) {
+      const rooms = Array.from({ length: n }, (_, i) =>
+        room(`P${i}`, i + 1, [1, 4, 9][i % 3]), // small / medium / large
+      );
+      const world = buildWorld({ rooms });
+      const label = `roster ${n}`;
+      for (const b of world.buildings) {
+        // Out to the world edge, through this lot's own gate.
+        expect(findPath(world, b.door, world.edge).length, label).toBeGreaterThan(0);
+        // In to every desk, through the single front door.
+        for (const s of b.seats) {
+          expect(findPath(world, b.door, s).length, label).toBeGreaterThan(0);
+        }
+        // And to every shared spot in town.
+        for (const s of world.spots) {
+          expect(findPath(world, b.door, s.tile).length, label).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
   it("never puts a street lamp on a seat", () => {
     const world = buildWorld(model("A", "B", "C", "D", "E"));
     const seats = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
