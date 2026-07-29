@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { Tag } from "../src/types";
+import { db, resetDbMock, useStore } from "./support/dbMock";
 
 // Import is the third writer of a task's tags, alongside patchTask and applyDrag
 // (tests/doneClearsReviewTags.test.ts). Those two strip `blocked` / `needs-review`
@@ -11,34 +12,6 @@ import type { Tag } from "../src/types";
 // `needs-landing` is the deliberate exception in all three paths: a done task can
 // still hold an unmerged PR (TIL-84).
 
-const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [] };
-
-const insertTask = mock(async (_row: Record<string, unknown>) => ({ id: 100 }));
-const insertProject = mock(async (_n: string, _c: string) => ({ id: 9 }));
-const insertTag = mock(async (_n: string, _c: string) => 42);
-const setTaskTags = mock(async (_id: number, _tagIds: number[]) => {});
-const fetchAll = mock(async () => EMPTY_BOARD);
-const fetchActivity = mock(async () => []);
-const fetchComments = mock(async () => []);
-const insertComment = mock(async () => ({}));
-const updateTask = mock(async () => {});
-const insertActivity = mock(async () => {});
-
-mock.module("../src/db", () => ({
-  fetchAll,
-  fetchActivity,
-  fetchComments,
-  insertComment,
-  updateTask,
-  setTaskTags,
-  insertActivity,
-  insertTask,
-  insertProject,
-  insertTag,
-}));
-
-const { useStore } = await import("../src/store");
-
 const BLOCKED: Tag = { id: 1, name: "blocked", color: "#888" };
 // Tags are auto-created from agent-supplied names, so casing is not canonical.
 const NEEDS_REVIEW: Tag = { id: 2, name: "Needs-Review", color: "#888" };
@@ -47,9 +20,8 @@ const PLAIN: Tag = { id: 4, name: "frontend", color: "#888" };
 const ALL_TAGS = [BLOCKED, NEEDS_REVIEW, NEEDS_LANDING, PLAIN];
 
 beforeEach(() => {
-  insertTask.mockClear();
-  setTaskTags.mockClear();
-  insertTag.mockClear();
+  resetDbMock();
+  db.insertTask.mockImplementation(async (_row: unknown) => ({ id: 100, number: 100, ref: "T-100" }));
   useStore.setState({
     tags: ALL_TAGS,
     projects: [],
@@ -70,7 +42,7 @@ describe("importData: a row that arrives already done drops its stale review tag
       ],
     });
 
-    expect(setTaskTags).toHaveBeenCalledWith(100, [3, 4]);
+    expect(db.setTaskTags).toHaveBeenCalledWith(100, [3, 4]);
   });
 
   it("keeps them on a row that is imported as todo or doing", async () => {
@@ -78,7 +50,7 @@ describe("importData: a row that arrives already done drops its stale review tag
       tasks: [{ title: "still open", status: "todo", tags: ["blocked", "frontend"] }],
     });
 
-    expect(setTaskTags).toHaveBeenCalledWith(100, [1, 4]);
+    expect(db.setTaskTags).toHaveBeenCalledWith(100, [1, 4]);
   });
 
   it("does not create a tag row for a stripped name it has never seen", async () => {
@@ -90,8 +62,8 @@ describe("importData: a row that arrives already done drops its stale review tag
       tasks: [{ title: "done", status: "done", tags: ["blocked", "frontend"] }],
     });
 
-    expect(insertTag).not.toHaveBeenCalled();
-    expect(setTaskTags).toHaveBeenCalledWith(100, [4]);
+    expect(db.insertTag).not.toHaveBeenCalled();
+    expect(db.setTaskTags).toHaveBeenCalledWith(100, [4]);
   });
 
   it("writes no tags at all when every tag on a done row is stripped", async () => {
@@ -99,6 +71,6 @@ describe("importData: a row that arrives already done drops its stale review tag
       tasks: [{ title: "done", status: "done", tags: ["blocked", "needs-review"] }],
     });
 
-    expect(setTaskTags).not.toHaveBeenCalled();
+    expect(db.setTaskTags).not.toHaveBeenCalled();
   });
 });

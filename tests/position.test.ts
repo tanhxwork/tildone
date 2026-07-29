@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { Selection, Status, Task } from "../src/types";
 import { computeDragUpdates } from "../src/reorder";
+import { db, groupSlot, resetDbMock, useStore } from "./support/dbMock";
 
 const NOW = "2026-07-16T09:00:00.000Z";
 
@@ -17,26 +18,6 @@ const NOW = "2026-07-16T09:00:00.000Z";
 // The store is one of two independent writers of this database (the Rust MCP server
 // is the other), so these tests are the TS half of the same contract. The Rust half
 // lives in agent.rs — keep them honest together.
-
-const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [] };
-
-const updateTask = mock(async (_id: number, _patch: Record<string, unknown>) => {});
-const insertActivity = mock(async () => {});
-const fetchAll = mock(async () => EMPTY_BOARD);
-const fetchActivity = mock(async () => []);
-const fetchComments = mock(async () => []);
-const insertComment = mock(async () => ({}));
-
-mock.module("../src/db", () => ({
-  fetchAll,
-  fetchActivity,
-  fetchComments,
-  insertComment,
-  updateTask,
-  insertActivity,
-}));
-
-const { useStore, groupSlot } = await import("../src/store");
 
 function task(id: number, over: Partial<Task> = {}): Task {
   return {
@@ -58,7 +39,7 @@ function task(id: number, over: Partial<Task> = {}): Task {
 
 /** The patch the store last wrote for `id`. */
 function patchFor(id: number): Record<string, unknown> | undefined {
-  const call = [...updateTask.mock.calls].reverse().find((c) => c[0] === id);
+  const call = [...db.updateTask.mock.calls].reverse().find((c) => c[0] === id);
   return call?.[1] as Record<string, unknown> | undefined;
 }
 
@@ -102,8 +83,7 @@ describe("groupSlot", () => {
 
 describe("patchTask keeps positions distinct within a group", () => {
   beforeEach(() => {
-    updateTask.mockClear();
-    insertActivity.mockClear();
+    resetDbMock();
   });
 
   // The regression: before the fix this wrote no position at all, so the task kept
@@ -136,7 +116,7 @@ describe("patchTask keeps positions distinct within a group", () => {
     await useStore.getState().patchTask(1, { status: "done" });
 
     // A Done column grows without bound; completing must stay one write.
-    expect(updateTask).toHaveBeenCalledTimes(1);
+    expect(db.updateTask).toHaveBeenCalledTimes(1);
     const tasks = useStore.getState().tasks;
     expect(tasks.find((t) => t.id === 2)?.position).toBe(0);
     expect(tasks.find((t) => t.id === 3)?.position).toBe(1);
@@ -281,7 +261,7 @@ describe("computeDragUpdates — mixed (all / today / upcoming) views", () => {
 
 describe("applyDrag writes only rows that changed", () => {
   beforeEach(() => {
-    updateTask.mockClear();
+    resetDbMock();
     useStore.setState({ selection: { type: "project", projectId: 7 } });
   });
 
@@ -296,7 +276,7 @@ describe("applyDrag writes only rows that changed", () => {
     // Swap the top two; card 3 keeps position 2.
     await useStore.getState().applyDrag(2, cols({ todo: [2, 1, 3] }));
 
-    const written = updateTask.mock.calls.map((c) => c[0]);
+    const written = db.updateTask.mock.calls.map((c) => c[0]);
     expect(written).toContain(1);
     expect(written).toContain(2);
     expect(written).not.toContain(3);

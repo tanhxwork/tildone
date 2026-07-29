@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { Status, Tag, Task } from "../src/types";
+import { db, resetDbMock, useStore } from "./support/dbMock";
 
 // Landing in Done ends the review conversation: `blocked` asks the user to answer,
 // `needs-review` asks them to check the work, and a card the user just completed
@@ -10,28 +11,6 @@ import type { Status, Tag, Task } from "../src/types";
 //
 // The Rust MCP server is the other writer of this database; its half of the same
 // contract lives in agent.rs (apply_task_update). Keep the two in lockstep.
-
-const EMPTY_BOARD = { projects: [], tasks: [], tags: [], subtasks: [] };
-
-const updateTask = mock(async (_id: number, _patch: Record<string, unknown>) => {});
-const setTaskTags = mock(async (_id: number, _tagIds: number[]) => {});
-const insertActivity = mock(async () => {});
-const fetchAll = mock(async () => EMPTY_BOARD);
-const fetchActivity = mock(async () => []);
-const fetchComments = mock(async () => []);
-const insertComment = mock(async () => ({}));
-
-mock.module("../src/db", () => ({
-  fetchAll,
-  fetchActivity,
-  fetchComments,
-  insertComment,
-  updateTask,
-  setTaskTags,
-  insertActivity,
-}));
-
-const { useStore } = await import("../src/store");
 
 const BLOCKED: Tag = { id: 1, name: "blocked", color: "#888" };
 // Tags are auto-created from agent-supplied names, so casing is not canonical.
@@ -67,9 +46,7 @@ function stateTagIds(id: number): number[] | undefined {
 }
 
 beforeEach(() => {
-  updateTask.mockClear();
-  setTaskTags.mockClear();
-  insertActivity.mockClear();
+  resetDbMock();
   useStore.setState({ tags: ALL_TAGS, selection: { type: "project", projectId: null } });
 });
 
@@ -81,7 +58,7 @@ describe("patchTask: completing a task clears its stale review-cycle tags", () =
 
     await useStore.getState().patchTask(1, { status: "done" });
 
-    expect(setTaskTags).toHaveBeenCalledWith(1, [3, 4]);
+    expect(db.setTaskTags).toHaveBeenCalledWith(1, [3, 4]);
     expect(stateTagIds(1)).toEqual([3, 4]);
   });
 
@@ -92,7 +69,7 @@ describe("patchTask: completing a task clears its stale review-cycle tags", () =
 
     await useStore.getState().patchTask(1, { status: "done" });
 
-    expect(setTaskTags).not.toHaveBeenCalled();
+    expect(db.setTaskTags).not.toHaveBeenCalled();
     expect(stateTagIds(1)).toEqual([3, 4]);
   });
 
@@ -103,7 +80,7 @@ describe("patchTask: completing a task clears its stale review-cycle tags", () =
 
     await useStore.getState().patchTask(1, { status: "doing" });
 
-    expect(setTaskTags).not.toHaveBeenCalled();
+    expect(db.setTaskTags).not.toHaveBeenCalled();
     expect(stateTagIds(1)).toEqual([1, 2]);
   });
 
@@ -115,7 +92,7 @@ describe("patchTask: completing a task clears its stale review-cycle tags", () =
 
     await useStore.getState().patchTask(1, { title: "renamed" });
 
-    expect(setTaskTags).not.toHaveBeenCalled();
+    expect(db.setTaskTags).not.toHaveBeenCalled();
     expect(stateTagIds(1)).toEqual([2]);
   });
 });
@@ -130,7 +107,7 @@ describe("applyDrag: dragging a card into Done clears its stale review-cycle tag
     const columns = { todo: [], doing: [], done: [1] } as Record<Status, number[]>;
     await useStore.getState().applyDrag(1, columns);
 
-    expect(setTaskTags).toHaveBeenCalledWith(1, [3, 4]);
+    expect(db.setTaskTags).toHaveBeenCalledWith(1, [3, 4]);
     expect(stateTagIds(1)).toEqual([3, 4]);
   });
 
@@ -146,7 +123,7 @@ describe("applyDrag: dragging a card into Done clears its stale review-cycle tag
     const columns = { todo: [], doing: [], done: [2, 1] } as Record<Status, number[]>;
     await useStore.getState().applyDrag(1, columns);
 
-    expect(setTaskTags).not.toHaveBeenCalled();
+    expect(db.setTaskTags).not.toHaveBeenCalled();
     expect(stateTagIds(1)).toEqual([2]);
   });
 });

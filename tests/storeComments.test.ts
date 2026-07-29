@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { Comment } from "../src/types";
+import { db, resetDbMock, useStore } from "./support/dbMock";
 
 // Comments are the return channel to an agent: the user answers on the card and the
 // agent, parked in list_changes, wakes. On the app side that means two things must
@@ -8,34 +9,7 @@ import type { Comment } from "../src/types";
 // immediately and bumps the card badge. This is the TS half; the Rust half is in
 // agent.rs (the add_comment tests).
 
-const EMPTY_BOARD = {
-  projects: [],
-  tasks: [],
-  tags: [],
-  subtasks: [],
-  presence: {},
-  links: {},
-  commentCounts: {},
-};
-
 let thread: Comment[] = [];
-const fetchComments = mock(async (taskId: number) => thread.filter((c) => c.task_id === taskId));
-const fetchActivity = mock(async () => []);
-const fetchAll = mock(async () => EMPTY_BOARD);
-const insertComment = mock(
-  async (taskId: number, body: string): Promise<Comment> => ({
-    id: 99,
-    task_id: taskId,
-    body,
-    actor_kind: "user",
-    actor_name: null,
-    created_at: "2026-07-17T00:00:00.000Z",
-  }),
-);
-
-mock.module("../src/db", () => ({ fetchAll, fetchActivity, fetchComments, insertComment }));
-
-const { useStore } = await import("../src/store");
 
 function comment(id: number, body: string, kind: "user" | "agent" = "agent"): Comment {
   return {
@@ -50,9 +24,21 @@ function comment(id: number, body: string, kind: "user" | "agent" = "agent"): Co
 
 describe("comments in the store", () => {
   beforeEach(() => {
+    resetDbMock();
     thread = [];
-    fetchComments.mockClear();
-    insertComment.mockClear();
+    db.fetchComments.mockImplementation(async (taskId: number) =>
+      thread.filter((c) => c.task_id === taskId),
+    );
+    db.insertComment.mockImplementation(
+      async (taskId: number, body: string): Promise<Comment> => ({
+        id: 99,
+        task_id: taskId,
+        body,
+        actor_kind: "user",
+        actor_name: null,
+        created_at: "2026-07-17T00:00:00.000Z",
+      }),
+    );
     useStore.setState({ editingTaskId: null, comments: [], commentCounts: {} });
   });
 
@@ -78,7 +64,7 @@ describe("comments in the store", () => {
 
   it("does not fetch comments when no task is open", async () => {
     await useStore.getState().reload();
-    expect(fetchComments).not.toHaveBeenCalled();
+    expect(db.fetchComments).not.toHaveBeenCalled();
     expect(useStore.getState().comments).toEqual([]);
   });
 
@@ -88,7 +74,7 @@ describe("comments in the store", () => {
 
     // Trimmed, appended to the open thread, and the card badge count goes up — all
     // without a reload.
-    expect(insertComment).toHaveBeenCalledWith(19, "On it.");
+    expect(db.insertComment).toHaveBeenCalledWith(19, "On it.");
     expect(useStore.getState().comments.map((c) => c.body)).toEqual(["On it."]);
     expect(useStore.getState().commentCounts[19]).toBe(1);
   });
@@ -96,7 +82,7 @@ describe("comments in the store", () => {
   it("ignores an empty reply", async () => {
     useStore.setState({ editingTaskId: 19 });
     await useStore.getState().addComment(19, "   ");
-    expect(insertComment).not.toHaveBeenCalled();
+    expect(db.insertComment).not.toHaveBeenCalled();
     expect(useStore.getState().comments).toEqual([]);
   });
 });

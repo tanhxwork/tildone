@@ -1,30 +1,13 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { ActivityEntry } from "../src/types";
+import { db, resetDbMock, useStore } from "./support/dbMock";
 
 // The Activity feed is the surface an agent's log_progress writes to, and the one
 // the user watches while work happens. It is fed by fetchActivity — which fetchAll
 // knows nothing about — so refreshing the board does not refresh the log unless
 // reload() asks for it.
 
-const EMPTY_BOARD = {
-  projects: [],
-  tasks: [],
-  tags: [],
-  subtasks: [],
-  presence: {},
-  links: {},
-  commentCounts: {},
-};
-
 let feed: ActivityEntry[] = [];
-const fetchActivity = mock(async (taskId: number) => feed.filter((e) => e.task_id === taskId));
-const fetchComments = mock(async () => []);
-const insertComment = mock(async () => ({}));
-const fetchAll = mock(async () => EMPTY_BOARD);
-
-mock.module("../src/db", () => ({ fetchAll, fetchActivity, fetchComments, insertComment }));
-
-const { useStore } = await import("../src/store");
 
 function entry(id: number, label: string): ActivityEntry {
   return {
@@ -42,9 +25,11 @@ const AGENT_WROTE = entry(2, "tests written (RED, 5 failing)");
 
 describe("reload keeps an open task's Activity feed live", () => {
   beforeEach(() => {
+    resetDbMock();
     feed = [CREATED];
-    fetchAll.mockClear();
-    fetchActivity.mockClear();
+    db.fetchActivity.mockImplementation(async (taskId: number) =>
+      feed.filter((e) => e.task_id === taskId),
+    );
     useStore.setState({ editingTaskId: null, activity: [] });
   });
 
@@ -68,8 +53,8 @@ describe("reload keeps an open task's Activity feed live", () => {
   it("does not fetch activity when no task is open", async () => {
     await useStore.getState().reload();
 
-    expect(fetchAll).toHaveBeenCalled();
-    expect(fetchActivity).not.toHaveBeenCalled();
+    expect(db.fetchAll).toHaveBeenCalled();
+    expect(db.fetchActivity).not.toHaveBeenCalled();
     expect(useStore.getState().activity).toEqual([]);
   });
 });
