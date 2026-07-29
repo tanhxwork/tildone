@@ -250,6 +250,73 @@ describe("the fix's own defects, found by re-verifying it", () => {
   });
 });
 
+describe("nobody outruns the walk speed, however its route is replanned", () => {
+  // The integrator advanced `budget` tiles on BOTH axes at once whenever the
+  // deltas to the next waypoint were both nonzero — twice the intended speed,
+  // diagonally, with visible jitter. Its comment said "axis-aligned segments",
+  // and that held only while a path was never replanned mid-tile: replanning
+  // starts from `round(pos)`, so a character caught between tiles is off the
+  // lane of its own first waypoint.
+  //
+  // Latent since long before the rest spots — an intent flip has always been
+  // able to clear a path mid-tile — but reassigning waiting tiles made it
+  // reachable in ordinary play. So this pins the speed limit itself rather than
+  // the one route that exposed it.
+  const SPEED = 2.4; // tiles/sec, from sim.ts
+  const manhattan = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+  it("holds the speed limit through a churning roster", () => {
+    const world = townOf();
+    const sim = createSim();
+    const rng = mulberry32(29);
+    const dt = 16;
+    const limit = (SPEED * dt) / 1000 + 1e-9;
+    // Churn the roster hard: characters arriving, flipping state and leaving is
+    // what clears paths mid-tile.
+    for (let i = 0; i < 1200; i++) {
+      const r: RosterChar[] = [];
+      for (let id = 100; id < 106; id++) {
+        if ((i + id) % 97 < 60) continue; // comes and goes
+        const s: PresenceState = (i + id) % 3 === 0 ? "working" : (i + id) % 3 === 1 ? "quiet" : "blocked";
+        r.push({ ...roster(id, s, (i + id) % 5 !== 0) });
+      }
+      for (let id = 1; id < 4; id++) r.push(roster(id, "quiet", false));
+      const before = new Map([...sim.chars].map(([id, c]) => [id, { ...c.pos }]));
+      stepTownSim(sim, r, dt, world, rng, { night: i % 300 > 150 });
+      for (const [id, c] of sim.chars) {
+        const was = before.get(id);
+        if (!was) continue; // spawned this step
+        expect({ id, moved: manhattan(was, c.pos) <= limit }).toEqual({ id, moved: true });
+      }
+    }
+  });
+
+  it("never leaves a character off both axes of its own next waypoint", () => {
+    // The other half of the same invariant: mid-step a character may be between
+    // tiles on ONE axis. Being off on both is what produced the diagonal.
+    const world = townOf();
+    const sim = createSim();
+    const rng = mulberry32(31);
+    const workers = [100, 101, 102].map((id) => roster(id, "working", true));
+    stepTownSim(sim, workers, 16, world, rng);
+    const churned = [...workers, roster(1, "quiet", false), roster(2, "quiet", false)];
+    for (let i = 0; i < 400; i++) {
+      stepTownSim(sim, churned, 16, world, rng);
+      for (const c of sim.chars.values()) {
+        const next = c.path[0];
+        if (!next) continue;
+        const offX = next.x !== c.pos.x;
+        const offY = next.y !== c.pos.y;
+        expect({ id: c.taskId, diagonal: offX && offY }).toEqual({
+          id: c.taskId,
+          diagonal: false,
+        });
+      }
+    }
+  });
+});
+
 describe("a working agent never looks asleep", () => {
   it("takes trips to the kettle, not to bed", () => {
     // The trip picker admitted every affordance whose verb was not "working",

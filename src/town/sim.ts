@@ -1015,20 +1015,44 @@ export function stepTownSim(
       let budget = (SPEED * dt) / 1000; // tiles this frame
       c.moving = true;
       c.seated = false;
+      // One axis per move.
+      //
+      // A path is a chain of orthogonal steps, so normally only one of the two
+      // deltas is nonzero — which is what the old "axis-aligned segments"
+      // shortcut of spending `budget` on both at once relied on. That assumption
+      // holds right up until a path is replanned *mid-tile*: replanning starts
+      // from `round(pos)`, so a character caught between tiles is off the lane
+      // of its own first waypoint, both deltas are nonzero, and it then moved
+      // diagonally at twice its walking speed, jittering (Codex re-verify of
+      // 49a28f1). Latent for as long as an intent flip has been able to clear a
+      // path mid-tile; reassigning waiting tiles made it reachable in ordinary
+      // play. Closing the off-axis residual first puts the character back on its
+      // lane and costs it the distance, like any other travel.
       while (budget > 0 && c.path.length > 0) {
         const next = c.path[0];
         const dx = next.x - c.pos.x;
         const dy = next.y - c.pos.y;
-        const dist = Math.abs(dx) + Math.abs(dy); // axis-aligned segments
-        c.facing = facingOf(dx, dy, c.facing);
-        if (dist <= budget) {
-          c.pos = { x: next.x, y: next.y };
+        if (dx === 0 && dy === 0) {
           c.path.shift();
+          continue;
+        }
+        // Facing follows the direction of travel (the larger delta), not the
+        // residual — otherwise closing a sliver turns the sprite for one frame.
+        c.facing = facingOf(dx, dy, c.facing);
+        const alongY = dy !== 0 && (dx === 0 || Math.abs(dy) <= Math.abs(dx));
+        const delta = alongY ? dy : dx;
+        const dist = Math.abs(delta);
+        if (dist <= budget) {
+          // Snap to the waypoint's coordinate on this axis rather than adding,
+          // so repeated float arithmetic can never leave a residual behind.
+          c.pos = alongY ? { x: c.pos.x, y: next.y } : { x: next.x, y: c.pos.y };
           budget -= dist;
+          if (c.pos.x === next.x && c.pos.y === next.y) c.path.shift();
         } else {
-          const ux = dx === 0 ? 0 : dx > 0 ? 1 : -1;
-          const uy = dy === 0 ? 0 : dy > 0 ? 1 : -1;
-          c.pos = { x: c.pos.x + ux * budget, y: c.pos.y + uy * budget };
+          const step = delta > 0 ? budget : -budget;
+          c.pos = alongY
+            ? { x: c.pos.x, y: c.pos.y + step }
+            : { x: c.pos.x + step, y: c.pos.y };
           budget = 0;
         }
       }
