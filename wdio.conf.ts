@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { SevereServiceError } from "webdriverio";
@@ -153,26 +153,43 @@ function expectedBundle(): string {
  * Runs in onPrepare, before any app launches, so a stale build aborts the run
  * with one message instead of surfacing as spec failures.
  *
- * Only what is compiled *into* the binary counts: `src/`, `src-tauri/src/` and
- * `index.html`. Specs are read from disk at run time, so editing `tests/` must
- * not demand a rebuild.
+ * Only what ends up *inside* the binary counts. Specs are read from disk at run
+ * time, so editing `tests/` must not demand a rebuild — but migrations and
+ * `public/` are embedded just as much as `src/` is, and a Cargo/Tauri/Vite
+ * config change can alter the binary without touching a line of source.
+ * (Codex's TIL-196 pass caught migrations and public/ missing from this list.)
  */
+const WATCHED = [
+  "./src",
+  "./public",
+  "./index.html",
+  "./vite.config.ts",
+  "./package.json",
+  "./src-tauri/src",
+  "./src-tauri/migrations",
+  "./src-tauri/Cargo.toml",
+  "./src-tauri/tauri.conf.json",
+];
+
 function newestSourceMtime(): { path: string; mtimeMs: number } {
   let newest = { path: "", mtimeMs: 0 };
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else {
-        const { mtimeMs } = statSync(full);
-        if (mtimeMs > newest.mtimeMs) newest = { path: full, mtimeMs };
-      }
+  // Real paths already walked — a symlinked directory is traversed (a leaf
+  // Dirent for it would hide everything underneath), and this stops a loop.
+  const seen = new Set<string>();
+  const visit = (path: string) => {
+    // statSync, not the Dirent: `isDirectory()` is false for a symlink to a
+    // directory, which silently turned symlinked trees into single leaves.
+    const stats = statSync(path);
+    if (!stats.isDirectory()) {
+      if (stats.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: stats.mtimeMs };
+      return;
     }
+    const real = realpathSync(path);
+    if (seen.has(real)) return;
+    seen.add(real);
+    for (const entry of readdirSync(path)) visit(join(path, entry));
   };
-  walk("./src");
-  walk("./src-tauri/src");
-  const index = statSync("./index.html");
-  if (index.mtimeMs > newest.mtimeMs) newest = { path: "./index.html", mtimeMs: index.mtimeMs };
+  for (const root of WATCHED) visit(root);
   return newest;
 }
 
@@ -185,7 +202,17 @@ function assertBinaryNotStale(): void {
       `No ${EMBEDDED_INDEX} — this worktree has never built its e2e binary. Run \`bun run e2e:build\`.`,
     );
   }
-  const newest = newestSourceMtime();
+  // Fail closed. A missing directory or a broken symlink used to escape as a
+  // plain ENOENT, which WDIO logs and then runs the suite anyway — the guard
+  // disabling itself in exactly the situation it exists for.
+  let newest: { path: string; mtimeMs: number };
+  try {
+    newest = newestSourceMtime();
+  } catch (e) {
+    throw new SevereServiceError(
+      `Could not read the watched source paths, so the staleness check cannot run: ${String(e)}`,
+    );
+  }
   if (newest.mtimeMs > builtAt) {
     throw new SevereServiceError(
       `${newest.path} changed after the e2e binary was built, so the run would ` +
@@ -235,7 +262,13 @@ function takeRunLock(): void {
         holder = 0;
       }
       if (pidAlive(holder)) {
-        throw new Error(
+        // SevereServiceError, not Error: WDIO logs a plain throw from onPrepare
+        // and runs the suite anyway (verified — the message appears and all 13
+        // specs then execute). The loser would drive the winner's app and, worse,
+        // delete its lock from onComplete. Codex found this on the TIL-196 pass;
+        // it was the normal refusal path, so the severe throw below — which only
+        // fires when the lock file cannot be created at all — never covered it.
+        throw new SevereServiceError(
           `Another e2e run for this worktree is already in flight (pid ${holder}). ` +
             `They share the identifier ${IDENTIFIER}, the data dir and the port, so ` +
             `running both corrupts each other. Wait for it, or delete ${LOCK} if you ` +
@@ -251,8 +284,22 @@ function takeRunLock(): void {
   throw new SevereServiceError(`Could not take the e2e run lock at ${LOCK}`);
 }
 
+/**
+ * Drop the lock only if it is ours.
+ *
+ * WDIO runs onComplete from a `finally`, so it fires even for a run that never
+ * acquired the lock — and an unconditional delete there hands the next arrival
+ * a free lock while the real holder is still running. Checking the pid makes
+ * the release safe no matter how the run ended.
+ */
 function releaseRunLock(): void {
-  rmSync(LOCK, { force: true });
+  let holder = 0;
+  try {
+    holder = Number(readFileSync(LOCK, "utf8").trim());
+  } catch {
+    return; // already gone
+  }
+  if (holder === process.pid) rmSync(LOCK, { force: true });
 }
 
 export const config: WebdriverIO.Config = {

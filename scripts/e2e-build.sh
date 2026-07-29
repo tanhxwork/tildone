@@ -53,3 +53,13 @@ VITE_E2E=1 ./node_modules/.bin/tauri build --debug --no-bundle --config "$overla
 # the guard throw about a binary that was perfectly fine (TIL-196). The copy
 # belongs to the binary and changes only when the binary does.
 cp dist/index.html "$CARGO_TARGET_DIR/.e2e-index.html"
+
+# Stamp it with the time the build STARTED, not the time the copy finished.
+# wdio's staleness check asks "is any watched source newer than this?", and a
+# file edited while cargo was running is not in the binary — but it is older
+# than the copy, so an end-of-build timestamp would call that build current.
+#
+# lib.rs is the reference because the touch above set it to the build's start
+# instant, exactly: reformatting the clock through `date`/`touch -t` truncates
+# to whole seconds, and that alone made lib.rs read as newer than its own build.
+touch -r src-tauri/src/lib.rs "$CARGO_TARGET_DIR/.e2e-index.html"
