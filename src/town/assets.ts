@@ -24,9 +24,6 @@ type HomeFurnitureKind = Exclude<FurnitureKind, "desk" | "rug" | "plant">;
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
 import grass2Url from "./assets/world/grass2.png";
-import roofLUrl from "./assets/world/roofL.png";
-import roofMUrl from "./assets/world/roofM.png";
-import roofRUrl from "./assets/world/roofR.png";
 import treePineUrl from "./assets/world/tree_pine.png";
 import treeOrangeUrl from "./assets/world/tree_orange.png";
 import bushUrl from "./assets/world/bush.png";
@@ -46,10 +43,9 @@ export type DirFrames = Record<Dir, Texture[]>;
 export interface WorldTiles {
   /** Grass variants — [plain, detail, flowers] — for ground variation. */
   grass: Texture[];
-  /** Grey shingle roof left/mid/right (tinted per project by the renderer). */
-  roofL: Texture;
-  roofM: Texture;
-  roofR: Texture;
+  /** Shingle roof surface, tinted per project by the renderer: the ridge course,
+   *  the body repeated down the slope, and the overhanging eave. */
+  roof: { ridge: Texture; body: Texture; eave: Texture };
   /** Scatterable green decorations. */
   trees: Texture[];
   bush: Texture;
@@ -465,19 +461,53 @@ function drawPath(c: CanvasRenderingContext2D) {
   c.fillRect(15, 0, 1, FRAME);
 }
 
-/** A picket fence post-and-rail segment, bottom-anchored like the other props. */
+/** A picket fence segment, bottom-anchored like the other props. The gaps
+ *  between pickets are transparent so the ground shows through — a solid
+ *  16×16 block of pickets reads as masonry, not as a fence. */
 function drawFence(c: CanvasRenderingContext2D) {
   c.clearRect(0, 0, FRAME, FRAME);
-  c.fillStyle = "rgba(0,0,0,0.14)";
-  c.fillRect(1, 14, 14, 2);
-  c.fillStyle = "#d7c9ad"; // pickets
+  c.fillStyle = "rgba(0,0,0,0.12)"; // ground shadow
+  c.fillRect(1, 14, 14, 1);
+  c.fillStyle = "#b99a6d"; // rails behind the pickets
+  c.fillRect(0, 7, FRAME, 1);
+  c.fillRect(0, 11, FRAME, 1);
   for (const px of [1, 6, 11]) {
-    c.fillRect(px, 4, 3, 11);
-    c.fillRect(px, 3, 3, 1);
+    c.fillStyle = "#eadfc6"; // picket
+    c.fillRect(px, 3, 2, 11);
+    c.fillRect(px, 2, 2, 1); // pointed cap
+    c.fillStyle = "#c8b993"; // shaded edge
+    c.fillRect(px + 1, 3, 1, 11);
   }
-  c.fillStyle = "#bfae8c"; // rails
-  c.fillRect(0, 7, FRAME, 2);
-  c.fillRect(0, 12, FRAME, 1);
+}
+
+/**
+ * Roof surface, tinted per project. Three parts because a roof drawn as one
+ * ridge tile repeated down every row reads as a stack of separate bars rather
+ * than a single sloped surface — which is exactly how the multi-row roofs of the
+ * bigger houses looked. Light grey so the project tint multiplies cleanly.
+ */
+function drawRoof(c: CanvasRenderingContext2D, part: "ridge" | "body" | "eave") {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#cfc9be";
+  c.fillRect(0, 0, FRAME, FRAME);
+  // Staggered shingle courses.
+  c.fillStyle = "#b0a99e";
+  for (let y = 3, course = 0; y < FRAME; y += 5, course++) {
+    c.fillRect(0, y, FRAME, 1);
+    const off = course % 2 ? 2 : 0;
+    for (let x = off; x < FRAME; x += 4) c.fillRect(x, y - 3, 1, 3);
+  }
+  if (part === "ridge") {
+    c.fillStyle = "#e6e0d5"; // capping, catching the light
+    c.fillRect(0, 0, FRAME, 2);
+    c.fillStyle = "#8f887c";
+    c.fillRect(0, 2, FRAME, 1);
+  } else if (part === "eave") {
+    c.fillStyle = "#8f887c"; // the roof edge, overhanging
+    c.fillRect(0, 13, FRAME, 3);
+    c.fillStyle = "rgba(0,0,0,0.18)";
+    c.fillRect(0, 15, FRAME, 1);
+  }
 }
 
 /** Road / pavement tile — warm grey with a few darker pebbles (deterministic). */
@@ -678,9 +708,6 @@ export async function loadTownTextures(): Promise<TownTextures> {
     grass0: grass0Url,
     grass1: grass1Url,
     grass2: grass2Url,
-    roofL: roofLUrl,
-    roofM: roofMUrl,
-    roofR: roofRUrl,
     treePine: treePineUrl,
     treeOrange: treeOrangeUrl,
     bush: bushUrl,
@@ -705,9 +732,11 @@ export async function loadTownTextures(): Promise<TownTextures> {
   cache = {
     world: {
       grass: [loaded.grass0, loaded.grass1, loaded.grass2],
-      roofL: loaded.roofL,
-      roofM: loaded.roofM,
-      roofR: loaded.roofR,
+      roof: {
+        ridge: canvasTexture((c) => drawRoof(c, "ridge")),
+        body: canvasTexture((c) => drawRoof(c, "body")),
+        eave: canvasTexture((c) => drawRoof(c, "eave")),
+      },
       trees: [loaded.treePine, loaded.treeOrange],
       bush: loaded.bush,
       mushrooms: loaded.mushrooms,

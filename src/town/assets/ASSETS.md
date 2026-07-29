@@ -13,14 +13,20 @@ https://kenney.nl/assets/tiny-town — full licence text in
 (original Tiny Town tile index → our name):
 
 - 0 → `grass0.png`, 1 → `grass1.png`, 2 → `grass2.png` — grass ground + variation
-- 48 → `roofL.png`, 49 → `roofM.png`, 50 → `roofR.png` — grey shingle roof,
-  **tinted per project** by the renderer (neutral grey so any colour reads)
 - 3 → `tree_orange.png`, 4 → `tree_pine.png` — scattered trees
 - 5 → `bush.png`, 29 → `mushrooms.png` — scattered decorations
 
-The renderer (`pixiScene.ts`) uses these for the ground, the project-tinted roof
-over each house, and the tree/bush/mushroom decorations scattered across the
-green. The house bodies below the roof are furnished cutaways (next section).
+The renderer (`pixiScene.ts`) uses these for the ground and for the
+tree/bush/mushroom decorations, which are scattered in **clumps** (a coarse grove
+mask) rather than by an independent per-tile roll, and never on a lot, a path or
+up against a street.
+
+The **roof** used to be three Kenney Tiny Town tiles (48/49/50). It is now drawn
+in code (`drawRoof`, self-authored → CC0) in three parts — `ridge`, `body`,
+`eave` — because a house deep enough to hold rooms needs several roof rows, and
+repeating a single ridge tile down them read as a stack of separate bars rather
+than one sloped surface. Still tinted per project (drawn light grey so any colour
+multiplies cleanly).
 
 ## Interiors & characters — Kenney "Roguelike Indoors" + "RPG Urban" (CC0 1.0)
 
@@ -87,3 +93,24 @@ Everything is a texture behind a stable shape (`DirFrames` for characters,
 `InteriorTiles` for furniture), so swapping art is contained: repoint the grid
 coordinates in `assets.ts`, or replace `sub(...)` with a different slicer / a
 `canvasTexture(...)`. Keep every shipped asset CC0.
+
+## Home furniture, lots and the commons (self-authored → CC0)
+
+Everything below is drawn in code in `assets.ts`, so it stays CC0 and stays
+consistent — the Kenney roguelike pack is rustic and ships no coherent modern set
+(a bed that matches the sofa that matches the kitchen counter).
+
+- **`drawFurniture`** — `counter`, `sink`, `table`, `chair`, `sofa`, `bookshelf`,
+  `bed`, `nightstand`. Top-down, one light direction. `desk`, `rug` and `plant`
+  still come from the Kenney interior sheet. These furnish the room plan
+  `world.ts → placeBuilding` lays out: a workroom of desks across the back, then
+  a kitchen and a lounge off a hall, with a bed nook in the larger tiers.
+- **`drawProp`** — `planter`, `noticeboard`, `market`, `coffeecart`, `cafetable`:
+  the blocked furnishings of the commons. They are "triangulation" objects —
+  something to stand at and around, which is what makes a group form in a square.
+- **`drawFence`** — the picket fence ringing each lot. The gaps between pickets
+  are transparent so the ground shows through; a solid block of pickets reads as
+  masonry rather than as a fence.
+- **`drawYard` / `drawPath`** — mown lot grass and the worn route from a front
+  door to its gate. The contrast against wild grass is the point: managed ground
+  is the cheapest signal that somebody lives there.

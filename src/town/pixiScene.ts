@@ -139,15 +139,6 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   }
 
-  /** Scale a packed RGB tint toward black — used to shade the lower roof rows so
-   *  a multi-row roof reads as a slope rather than a flat rectangle. */
-  function darken(rgb: number, k: number): number {
-    const r = Math.round(((rgb >> 16) & 0xff) * k);
-    const g = Math.round(((rgb >> 8) & 0xff) * k);
-    const b = Math.round((rgb & 0xff) * k);
-    return (r << 16) | (g << 8) | b;
-  }
-
   function roofTint(place: TownWorld["buildings"][number]): number {
     return place.room.color && /^#[0-9a-f]{6}$/i.test(place.room.color)
       ? parseInt(place.room.color.slice(1), 16)
@@ -219,10 +210,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     // leaves the closed house reading as a house the rest of the time.
     const roof = new Container();
     for (let ry = ty; ry < frontWallY; ry++) {
-      const shade = ry === ty ? tint : darken(tint, 0.86);
+      const part = ry === ty ? "ridge" : ry === frontWallY - 1 ? "eave" : "body";
       for (let rx = 0; rx < tw; rx++) {
-        const t = rx === 0 ? tex.world.roofL : rx === tw - 1 ? tex.world.roofR : tex.world.roofM;
-        roof.addChild(tile(t, tx + rx, ry, shade));
+        roof.addChild(tile(tex.world.roof[part], tx + rx, ry, tint));
       }
     }
     roof.alpha = place.room.characters.length > 0 ? 0.12 : 1;
@@ -244,7 +234,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const plateH = padY * 2 + label.height;
     const cx = (tx + tw / 2) * tilePx;
     const plateX = cx - plateW / 2;
-    const plateY = ty * tilePx - 3 * scale - plateH;
+    const plateY = ty * tilePx - 9 * scale - plateH; // clear of the lot fence
     const bg = new Graphics()
       .roundRect(plateX, plateY, plateW, plateH, 4 * scale)
       .fill({ color: 0x1e1b16, alpha: 0.78 });
@@ -392,7 +382,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     if (w.plazaCenter) {
       const f = new Sprite(tex.fountain[0]);
       f.anchor.set(0.5, 0.9);
-      f.scale.set(scale);
+      // Drawn larger than its tile: it blocks one tile but needs to read as the
+      // centrepiece of a square this size, not a puddle in the middle of it.
+      f.scale.set(scale * 1.8);
       f.position.set(w.plazaCenter.x * tilePx + tilePx / 2, w.plazaCenter.y * tilePx + tilePx);
       buildings.addChild(f);
       fountainSprite = f;

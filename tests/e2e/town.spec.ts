@@ -152,6 +152,21 @@ describe("town view", () => {
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/town.png");
 
+    // Zoom all the way out and capture the whole town. The close shot above only
+    // ever shows one house, so nothing in this spec used to exercise — or let a
+    // reviewer see — the commons, the street lattice or the lots together.
+    await browser.execute(() => {
+      const wrap = document.querySelector(".town-canvas") as HTMLElement | null;
+      for (let i = 0; i < 6; i++) {
+        wrap?.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: 120, clientX: 400, clientY: 300, bubbles: true, cancelable: true }),
+        );
+      }
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 60; i++) step?.(16);
+    });
+    await browser.saveScreenshot("./tests/e2e/artifacts/town-wide.png");
+
     // Escape releases the follow (spec: cleared by background click / Escape).
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));

@@ -443,6 +443,17 @@ function furnishPlaza(
   // big enough to need it.
   const candidates: [number, number][] = [];
   const midY = Math.floor(h / 2);
+  const fx = Math.floor(w / 2); // the fountain, per buildWorld
+  const fy = midY;
+
+  // A pair of planters inside the square. A large plaza with everything pushed
+  // to its edges reads as a vacant lot; these break up the middle distance.
+  prop(fx - 4, fy - 3, "planter");
+  prop(fx + 4, fy + 3, "planter");
+
+  // Seats right at the fountain come first — the water is the thing people
+  // actually sit facing.
+  candidates.push([fx - 2, fy], [fx + 2, fy], [fx, fy - 2], [fx, fy + 2]);
   for (const cx of cafes) {
     candidates.push([cx - 1, h - 1], [cx + 1, h - 1]);
   }

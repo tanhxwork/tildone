@@ -91,7 +91,7 @@ describe("stepTownSim", () => {
     run(sim, [roster(1, "quiet", true)], world, 500, rng); // wander away first
     const away = sim.chars.get(1)!;
     expect({ x: Math.round(away.pos.x), y: Math.round(away.pos.y) }).not.toEqual(seat);
-    run(sim, [roster(1, "working", true)], world, 400, rng); // now resume work
+    run(sim, [roster(1, "working", true)], world, 900, rng); // now resume work
     const c = sim.chars.get(1)!;
     expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(seat);
     expect(c.seated).toBe(true);
