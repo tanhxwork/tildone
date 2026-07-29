@@ -301,8 +301,12 @@ describe("buildWorld — the furnished commons", () => {
     expect(kinds.has("pond")).toBe(true);
     expect(kinds.has("campfire")).toBe(true);
     expect(kinds.has("garden")).toBe(true);
+    // Water, fire and planting specifically: the square's own furnishings —
+    // benches, and the standing places at the cart / stall / notice board — belong
+    // on the pavement, and a pond in the middle of it does not.
+    const outdoorsy = new Set(["pond", "campfire", "garden"]);
     for (const s of world.spots) {
-      if (s.kind === "bench") continue;
+      if (!outdoorsy.has(s.kind)) continue;
       const inPlaza =
         s.tile.x >= p.x && s.tile.x < p.x + p.w && s.tile.y >= p.y && s.tile.y < p.y + p.h;
       expect(inPlaza).toBe(false); // on the green beside the commons, not on it

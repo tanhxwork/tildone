@@ -293,7 +293,10 @@ describe("stepTownSim — leisure spots (v2b)", () => {
     const midPos = sim.chars.get(1)!.pos;
     expect(Number.isInteger(midPos.x) && Number.isInteger(midPos.y)).toBe(false);
     // Work resumes → it must reach its exact seat tile, not rest a fraction off.
-    for (let i = 0; i < 200; i++) {
+    // The budget tracks how far the walk is: a plan whose hall runs down the far
+    // side of the house (TIL-199 picks one per project) puts the first desk a
+    // full crossing away from the door, ~280 steps at SPEED.
+    for (let i = 0; i < 400; i++) {
       stepTownSim(sim, [roster(1, "working", true)], 16, world, () => 0);
     }
     const c = sim.chars.get(1)!;
@@ -360,12 +363,13 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
       roster(3, "working", true, 0),
       roster(4, "blocked", true, 0),
     ];
-    for (let i = 0; i < 450; i++) {
+    for (let i = 0; i < 550; i++) {
       stepTownSim(sim, r, 16, world, rng);
       // Let everyone reach their settled position first. The window tracks how
-      // deep the house is: the back seat is now behind the front seat off a
-      // hall, so the last walker settles at step ~169 rather than ~150.
-      if (i < 220) continue;
+      // deep the house is: with the hall running down the far side (TIL-199's
+      // per-project plan) the last walker settles around step ~300, and transient
+      // overlap while two are still walking in is inherent.
+      if (i < 340) continue;
       const pos = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
       expect(new Set(pos).size).toBe(pos.length); // no pile-up once settled
     }
@@ -523,9 +527,20 @@ describe("light social — chatting", () => {
     const idle = [1, 2].map((id) => roster(id, "quiet", true, 0));
     run(sim, idle, world, 2000, mulberry32(27));
     const working = [1, 2].map((id) => roster(id, "working", true, 0));
-    run(sim, working, world, 2000, mulberry32(28));
+    // "Home" is a desk of its own, reached — after 32 simulated seconds a worker
+    // may be at the sink or walking back from it (CHORE_MIN is 18s), so what
+    // matters is that each one *got* to its chair, not what it happens to be doing
+    // on the frame the loop stops. Pinning `seated` at the end only ever meant
+    // "the trip timer hasn't fired yet on this seed".
+    const everSeated = new Set<number>();
+    const rng = mulberry32(28);
+    for (let i = 0; i < 2000; i++) {
+      stepTownSim(sim, working, 16, world, rng);
+      for (const c of sim.chars.values()) if (c.seated) everSeated.add(c.taskId);
+    }
     for (const c of sim.chars.values()) {
-      expect(c.seated).toBe(true);
+      expect(c.seat).not.toBeNull();
+      expect(everSeated.has(c.taskId)).toBe(true);
       expect(c.chatMs).toBe(0);
     }
   });

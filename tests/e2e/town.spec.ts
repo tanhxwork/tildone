@@ -184,16 +184,49 @@ describe("town view", () => {
     // green spec proving nothing about how it looked is how three defects
     // shipped through TIL-189.
     await browser.saveScreenshot("./tests/e2e/artifacts/town-settled.png");
+    // What it is doing depends on the wall clock and on where it is in its
+    // evening, and the spec must not care which: asserting "on the sofa" would
+    // fail every evening, and asserting it *only* ever rests would fail as soon
+    // as it got up to put the kettle on (TIL-199).
+    const HOME_LIFE = [
+      "resting",
+      "sleeping",
+      "walking",
+      "watching",
+      "music",
+      "cooking",
+      "eating",
+      "reading",
+      "coffee",
+      "washing",
+    ];
     const activity = await char.getAttribute("data-activity");
-    // Which of the two depends on the wall clock, and the spec must not care —
-    // asserting "on the sofa" would fail every evening.
-    expect(["resting", "sleeping"]).toContain(activity);
+    expect(HOME_LIFE).toContain(activity);
     const restingWhere = await char.getAttribute("data-where");
-    expect(restingWhere).toMatch(/in the (lounge|bedroom)/);
+    // Somewhere in its own house, and never back at a desk.
+    expect(restingWhere).toContain("house");
     expect(restingWhere).not.toContain("in the workroom");
     // The tooltip says it in words — the user's decision was a glyph in the
-    // world and the name on hover, so the words have to actually be there.
-    expect(await char.getAttribute("title")).toMatch(/on the sofa|asleep/);
+    // world and the name on hover, so the words have to actually be there. These
+    // are the phrases, not the activity names: "resting" reads as "on the sofa".
+    expect(await char.getAttribute("title")).toMatch(
+      /on the sofa|asleep|walking|watching television|playing the guitar|cooking|eating|reading|making coffee|washing up/,
+    );
+
+    // An evening is a *routine*, not a pose: over the next minute of simulated
+    // time this character must be seen doing more than one thing. The old
+    // picture — a quiet agent parked on a sofa for as long as you watched —
+    // passed every assertion above and was the deadest thing in the town.
+    const seen = new Set<string>([activity ?? ""]);
+    for (let i = 0; i < 12; i++) {
+      await browser.execute(() => {
+        const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+        for (let n = 0; n < 300; n++) step?.(16);
+      });
+      seen.add((await char.getAttribute("data-activity")) ?? "");
+    }
+    expect([...seen].every((a) => HOME_LIFE.includes(a))).toBe(true);
+    expect(seen.size).toBeGreaterThan(1);
 
     // Escape releases the follow (spec: cleared by background click / Escape).
     await browser.execute(() => {

@@ -39,7 +39,18 @@ type HomeFurnitureKind =
   | "sofa"
   | "bookshelf"
   | "bed"
-  | "nightstand";
+  | "nightstand"
+  // The detail pass (TIL-199). Half of these are usable — the television, the
+  // stove, the whiteboard, the rack, the shower — so they are what a character
+  // walks to when it is not at a desk, not only what the room has in it.
+  | "tv"
+  | "stove"
+  | "fridge"
+  | "whiteboard"
+  | "serverrack"
+  | "shower"
+  | "toilet"
+  | "lamp";
 
 export type Dir = "down" | "up" | "left" | "right";
 
@@ -212,7 +223,7 @@ function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind, frame = 0) {
     ctx.fill();
     ctx.fillStyle = "#f6c33b"; // inner core
     ctx.fillRect(7 + lean, apexY + 4, 2, 11 - (apexY + 4));
-  } else {
+  } else if (kind === "garden") {
     // garden plot
     ctx.fillStyle = "#7a5230";
     ctx.fillRect(3, 8, 10, 5);
@@ -220,6 +231,41 @@ function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind, frame = 0) {
     ctx.fillRect(5, 6, 1, 3);
     ctx.fillRect(8, 5, 1, 4);
     ctx.fillRect(11, 7, 1, 2);
+  } else if (kind === "swing") {
+    ctx.fillStyle = "#8a5a2b"; // A-frame
+    ctx.fillRect(2, 2, 1, 11);
+    ctx.fillRect(13, 2, 1, 11);
+    ctx.fillRect(2, 1, 12, 2);
+    ctx.fillStyle = "#5e3d1c"; // ropes
+    ctx.fillRect(6, 3, 1, 6);
+    ctx.fillRect(10, 3, 1, 6);
+    ctx.fillStyle = "#c9902e"; // seat
+    ctx.fillRect(5, 9, 7, 2);
+  } else if (kind === "easel") {
+    ctx.fillStyle = "#8a5a2b"; // legs
+    ctx.fillRect(4, 8, 1, 6);
+    ctx.fillRect(11, 8, 1, 6);
+    ctx.fillStyle = "#f2f0ea"; // canvas
+    ctx.fillRect(3, 2, 10, 8);
+    ctx.fillStyle = "#3f7fb0"; // a sky and a hill, half-finished
+    ctx.fillRect(4, 3, 8, 3);
+    ctx.fillStyle = "#4f9d4f";
+    ctx.fillRect(4, 6, 8, 2);
+    ctx.fillStyle = "#5e3d1c"; // ledge
+    ctx.fillRect(3, 10, 10, 1);
+  } else {
+    // A standing place at a prop that is already drawn — the queue at the coffee
+    // cart, the front of the market stall, where you stand to read the notice
+    // board. Nothing but worn ground: the thing you came for is the tile next
+    // door, and drawing a second object here would double it.
+    ctx.clearRect(0, 0, FRAME, FRAME);
+    ctx.fillStyle = "rgba(90,74,52,0.20)";
+    ctx.beginPath();
+    ctx.ellipse(8, 9, 5, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(90,74,52,0.14)";
+    ctx.fillRect(5, 11, 2, 1);
+    ctx.fillRect(9, 6, 2, 1);
   }
 }
 
@@ -423,8 +469,8 @@ function drawFurniture(c: CanvasRenderingContext2D, kind: HomeFurnitureKind) {
     c.fillRect(2, 8, 12, 6);
     c.fillStyle = "#93b3d4";
     c.fillRect(2, 8, 12, 1);
-  } else {
-    // nightstand — a small cabinet with a lamp
+  } else if (kind === "nightstand") {
+    // a small cabinet with a lamp
     c.fillStyle = woodDark;
     c.fillRect(3, 6, 10, 9);
     c.fillStyle = wood;
@@ -435,6 +481,109 @@ function drawFurniture(c: CanvasRenderingContext2D, kind: HomeFurnitureKind) {
     c.fillRect(7, 2, 2, 4);
     c.fillStyle = "#ffe6a0"; // shade
     c.fillRect(5, 0, 6, 3);
+  } else if (kind === "tv") {
+    // A flat screen on a low stand, seen from above-front: the dark screen is
+    // the whole read at this size, so it is the biggest shape.
+    c.fillStyle = "#2b2b30"; // bezel
+    c.fillRect(1, 2, 14, 9);
+    c.fillStyle = "#4a5f70"; // screen (lit warm by the renderer's object light)
+    c.fillRect(2, 3, 12, 7);
+    c.fillStyle = "#5f7887"; // screen sheen
+    c.fillRect(3, 4, 5, 2);
+    c.fillStyle = "#3a3a40"; // stand
+    c.fillRect(6, 11, 4, 2);
+    c.fillRect(4, 13, 8, 1);
+  } else if (kind === "stove") {
+    c.fillStyle = "#7d7871"; // body
+    c.fillRect(0, 3, FRAME, 12);
+    c.fillStyle = "#5d5952"; // hob top
+    c.fillRect(0, 2, FRAME, 6);
+    for (const [bx, by] of [
+      [3, 3],
+      [10, 3],
+    ]) {
+      c.fillStyle = "#33312e"; // burner
+      c.fillRect(bx, by, 4, 3);
+      c.fillStyle = "#c25a2a"; // one ring on
+      if (bx === 3) c.fillRect(bx + 1, by + 1, 2, 1);
+    }
+    c.fillStyle = "#c9c3b8"; // oven door + handle
+    c.fillRect(2, 9, 12, 5);
+    c.fillStyle = "#8f8a82";
+    c.fillRect(3, 10, 10, 1);
+  } else if (kind === "fridge") {
+    c.fillStyle = "#d7d3cb"; // body
+    c.fillRect(1, 1, 14, 14);
+    c.fillStyle = "#c2beb5"; // shaded right side
+    c.fillRect(11, 1, 4, 14);
+    c.fillStyle = "#a9a49b"; // door split
+    c.fillRect(1, 6, 14, 1);
+    c.fillStyle = "#8f8a82"; // handles
+    c.fillRect(9, 3, 1, 2);
+    c.fillRect(9, 8, 1, 3);
+    c.fillStyle = "#e2c15a"; // a note stuck to the door
+    c.fillRect(3, 9, 3, 3);
+  } else if (kind === "whiteboard") {
+    c.fillStyle = "#6f6a63"; // frame
+    c.fillRect(0, 1, FRAME, 12);
+    c.fillStyle = "#f2f0ea"; // board
+    c.fillRect(1, 2, 14, 9);
+    c.fillStyle = "#3f7fb0"; // a box-and-arrow diagram, the way plans get drawn
+    c.fillRect(3, 4, 4, 3);
+    c.fillRect(9, 4, 4, 3);
+    c.fillRect(7, 5, 2, 1);
+    c.fillStyle = "#c0562e";
+    c.fillRect(3, 9, 8, 1);
+    c.fillStyle = "#8f8a82"; // pen tray
+    c.fillRect(2, 12, 12, 2);
+  } else if (kind === "serverrack") {
+    c.fillStyle = "#33363b"; // cabinet
+    c.fillRect(2, 1, 12, 14);
+    const rows = [3, 6, 9, 12];
+    rows.forEach((y, i) => {
+      c.fillStyle = "#4a4f55"; // blade
+      c.fillRect(3, y, 10, 2);
+      c.fillStyle = i % 2 === 0 ? "#5fd08a" : "#e2c15a"; // status lights
+      c.fillRect(4, y, 1, 1);
+      c.fillRect(6, y, 1, 1);
+    });
+  } else if (kind === "shower") {
+    c.fillStyle = "#b9c3c9"; // tray
+    c.fillRect(1, 4, 14, 11);
+    c.fillStyle = "#cfd8dd";
+    c.fillRect(2, 5, 12, 9);
+    c.fillStyle = "#8f9aa3"; // riser + head
+    c.fillRect(7, 1, 2, 4);
+    c.fillRect(4, 1, 8, 2);
+    c.fillStyle = "#7fb0d8"; // water
+    for (const x of [5, 8, 11]) c.fillRect(x, 5, 1, 5);
+    c.fillStyle = "#6f7a82"; // drain
+    c.fillRect(7, 12, 2, 2);
+  } else if (kind === "toilet") {
+    c.fillStyle = "#e8e4dc"; // cistern
+    c.fillRect(3, 2, 10, 4);
+    c.fillStyle = "#f2efe8"; // pan
+    c.beginPath();
+    c.ellipse(8, 10, 4, 4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#c9c3b8"; // seat rim shadow
+    c.beginPath();
+    c.ellipse(8, 11, 3, 2.4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#a9a49b"; // flush
+    c.fillRect(11, 3, 2, 1);
+  } else {
+    // lamp — a standard lamp, the cheapest warmth a room can have
+    c.fillStyle = "rgba(0,0,0,0.14)"; // base shadow
+    c.fillRect(5, 13, 6, 2);
+    c.fillStyle = "#6f5a3a"; // stem
+    c.fillRect(7, 6, 2, 8);
+    c.fillStyle = "#5e4b30"; // base
+    c.fillRect(5, 13, 6, 1);
+    c.fillStyle = "#ffe6a0"; // shade
+    c.fillRect(3, 2, 10, 5);
+    c.fillStyle = "#ffd06a"; // shade underside
+    c.fillRect(4, 6, 8, 1);
   }
 }
 
@@ -650,8 +799,8 @@ function drawGlyph(c: CanvasRenderingContext2D, activity: Activity) {
     c.fillRect(11, 7, 2, 5); // right arm
     c.fillRect(6, 8, 4, 4); // seat cushion
     c.fillRect(3, 12, 10, 1); // base
-  } else {
-    // sleeping — the universal stack of Zs
+  } else if (activity === "sleeping") {
+    // the universal stack of Zs
     c.fillStyle = ink;
     c.fillRect(8, 3, 5, 1);
     c.fillRect(10, 4, 2, 1);
@@ -661,6 +810,112 @@ function drawGlyph(c: CanvasRenderingContext2D, activity: Activity) {
     c.fillRect(5, 9, 2, 1);
     c.fillRect(4, 10, 2, 1);
     c.fillRect(3, 11, 4, 1);
+  } else if (activity === "planning") {
+    c.fillStyle = ink; // a board with two boxes and an arrow between them
+    c.fillRect(2, 3, 12, 10);
+    c.fillStyle = "rgba(30,27,22,0.82)";
+    c.fillRect(3, 4, 10, 8);
+    c.fillStyle = "#7fb0d8";
+    c.fillRect(4, 6, 3, 3);
+    c.fillRect(10, 6, 2, 3);
+    c.fillStyle = ink;
+    c.fillRect(7, 7, 3, 1);
+  } else if (activity === "deploying") {
+    c.fillStyle = ink; // a stack of blades with an arrow going up out of it
+    c.fillRect(3, 9, 10, 2);
+    c.fillRect(3, 12, 10, 2);
+    c.fillStyle = "#5fd08a"; // status lights, and the arrow
+    c.fillRect(4, 9, 1, 1);
+    c.fillRect(4, 12, 1, 1);
+    c.fillRect(7, 3, 2, 5);
+    c.fillRect(6, 4, 4, 1);
+    c.fillRect(5, 5, 6, 1);
+  } else if (activity === "watching") {
+    c.fillStyle = ink; // a screen throwing light
+    c.fillRect(2, 4, 12, 7);
+    c.fillStyle = "#7fb0d8";
+    c.fillRect(3, 5, 10, 5);
+    c.fillStyle = ink;
+    c.fillRect(6, 11, 4, 1);
+    c.fillRect(4, 12, 8, 1);
+  } else if (activity === "music") {
+    c.fillStyle = ink; // a quaver
+    c.fillRect(9, 3, 2, 8);
+    c.fillRect(11, 3, 2, 2);
+    c.beginPath();
+    c.ellipse(7, 11, 3, 2.4, 0, 0, Math.PI * 2);
+    c.fill();
+  } else if (activity === "cooking") {
+    c.fillStyle = ink; // a pan on the heat, steaming
+    c.fillRect(3, 8, 10, 4);
+    c.fillRect(12, 8, 2, 1);
+    c.fillStyle = "#c25a2a"; // the ring
+    c.fillRect(5, 12, 6, 1);
+    c.fillStyle = "rgba(245,242,234,0.55)"; // steam
+    c.fillRect(6, 3, 1, 4);
+    c.fillRect(9, 2, 1, 5);
+  } else if (activity === "fishing") {
+    c.fillStyle = ink; // rod and line
+    c.fillRect(3, 3, 1, 2);
+    c.fillRect(4, 5, 1, 2);
+    c.fillRect(5, 7, 1, 2);
+    c.fillRect(6, 9, 1, 1);
+    c.fillStyle = "rgba(245,242,234,0.6)";
+    c.fillRect(11, 3, 1, 6);
+    c.fillStyle = "#7fb0d8"; // water, and a float on it
+    c.fillRect(2, 11, 12, 3);
+    c.fillStyle = "#c0562e";
+    c.fillRect(10, 9, 2, 2);
+  } else if (activity === "gardening") {
+    c.fillStyle = "#7a5230"; // a bed with something coming up in it
+    c.fillRect(2, 10, 12, 3);
+    c.fillStyle = "#5fd08a";
+    c.fillRect(5, 5, 1, 5);
+    c.fillRect(4, 6, 1, 2);
+    c.fillRect(6, 4, 1, 2);
+    c.fillRect(10, 7, 1, 3);
+    c.fillRect(11, 6, 1, 2);
+  } else if (activity === "shopping") {
+    c.fillStyle = ink; // a basket with a handle
+    c.fillRect(3, 7, 10, 6);
+    c.fillStyle = "rgba(30,27,22,0.82)";
+    c.fillRect(4, 8, 8, 4);
+    c.fillStyle = ink;
+    c.fillRect(5, 4, 1, 3);
+    c.fillRect(10, 4, 1, 3);
+    c.fillRect(6, 3, 4, 1);
+    c.fillStyle = "#5fd08a"; // something green sticking out of it
+    c.fillRect(6, 8, 2, 2);
+    c.fillStyle = "#e2c15a";
+    c.fillRect(9, 8, 2, 2);
+  } else if (activity === "playing") {
+    c.fillStyle = ink; // a ball in the air, and its bounce
+    c.beginPath();
+    c.ellipse(8, 7, 4, 4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "rgba(30,27,22,0.82)";
+    c.fillRect(4, 6, 8, 1);
+    c.fillRect(7, 4, 1, 6);
+    c.fillStyle = "rgba(245,242,234,0.45)";
+    c.fillRect(4, 12, 8, 1);
+  } else {
+    // painting — a palette with paint on it, and a brush
+    c.fillStyle = ink;
+    c.beginPath();
+    c.ellipse(7, 9, 5, 4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "rgba(30,27,22,0.82)"; // thumb hole
+    c.beginPath();
+    c.ellipse(9, 10, 1.4, 1.2, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#c0562e"; // three dabs
+    c.fillRect(4, 7, 2, 2);
+    c.fillStyle = "#3f7fb0";
+    c.fillRect(7, 6, 2, 2);
+    c.fillStyle = "#5fd08a";
+    c.fillRect(10, 7, 2, 2);
+    c.fillStyle = ink; // brush
+    c.fillRect(12, 2, 2, 5);
   }
 }
 
@@ -680,6 +935,16 @@ function buildGlyphs(): Record<Activity, Texture | null> {
     "eating",
     "resting",
     "sleeping",
+    "planning",
+    "deploying",
+    "watching",
+    "music",
+    "cooking",
+    "fishing",
+    "gardening",
+    "shopping",
+    "playing",
+    "painting",
   ];
   const out = {
     walking: null,
@@ -1087,6 +1352,12 @@ export async function loadTownTextures(): Promise<TownTextures> {
       pond: [0, 1, 2].map((f) => canvasTexture((c) => drawSpot(c, "pond", f))),
       campfire: [0, 1, 2].map((f) => canvasTexture((c) => drawSpot(c, "campfire", f))),
       garden: [canvasTexture((c) => drawSpot(c, "garden"))],
+      swing: [canvasTexture((c) => drawSpot(c, "swing"))],
+      easel: [canvasTexture((c) => drawSpot(c, "easel"))],
+      // Standing places: worn ground, since the prop beside them is the object.
+      cart: [canvasTexture((c) => drawSpot(c, "cart"))],
+      stall: [canvasTexture((c) => drawSpot(c, "stall"))],
+      board: [canvasTexture((c) => drawSpot(c, "board"))],
     },
     interior: {
       tiledFloor: canvasTexture(drawKitchenFloor),
@@ -1127,6 +1398,14 @@ export async function loadTownTextures(): Promise<TownTextures> {
       bookshelf: canvasTexture((c) => drawFurniture(c, "bookshelf")),
       bed: canvasTexture((c) => drawFurniture(c, "bed")),
       nightstand: canvasTexture((c) => drawFurniture(c, "nightstand")),
+      tv: canvasTexture((c) => drawFurniture(c, "tv")),
+      stove: canvasTexture((c) => drawFurniture(c, "stove")),
+      fridge: canvasTexture((c) => drawFurniture(c, "fridge")),
+      whiteboard: canvasTexture((c) => drawFurniture(c, "whiteboard")),
+      serverrack: canvasTexture((c) => drawFurniture(c, "serverrack")),
+      shower: canvasTexture((c) => drawFurniture(c, "shower")),
+      toilet: canvasTexture((c) => drawFurniture(c, "toilet")),
+      lamp: canvasTexture((c) => drawFurniture(c, "lamp")),
     },
     fence: canvasTexture(drawFence),
     pavement: {

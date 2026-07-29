@@ -96,6 +96,16 @@ const ACTIVITY_PHRASE: Record<Activity, string> = {
   chatting: "talking",
   stuck: "stuck",
   leaving: "leaving",
+  planning: "at the whiteboard",
+  deploying: "watching a build",
+  watching: "watching television",
+  music: "playing the guitar",
+  cooking: "cooking",
+  fishing: "fishing",
+  gardening: "gardening",
+  shopping: "at the market",
+  playing: "on the swing",
+  painting: "painting",
 };
 
 function charsFromModel(model: ReturnType<typeof townModel>): TownChar[] {

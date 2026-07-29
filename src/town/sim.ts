@@ -31,11 +31,19 @@
 //
 // A working character is not a pose held for 25 minutes, either. It spends most
 // of its time at its desk and takes short trips — coffee at the counter, a wash
-// at the sink, a book off the shelf — because rendering heads-down work as 25
-// unbroken minutes of the same bob is what made the town feel deadest at exactly
-// the moment it was busiest. Trips resolve to an (object, verb) affordance the
-// world declares (world.ts), the Generative-Agents shape: an action is a verb
-// against a named object, not a coordinate.
+// at the sink, a plan at the whiteboard, a build watched at the rack — because
+// rendering heads-down work as 25 unbroken minutes of the same bob is what made
+// the town feel deadest at exactly the moment it was busiest. Trips resolve to an
+// (object, verb) affordance the world declares (world.ts), the Generative-Agents
+// shape: an action is a verb against a named object, not a coordinate.
+//
+// And a quiet character is not a pose either (TIL-199). "Went home" used to mean
+// "sits on the sofa until the roster drops it" — the deadest picture in the town,
+// arriving the moment an agent stopped working. A resting character now runs the
+// same trip loop over the house's *leisure* objects: the television, the guitar,
+// the stove, a book, the shower. Out of doors the same principle applies to the
+// commons — a spot carries a verb, so an idler at the pond is fishing and one at
+// the stall is shopping, rather than everyone everywhere "resting".
 //
 // "Sits at its own desk": each building has a row of interior seat tiles (one
 // per workstation). A working/resting character claims a seat *stickily* — it
@@ -93,7 +101,50 @@ const CHORE_DWELL_MS = 3200;
  * The research's phrase for this loop is "coffee, a stretch at the window, back
  * to the desk"; lying down is not in it.
  */
-const CHORE_VERBS: ActivityVerb[] = ["coffee", "washing", "eating", "reading"];
+const CHORE_VERBS: ActivityVerb[] = [
+  "coffee",
+  "washing",
+  "eating",
+  "reading",
+  // The workday past the kettle (TIL-199): a plan gets drawn at the whiteboard
+  // and a build gets watched at the rack. Both are workroom objects, so this
+  // reads as work happening rather than as a break from it.
+  "planning",
+  "deploying",
+];
+
+/**
+ * What a character does with an evening off.
+ *
+ * A quiet agent used to sit on the sofa until the roster dropped it — the town's
+ * least alive picture arriving exactly when its work stopped. It now runs the
+ * same trip loop a worker does, over a different set of verbs: the television,
+ * the guitar, the stove, a book, the shower. `sleeping` is deliberately absent —
+ * going to bed is what *night* means (`intentOf`), not something to get up and do.
+ */
+const LEISURE_VERBS: ActivityVerb[] = [
+  "watching",
+  "music",
+  "cooking",
+  "eating",
+  "reading",
+  "coffee",
+  "washing",
+];
+/** An evening is more restless than a workday: shorter gaps, longer stays. */
+const LEISURE_MIN_MS = 7000;
+const LEISURE_SPREAD_MS = 9000;
+const LEISURE_DWELL_MS = 6500;
+/** How long a visitor stays at a spot whose whole point is staying a while. */
+const SPOT_DWELL_MS: Partial<Record<ActivityVerb, number>> = {
+  fishing: 9000,
+  painting: 8000,
+  reading: 6000,
+  eating: 5000,
+  gardening: 5000,
+  shopping: 3000,
+  coffee: 3500,
+};
 
 export type Facing = "up" | "down" | "left" | "right";
 
@@ -129,7 +180,19 @@ export type Activity =
   | "walking"
   | "chatting"
   | "stuck"
-  | "leaving";
+  | "leaving"
+  // At the workroom's other objects, and around the house of an evening.
+  | "planning"
+  | "deploying"
+  | "watching"
+  | "music"
+  | "cooking"
+  // Out of doors, at a spot that is for something in particular.
+  | "fishing"
+  | "gardening"
+  | "shopping"
+  | "playing"
+  | "painting";
 
 /** The activity a log line implies, or null when it says nothing useful. Kept
  *  deliberately small and literal — this is a legibility aid, not an intent
@@ -164,6 +227,16 @@ const VERB_ACTIVITY: Record<ActivityVerb, Activity> = {
   reading: "reading",
   resting: "resting",
   sleeping: "sleeping",
+  planning: "planning",
+  deploying: "deploying",
+  watching: "watching",
+  music: "music",
+  cooking: "cooking",
+  fishing: "fishing",
+  gardening: "gardening",
+  shopping: "shopping",
+  playing: "playing",
+  painting: "painting",
 };
 
 export interface CharAgent {
@@ -183,6 +256,11 @@ export interface CharAgent {
   /** The leisure spot this character has claimed (walking to or sitting at), or
    *  null when it is not visiting one. */
   spotId: number | null;
+  /** What that spot is for — fishing at the pond, shopping at the stall, sitting
+   *  on a bench. Copied off the spot when it is claimed so the activity does not
+   *  need the world to resolve, and so an idle character reads as *doing* the
+   *  thing it walked across town to do. */
+  spotVerb: ActivityVerb | null;
   /** Remaining time (ms) to linger at the claimed spot. */
   dwellMs: number;
   /** The interior desk seat this character works at (its building's seat tile),
@@ -271,6 +349,7 @@ function snapToRest(c: CharAgent, world: TownWorld): void {
   c.seated = c.intent === "work" && c.seat !== null;
   c.chore = null;
   c.spotId = null;
+  c.spotVerb = null;
   c.dwellMs = 0;
   c.chatMs = 0;
   c.chatWith = null;
@@ -351,10 +430,18 @@ function stepChats(sim: SimState, dt: number) {
     }
   }
 
-  // Only wanderers, and only ones not already busy: a character walking to or
-  // sitting at a leisure spot is doing something, and a worker is indoors.
+  // Who is available to be interrupted: an idler between waypoints, or anybody
+  // standing at an object mid-trip — two workers meeting at the kettle, two
+  // housemates in the kitchen of an evening. A character *walking* somewhere is
+  // not (it has an errand), and one at a leisure spot is already doing something.
+  //
+  // Indoor chat is what makes several sessions on one project read as colleagues
+  // rather than as parallel processes that happen to share an address.
   const free = [...sim.chars.values()].filter(
-    (c) => c.intent === "wander" && c.chatMs === 0 && c.chatCooldownMs === 0 && c.spotId === null,
+    (c) =>
+      c.chatMs === 0 &&
+      c.chatCooldownMs === 0 &&
+      ((c.intent === "wander" && c.spotId === null) || (c.chore !== null && !c.moving)),
   );
   for (let i = 0; i < free.length; i++) {
     const a = free[i];
@@ -385,6 +472,7 @@ function releaseSpot(sim: SimState, c: CharAgent) {
   if (c.spotId !== null) {
     sim.occupied.delete(c.spotId);
     c.spotId = null;
+    c.spotVerb = null;
     c.dwellMs = 0;
   }
 }
@@ -449,7 +537,11 @@ function activityOf(c: CharAgent, logActivity: Activity | null): Activity {
   if (c.moving) return "walking";
   if (c.intent === "work") return c.seated ? (logActivity ?? "typing") : "waiting";
   if (c.intent === "rest") return c.restKind === "bed" ? "sleeping" : "resting";
-  return c.spotId !== null ? "resting" : "walking";
+  // At a spot: what that spot is for. Every idle character used to read as
+  // "resting" wherever it had walked to, so an afternoon at the pond and a
+  // moment on a bench were the same word and the same glyph.
+  if (c.spotId !== null) return c.spotVerb ? VERB_ACTIVITY[c.spotVerb] : "resting";
+  return "walking";
 }
 
 /** `count` distinct walkable tiles near a building's door, nearest first, for
@@ -834,6 +926,7 @@ export function stepTownSim(
       moving: false,
       wanderPauseMs: 0,
       spotId: null,
+      spotVerb: null,
       dwellMs: 0,
       seat: null,
       restTile: null,
@@ -940,6 +1033,14 @@ export function stepTownSim(
           // Heads-down. Count towards the next trip out.
           c.choreMs -= dt;
           if (c.choreMs <= 0) startChore(sim, world, c, rng);
+        } else if (c.intent === "rest" && !night && c.restSpot && sameTile(here, c.restSpot)) {
+          // An evening in. Same loop as the workday, over the house's leisure
+          // objects — the television, the guitar, the stove, a book — so a quiet
+          // agent is at home rather than merely parked on a sofa. Not at night:
+          // then `intentOf` has already put it to bed, and the point of bed is
+          // that nobody gets up from it.
+          c.choreMs -= dt;
+          if (c.choreMs <= 0) startChore(sim, world, c, rng);
         }
       }
     } else if (c.intent === "wander") {
@@ -975,7 +1076,10 @@ export function stepTownSim(
             if (path.length > 0) {
               sim.occupied.set(spot.id, c.taskId);
               c.spotId = spot.id;
-              c.dwellMs = DWELL_MS;
+              c.spotVerb = spot.verb;
+              // Long enough to be doing the thing: an afternoon's fishing is not
+              // the same length as a glance at the notice board.
+              c.dwellMs = SPOT_DWELL_MS[spot.verb] ?? DWELL_MS;
               c.path = path;
             } else {
               c.wanderPauseMs = WANDER_PAUSE_MS; // unreachable — try again later
@@ -1090,22 +1194,31 @@ export function stepTownSim(
  * the next interval, which is the right answer for a crowded house.
  */
 function startChore(sim: SimState, world: TownWorld, c: CharAgent, rng: () => number) {
+  const leisure = c.intent === "rest";
+  const verbs = leisure ? LEISURE_VERBS : CHORE_VERBS;
   const all = world.buildings[c.buildingIndex]?.affordances ?? [];
   const options = all.filter(
-    (a: Affordance) =>
-      CHORE_VERBS.includes(a.verb) && !sim.claims.has(`${a.tile.x},${a.tile.y}`),
+    (a: Affordance) => verbs.includes(a.verb) && !sim.claims.has(`${a.tile.x},${a.tile.y}`),
   );
   if (!options.length) {
-    c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
+    c.choreMs = choreDelay(leisure, rng);
     return;
   }
   const pick = options[Math.floor(rng() * options.length)];
   if (!claim(sim, c, pick.tile)) {
-    c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
+    c.choreMs = choreDelay(leisure, rng);
     return;
   }
   c.chore = { tile: pick.tile, verb: pick.verb };
-  c.choreDwellMs = CHORE_DWELL_MS;
+  c.choreDwellMs = leisure ? LEISURE_DWELL_MS : CHORE_DWELL_MS;
+}
+
+/** How long until this character's next trip. An evening at home is more
+ *  restless than a workday: heads-down work is *meant* to be mostly heads-down. */
+function choreDelay(leisure: boolean, rng: () => number): number {
+  return leisure
+    ? LEISURE_MIN_MS + rng() * LEISURE_SPREAD_MS
+    : CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
 }
 
 /** Finish a trip: give the object back and start counting to the next one. */
@@ -1113,5 +1226,5 @@ function endChore(sim: SimState, c: CharAgent, rng: () => number) {
   if (c.chore) sim.claims.delete(`${c.chore.tile.x},${c.chore.tile.y}`);
   c.chore = null;
   c.choreDwellMs = 0;
-  c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
+  c.choreMs = choreDelay(c.intent === "rest", rng);
 }

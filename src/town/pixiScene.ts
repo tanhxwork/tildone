@@ -27,7 +27,7 @@ import type { PresenceState } from "../utils/presence";
 import type { Camera } from "./camera";
 import type { DirFrames, TownTextures } from "./assets";
 import type { SimState } from "./sim";
-import { inRect, TILE_PX, type RoomKind, type Tile, type TownWorld } from "./world";
+import { inRect, isStandingSpot, TILE_PX, type RoomKind, type Tile, type TownWorld } from "./world";
 
 export interface TownTheme {
   ground: number;
@@ -89,7 +89,28 @@ const ROOM_FLOOR: Record<RoomKind, { material: "boards" | "tile" | "carpet"; tin
   kitchen: { material: "tile" },
   lounge: { material: "boards", tint: 0xffd9ab },
   bedroom: { material: "carpet" },
+  // Tile again, cooler — a bathroom next to a kitchen should read as the wetter,
+  // bluer of the two rather than as the same room twice.
+  bathroom: { material: "tile", tint: 0xc9dbe6 },
 };
+
+/**
+ * A light an *object* casts while somebody is using it.
+ *
+ * The desk monitors already worked this way (Generative-Agents object state: the
+ * desk carries "in use", so an empty workroom reads as empty rather than as six
+ * machines left running). The television and the stove join them, which is what
+ * makes an evening at home visible from outside the house: a blue flicker in the
+ * lounge means somebody is watching it, and a warm ring in the kitchen means
+ * somebody is cooking.
+ */
+interface ObjectLight {
+  /** The tile a character stands on to use it — how the sim says who, if anyone. */
+  stand: Tile;
+  sprite: Sprite;
+  /** Cool for a screen, warm for a hob. */
+  cool: boolean;
+}
 
 /** A window-glow sprite tagged with the building it belongs to and its world
  *  tile (projected to screen each frame, since it lives at the stage). */
@@ -146,6 +167,12 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   let clouds: { sprite: Sprite; speed: number }[] = [];
   /** Monitor glows, lit per frame from whoever is actually sitting at the desk. */
   let deskLights: DeskLight[] = [];
+  /** Television and hob glows, lit per frame from whoever is standing at them. */
+  let objectLights: ObjectLight[] = [];
+  /** Standard-lamp glows inside houses — lit by the clock like the street lamps,
+   *  so a house at night is warm from within rather than a dark box with a lit
+   *  window in the facade. */
+  let roomLamps: Sprite[] = [];
   /** World width in px — the wrap point for drifting clouds. */
   let worldPxW = 0;
   let propAnim = 0;
@@ -232,6 +259,37 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       s.scale.set(scale);
       s.position.set(f.tile.x * tilePx + tilePx / 2, f.tile.y * tilePx + tilePx);
       g.addChild(s);
+
+      // A standard lamp is always on after dark (setAmbience drives it).
+      if (f.kind === "lamp") {
+        const warm = new Sprite(tex.facade.windowGlow);
+        warm.anchor.set(0.5, 0.5);
+        warm.blendMode = "add";
+        warm.alpha = 0;
+        warm.scale.set(scale * 0.8);
+        warm.position.set(f.tile.x * tilePx + tilePx / 2, f.tile.y * tilePx + tilePx / 2);
+        g.addChild(warm);
+        roomLamps.push(warm);
+      }
+    }
+
+    // Lights that come on only while somebody is at the thing: the television and
+    // the hob. Keyed off the *standing* tile the world already resolved, so the
+    // renderer never has to work out what "using it" means.
+    for (const a of place.affordances) {
+      if (a.kind !== "tv" && a.kind !== "stove") continue;
+      const lit = new Sprite(tex.facade.windowGlow);
+      lit.anchor.set(0.5, 0.5);
+      lit.blendMode = "add";
+      lit.alpha = 0;
+      lit.scale.set(scale * (a.kind === "tv" ? 1 : 0.7));
+      lit.tint = a.kind === "tv" ? 0x9fd0ff : 0xffb066;
+      lit.position.set(
+        a.object.x * tilePx + tilePx / 2,
+        a.object.y * tilePx + tilePx / 2 + 2 * scale,
+      );
+      g.addChild(lit);
+      objectLights.push({ stand: a.tile, sprite: lit, cool: a.kind === "tv" });
     }
 
     // The desk counter, with a monitor lifted onto each workstation, and a warm
@@ -326,6 +384,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     animatedSpots = [];
     clouds = [];
     deskLights = [];
+    objectLights = [];
+    roomLamps = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -465,9 +525,16 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     for (const s of w.spots) {
       const frames = tex.spots[s.kind];
       const prop = new Sprite(frames[0]);
-      prop.anchor.set(0.5, 0.9);
-      prop.scale.set(scale);
-      prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
+      if (isStandingSpot(s.kind)) {
+        // A standing place is worn ground, not an object: drawn flat on its tile,
+        // and below the ground clutter rather than standing up out of it.
+        prop.position.set(s.tile.x * tilePx, s.tile.y * tilePx);
+        prop.scale.set(scale);
+      } else {
+        prop.anchor.set(0.5, 0.9);
+        prop.scale.set(scale);
+        prop.position.set(s.tile.x * tilePx + tilePx / 2, s.tile.y * tilePx + tilePx);
+      }
       buildings.addChild(prop);
       if (frames.length > 1) animatedSpots.push({ sprite: prop, frames });
     }
@@ -622,8 +689,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     for (const c of sim.chars.values()) {
       if (c.seated && c.seat) inUse.add(`${c.seat.x},${c.seat.y}`);
     }
+    // …and the objects somebody is standing at, mid-trip: the television, the hob.
+    // A character walking *to* one does not light it — arriving is what does.
+    const atObject = new Set<string>();
+    for (const c of sim.chars.values()) {
+      if (c.chore && !c.moving) atObject.add(`${c.chore.tile.x},${c.chore.tile.y}`);
+    }
+    // A screen is never a steady lamp: a slow flicker is most of what makes one
+    // read as switched on rather than as a pale rectangle.
+    const flicker = theme.reducedMotion ? 0 : Math.sin(propAnim / 130) * 0.06;
     for (const d of deskLights) {
-      d.sprite.alpha = inUse.has(`${d.seat.x},${d.seat.y}`) ? 0.55 : 0;
+      d.sprite.alpha = inUse.has(`${d.seat.x},${d.seat.y}`) ? 0.55 + flicker : 0;
+    }
+    for (const o of objectLights) {
+      const on = atObject.has(`${o.stand.x},${o.stand.y}`);
+      o.sprite.alpha = on ? (o.cool ? 0.5 + flicker * 2 : 0.45 + flicker) : 0;
     }
 
     // Animate the plaza props — fountain shimmer, campfire flicker, pond ripple
@@ -674,6 +754,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         g.sprite.scale.set(scale * currentCam.zoom);
         g.sprite.alpha = isLive(g.buildingIndex) ? 0.15 + 0.85 * a.glow : 0;
       }
+      // Standard lamps indoors light with the same cycle — a house at night is
+      // warm from within, not a dark box with two lit windows in its facade.
+      for (const l of roomLamps) l.alpha = 0.42 * a.glow;
       // Street lamps light with the cycle (not gated by any office being live).
       for (const l of lampGlows) {
         l.sprite.position.set(
@@ -697,6 +780,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       animatedSpots = [];
       clouds = [];
       deskLights = [];
+      objectLights = [];
+      roomLamps = [];
     },
   };
 }

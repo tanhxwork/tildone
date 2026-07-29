@@ -53,6 +53,14 @@ const FURNITURE_NAME: Record<Furniture["kind"], string> = {
   nightstand: "the nightstand",
   rug: "the rug",
   plant: "a plant",
+  tv: "the television",
+  stove: "the stove",
+  fridge: "the fridge",
+  whiteboard: "the whiteboard",
+  serverrack: "the server rack",
+  shower: "the shower",
+  toilet: "the loo",
+  lamp: "the lamp",
   // Clutter — named as loosely as it is placed. "Someone's mug" rather than "the
   // mug": the point of these is that they belong to whoever lives here.
   mug: "a mug",
@@ -69,6 +77,14 @@ const SPOT_NAME: Record<LeisureSpot["kind"], string> = {
   pond: "the pond",
   campfire: "the campfire",
   garden: "the garden",
+  swing: "the swing",
+  easel: "the easel",
+  // The standing places are named for the thing you stand there to use — the prop
+  // itself is a separate node on the same tile's neighbour, and "a worn patch of
+  // pavement" is not what a character would say it was at.
+  cart: "the coffee cart",
+  stall: "the market stall",
+  board: "the notice board",
 };
 
 const PROP_NAME: Record<TownProp["kind"], string> = {
