@@ -25,6 +25,39 @@ async function emitted(): Promise<string[]> {
   return browser.execute(() => (window as unknown as { __emit?: string[] }).__emit ?? []);
 }
 
+// The bits of the xterm instance the e2e seam exposes on window.__tildoneTerm.
+type TermSeam = {
+  write(data: string): void;
+  select(column: number, row: number, length: number): void;
+  getSelection(): string;
+  clearSelection(): void;
+  buffer: {
+    active: { length: number; getLine(y: number): { translateToString(trim?: boolean): string } | undefined };
+  };
+};
+
+// A line the test owns, so the copy assertion never depends on shell output.
+const MARKER = "TILDONE-COPY-MARKER-195";
+
+// Server-output path: term.write never fires onData, so this is invisible to
+// `emitted()` — it changes the screen without touching the pty pipe, exactly
+// like the shell's own output does.
+async function writeToTerm(data: string): Promise<void> {
+  await browser.execute((d) => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.write(d), data);
+}
+
+// Absolute buffer row (scrollback included) holding MARKER, or -1. Absolute is
+// the coordinate space term.select() takes, so the two indexings agree, and it
+// is stable under later output: appended lines land below, never on this row.
+async function markerRow(): Promise<number> {
+  return browser.execute((m) => {
+    const b = (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.buffer.active;
+    for (let y = b.length - 1; y >= 0; y--)
+      if ((b.getLine(y)?.translateToString(true) ?? "").trim() === m) return y;
+    return -1;
+  }, MARKER);
+}
+
 // Dispatch a ⌘-chord straight at xterm's textarea. Synthetic dispatch (not
 // browser.keys) is deliberate: WebDriver key injection into this webview drops
 // the Meta modifier off Arrow keydowns, so an OS-level ⌘← never reaches the
@@ -139,18 +172,42 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
     expect((await emitted()).length).toBe(beforePassthrough);
 
     // ⌘C copies the current selection verbatim to the clipboard.
-    const selection = await browser.execute(() => {
-      const t = (window as unknown as { __tildoneTerm: { selectAll(): void; getSelection(): string } }).__tildoneTerm;
-      t.selectAll();
-      return t.getSelection();
+    //
+    // The selection is one line we wrote ourselves, not `selectAll()`. The old
+    // shape — selectAll → snapshot → ⌘C → compare — made this assertion a diff
+    // of the entire screen buffer, developer's zsh startup banner included, so
+    // any late shell repaint between the snapshot and the chord failed it on
+    // content the spec has no business depending on (TIL-195). Selecting one
+    // row out of a *larger* buffer is also the stronger assertion: it tells
+    // "copies the selection" apart from "copies everything", which a
+    // whole-buffer selection could not.
+    await writeToTerm(`\r\n${MARKER}\r\n`);
+    await browser.waitUntil(async () => (await markerRow()) >= 0, {
+      timeout: 4000,
+      timeoutMsg: "marker line never reached the screen buffer",
     });
-    expect(selection.length).toBeGreaterThan(0);
+    const row = await markerRow();
+    await browser.execute(
+      (r, len) => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.select(0, r, len),
+      row,
+      MARKER.length,
+    );
+    expect(
+      await browser.execute(() => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.getSelection()),
+    ).toBe(MARKER);
+
+    // Late shell output — the tail of an async startup banner, say — must not
+    // change what ⌘C copies. This is the exact input that broke the old
+    // full-buffer assertion; the selection is anchored to the marker row, so it
+    // rides through. Keeping it here turns yesterday's flake into a covered case.
+    await writeToTerm("\rlate output from the shell\r\n");
+
     expect(await metaChord("c")).toBe(false);
     await browser.waitUntil(
       async () => browser.execute(() => (window as unknown as { __clipOut: string | null }).__clipOut !== null),
       { timeout: 4000, timeoutMsg: "⌘C did not write to the clipboard" },
     );
-    expect(await browser.execute(() => (window as unknown as { __clipOut: string }).__clipOut)).toBe(selection);
+    expect(await browser.execute(() => (window as unknown as { __clipOut: string }).__clipOut)).toBe(MARKER);
     await browser.execute(() =>
       (window as unknown as { __tildoneTerm: { clearSelection(): void } }).__tildoneTerm.clearSelection(),
     );
