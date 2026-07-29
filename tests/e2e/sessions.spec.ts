@@ -128,23 +128,61 @@ describe("hosted sessions — shell escape hatch", () => {
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/session-row-rest.png");
 
-    // Reveal, read deterministically: focus, kill the transition inline so the
-    // computed value is the target (not a mid-animation frame), and read it —
-    // all in one synchronous step so the unbound shell's countdown re-renders
-    // can't blur the focus between the focus() and the read.
-    const opacityOnFocus = await browser.execute(() => {
+    // Now the reveal. This used to focus the button and read :focus-within back,
+    // which is flaky for a reason no retry can fix: WebKit stops matching
+    // :focus-within once the document loses OS focus, so whenever anything on
+    // the machine steals the window the reveal becomes unobservable for the
+    // whole run — the failures are a full 5s of refused readings, not near
+    // misses. Raising the window from inside is not an option either
+    // (core:window:allow-set-focus is not in the app's capabilities, and
+    // window.focus() hands focus back to the document so el.focus() never
+    // sticks). So assert the two halves that do not depend on who is frontmost:
+    //
+    //   1. the rule that performs the reveal exists and targets the row's
+    //      focus-within (read out of the CSSOM, always true or always false),
+    //   2. and, when the document does happen to have focus, the live
+    //      focus→computed-opacity path really produces it.
+    //
+    // Together those cover the same wiring as before without depending on the
+    // machine's window manager (TIL-170).
+    const revealRule = await browser.execute(() => {
+      for (const sheet of [...document.styleSheets]) {
+        let rules: CSSRuleList;
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue; // cross-origin sheet, not ours
+        }
+        for (const rule of [...rules]) {
+          const r = rule as CSSStyleRule;
+          if (!r.selectorText || !r.style) continue;
+          if (!r.selectorText.includes(".sess-row:focus-within .sess-close")) continue;
+          return { opacity: r.style.opacity, pointerEvents: r.style.pointerEvents };
+        }
+      }
+      return null;
+    });
+    expect(revealRule).not.toBeNull();
+    expect(revealRule!.opacity).toBe("1");
+    expect(revealRule!.pointerEvents).toBe("auto");
+
+    // The live half, best-effort: only meaningful while this window is the
+    // active one, and skipped rather than failed when it is not.
+    const live = await browser.execute(() => {
+      if (!document.hasFocus()) return null;
       const el = document.querySelector(".sess-close") as HTMLElement | null;
       if (!el) return null;
       el.focus();
       const focusWithin = el.closest(".sess-row")?.matches(":focus-within") ?? false;
-      el.style.transition = "none";
+      el.style.transition = "none"; // read the target, not a mid-animation frame
       const op = getComputedStyle(el).opacity;
       el.style.transition = "";
       return { op, focusWithin };
     });
-    expect(opacityOnFocus).not.toBeNull();
-    expect(opacityOnFocus!.focusWithin).toBe(true);
-    expect(opacityOnFocus!.op).toBe("1");
+    if (live) {
+      expect(live.focusWithin).toBe(true);
+      expect(live.op).toBe("1");
+    }
     await browser.saveScreenshot("./tests/e2e/artifacts/session-row-reveal.png");
 
     // Triggering it kills the live shell (host_kill) and the row disappears.
