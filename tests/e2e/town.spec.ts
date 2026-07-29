@@ -235,4 +235,117 @@ describe("town view", () => {
     const wSettled = await buildingWidth(60);
     expect(wSettled).toBeGreaterThan(wEarly);
   });
+
+  // A live presence TRANSITION, which the steady-state test above never exercised:
+  // it only ever asserted one frozen data-state. The reconcile path that clears a
+  // character's path when its intent changes had no coverage at all (TIL-176).
+  //
+  // Live state needs a real heartbeat, and /heartbeat rejects any request carrying
+  // an Origin header — precisely so a web page cannot fake "working". The webview
+  // always sends one; Node does not, so the beat goes from the spec process
+  // straight at the app's agent server, exactly the way the shell hook does.
+  it("walks a character to its desk when it starts working, and out again when it goes quiet", async () => {
+    const pid = await selectId("SELECT id FROM projects WHERE name = 'Townproj'");
+    await exec(
+      "INSERT INTO tasks (project_id, title, status, position, priority, notes, created_at) VALUES ($1,$2,'doing',1,0,'',$3)",
+      [pid, "Flip task", "2026-01-01T00:00:00Z"],
+    );
+    const tid = await selectId("SELECT id FROM tasks WHERE title = 'Flip task'");
+
+    // Bind a session to the task — the durable half of presence; the beat below
+    // is the volatile half and finds its card through this row.
+    const session = "e2e-town-flip-0000-0000-000000000001";
+    await exec("INSERT INTO agent_claims (session_id, task_id, agent_name) VALUES ($1,$2,$3)", [
+      session,
+      tid,
+      "claude-code",
+    ]);
+
+    const endpoint = await invoke<string>("agent_server_start");
+    const beat = async (state: "working" | "idle") => {
+      const res = await fetch(new URL("/heartbeat", endpoint).toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: session, state }),
+      });
+      expect(res.status).toBe(200);
+      await nudge(); // agent-db-changed → reload → loadPresence
+    };
+
+    const step = (n: number) =>
+      browser.execute((frames) => {
+        const s = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+        for (let i = 0; i < frames; i++) s?.(16);
+      }, n);
+
+    /** Is the character's overlay node inside its building's overlay box? */
+    const atHome = (taskId: number, building: number) =>
+      browser.execute(
+        (t, b) => {
+          const c = document.querySelector(`[data-testid="town-char-${t}"]`);
+          const h = document.querySelector(`[data-testid="town-building-${b}"]`);
+          if (!c || !h) return null;
+          const cr = c.getBoundingClientRect();
+          const hr = h.getBoundingClientRect();
+          const x = cr.left + cr.width / 2;
+          const y = cr.top + cr.height / 2;
+          return x >= hr.left && x <= hr.right && y >= hr.top && y <= hr.bottom;
+        },
+        taskId,
+        building,
+      );
+
+    // --- working: the character heads home and settles at its desk. ---
+    await beat("working");
+    const char = $(`[data-testid="town-char-${tid}"]`);
+    await char.waitForExist();
+    await expect(char).toHaveAttribute("data-state", "working");
+    const building = Number(await char.getAttribute("data-building"));
+    await step(900); // long enough to walk the yard, the gate and the house
+    expect(await atHome(tid, building)).toBe(true);
+
+    // --- quiet: the same character leaves and wanders. Same node, no respawn. ---
+    await beat("idle");
+    await expect(char).toHaveAttribute("data-state", "quiet");
+    await step(1200);
+    expect(await atHome(tid, building)).toBe(false);
+    await expect(char).toBeExisting(); // it walked out; it did not vanish and return
+  });
+
+  // Restoring a hidden window used to call createSim(), which threw the whole
+  // population away — the next step then re-spawned everyone at their doors and
+  // the town visibly walked home again. The spec asks for a reconcile that snaps
+  // everyone to a resting position, so nobody may end up back on a door (TIL-190).
+  it("settles the town in place on a visibility resume rather than re-spawning it", async () => {
+    const step = (n: number) =>
+      browser.execute((frames) => {
+        const s = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+        for (let i = 0; i < frames; i++) s?.(16);
+      }, n);
+    const nodeIds = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll(".town-char")]
+          .map((n) => (n as HTMLElement).dataset.testid ?? "")
+          .sort(),
+      );
+
+    await step(400);
+    const before = await nodeIds();
+    expect(before.length).toBeGreaterThan(0);
+
+    // The handler is keyed on visibilitychange, and the document is visible here,
+    // so firing the event runs exactly the resume branch.
+    await browser.execute(() => document.dispatchEvent(new Event("visibilitychange")));
+    await step(1);
+
+    // Same population, same nodes — a createSim() would have emptied the sim and
+    // left the overlay without a single positioned character on the next frame.
+    expect(await nodeIds()).toEqual(before);
+    const positioned = await browser.execute(() =>
+      [...document.querySelectorAll(".town-char")].every((n) =>
+        /^-?\d/.test((n as HTMLElement).style.top ?? ""),
+      ),
+    );
+    expect(positioned).toBe(true);
+  });
 });
