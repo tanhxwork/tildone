@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { SevereServiceError } from "webdriverio";
 import { resetAppState } from "./tests/e2e/support/reset.js";
 
 // Which worktree is this? scripts/worktree-slug.sh is the single source of
@@ -101,31 +102,96 @@ const WEBDRIVER_PORT = resolveWebdriverPort();
 // its direct-eval channel reads only TAURI_WEBDRIVER_PORT (default 4445).
 process.env.TAURI_WEBDRIVER_PORT = String(WEBDRIVER_PORT);
 
+/** The index.html scripts/e2e-build.sh copied beside the binary it embedded. */
+const EMBEDDED_INDEX = join("./src-tauri/target-e2e", ".e2e-index.html");
+
 /**
- * The hashed entry bundle this worktree's `dist/` currently points at.
+ * The hashed entry bundle the binary under test was built with.
+ *
+ * Read from the copy e2e-build.sh left beside the binary, NOT from `dist/`.
+ * `dist/` is not a record of what the binary embeds: e2e-build.sh writes it
+ * with `VITE_E2E=1`, and a later plain `bun run build` rewrites it with a
+ * different hash for identical source — so comparing against it accused a
+ * perfectly good binary of being stale whenever the VERIFY ladder's own
+ * "build clean, then run e2e" order was followed (TIL-196).
  *
  * Throws rather than returning null: a guard that quietly disables itself when
- * it cannot read dist/index.html is worse than no guard, because the run still
+ * it cannot read its reference is worse than no guard, because the run still
  * reports green and nobody learns the staleness check never ran.
  */
 function expectedBundle(): string {
   let html: string;
   try {
-    html = readFileSync("./dist/index.html", "utf8");
+    html = readFileSync(EMBEDDED_INDEX, "utf8");
   } catch (e) {
     throw new Error(
-      `Cannot read ./dist/index.html, so the stale-frontend check cannot run: ${String(e)}. ` +
-        `Run \`bun run e2e:build\` (which builds dist/ and the binary together).`,
+      `Cannot read ${EMBEDDED_INDEX}, so the stale-frontend check cannot run: ${String(e)}. ` +
+        `Run \`bun run e2e:build\` (which builds the binary and records what it embedded).`,
     );
   }
   const src = /<script[^>]+src="([^"]+)"/.exec(html)?.[1];
   if (!src) {
     throw new Error(
-      "No <script src> found in ./dist/index.html — the stale-frontend check cannot run. " +
+      `No <script src> found in ${EMBEDDED_INDEX} — the stale-frontend check cannot run. ` +
         "If the bundler's output shape changed, update this matcher rather than skipping it.",
     );
   }
   return src.split("/").pop() as string;
+}
+
+/**
+ * Refuse to run when the binary predates the source it is supposed to contain.
+ *
+ * This is the half of staleness that no runtime check can see. `expectedBundle`
+ * proves the app serves what the *binary* embedded; it cannot tell you the
+ * binary was built before you edited `TownView.tsx`. Comparing against `dist/`
+ * used to catch that case by accident — dist would have been rebuilt while the
+ * binary was not — but only when something happened to rebuild dist, and at the
+ * cost of the false positive in TIL-196. Asking the question directly is both
+ * stricter and quieter.
+ *
+ * Runs in onPrepare, before any app launches, so a stale build aborts the run
+ * with one message instead of surfacing as spec failures.
+ *
+ * Only what is compiled *into* the binary counts: `src/`, `src-tauri/src/` and
+ * `index.html`. Specs are read from disk at run time, so editing `tests/` must
+ * not demand a rebuild.
+ */
+function newestSourceMtime(): { path: string; mtimeMs: number } {
+  let newest = { path: "", mtimeMs: 0 };
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else {
+        const { mtimeMs } = statSync(full);
+        if (mtimeMs > newest.mtimeMs) newest = { path: full, mtimeMs };
+      }
+    }
+  };
+  walk("./src");
+  walk("./src-tauri/src");
+  const index = statSync("./index.html");
+  if (index.mtimeMs > newest.mtimeMs) newest = { path: "./index.html", mtimeMs: index.mtimeMs };
+  return newest;
+}
+
+function assertBinaryNotStale(): void {
+  let builtAt: number;
+  try {
+    builtAt = statSync(EMBEDDED_INDEX).mtimeMs;
+  } catch {
+    throw new SevereServiceError(
+      `No ${EMBEDDED_INDEX} — this worktree has never built its e2e binary. Run \`bun run e2e:build\`.`,
+    );
+  }
+  const newest = newestSourceMtime();
+  if (newest.mtimeMs > builtAt) {
+    throw new SevereServiceError(
+      `${newest.path} changed after the e2e binary was built, so the run would ` +
+        `exercise code that is not in your diff. Run \`bun run e2e:build\`.`,
+    );
+  }
 }
 
 /**
@@ -182,7 +248,7 @@ function takeRunLock(): void {
       rmSync(LOCK, { force: true });
     }
   }
-  throw new Error(`Could not take the e2e run lock at ${LOCK}`);
+  throw new SevereServiceError(`Could not take the e2e run lock at ${LOCK}`);
 }
 
 function releaseRunLock(): void {
@@ -213,6 +279,7 @@ export const config: WebdriverIO.Config = {
   // delete the board a parallel session's run is in the middle of using —
   // which is exactly what happened during the TIL-136 verify (TIL-140).
   onPrepare: () => {
+    assertBinaryNotStale();
     takeRunLock();
     console.log(`[e2e] ${IDENTIFIER} · webdriver port ${WEBDRIVER_PORT}`);
     rmSync(DATA_DIR, { recursive: true, force: true });
@@ -246,20 +313,6 @@ export const config: WebdriverIO.Config = {
       );
     }
 
-    const expected = expectedBundle();
-    const loaded = await browser.execute(
-      () => document.querySelector("script[src]")?.getAttribute("src") ?? "",
-    );
-    const loadedFile = String(loaded).split("/").pop();
-    if (loadedFile !== expected) {
-      throw new Error(
-        `The running app is serving ${loadedFile}, but this worktree's dist/ ` +
-          `points at ${expected}. The binary embeds a stale frontend — rerun ` +
-          `\`bun run e2e:build\`. (Every assertion after this would have been ` +
-          `about code that is not in your diff.)`,
-      );
-    }
-
     // Hand this spec file an empty board and a known screen. This hook runs
     // once per spec file (each gets its own worker session and its own app
     // launch), which is exactly the granularity the leak has: the data dir is
@@ -270,7 +323,30 @@ export const config: WebdriverIO.Config = {
     // proof that this is load-bearing: seed a stray human-verify done card in a
     // spec file that sorts earlier, and humanVerifyGlow fails on "Verify · 1"
     // (it counts 2) without this line, passes with it.
+    //
+    // Ordered ABOVE the stale-frontend check and BELOW the identity check, and
+    // both halves of that matter. Below, because wiping the board of an app
+    // that turned out to belong to another worktree would destroy a parallel
+    // run's state. Above, because when the frontend check does fail it must be
+    // the *only* thing that fails: with the reset stranded behind it, a stale
+    // bundle silently skipped isolation too, and the run reported four
+    // unrelated specs failing on missing tasks while nine passed — which reads
+    // as state pollution and sends you hunting the wrong bug (TIL-196).
     await resetAppState();
+
+    const expected = expectedBundle();
+    const loaded = await browser.execute(
+      () => document.querySelector("script[src]")?.getAttribute("src") ?? "",
+    );
+    const loadedFile = String(loaded).split("/").pop();
+    if (loadedFile !== expected) {
+      throw new Error(
+        `The running app is serving ${loadedFile}, but the binary this worktree ` +
+          `built embedded ${expected}. Rerun \`bun run e2e:build\`. (Every ` +
+          `assertion after this would have been about code that is not in your ` +
+          `diff.)`,
+      );
+    }
   },
 
   logLevel: "warn",

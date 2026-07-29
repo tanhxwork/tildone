@@ -42,3 +42,14 @@ touch src-tauri/src/lib.rs
 
 echo "tildone e2e [$slug]: identifier com.tildone.e2e.$slug, target $CARGO_TARGET_DIR"
 VITE_E2E=1 ./node_modules/.bin/tauri build --debug --no-bundle --config "$overlay" "$@"
+
+# Record the index.html that was just embedded, beside the binary it went into.
+#
+# wdio.conf.ts's stale-frontend check compares what the running app serves
+# against this copy rather than against dist/, because dist/ does not stay put:
+# this build writes it with VITE_E2E=1, and a later plain `bun run build`
+# rewrites it with a different hash for identical source. The VERIFY ladder says
+# "build clean, then run e2e", so that ordering is normal — and it used to make
+# the guard throw about a binary that was perfectly fine (TIL-196). The copy
+# belongs to the binary and changes only when the binary does.
+cp dist/index.html "$CARGO_TARGET_DIR/.e2e-index.html"
