@@ -490,6 +490,11 @@ export function TownView() {
         node.dataset.place = place.id;
         node.dataset.where = describePlace(placesRef.current, tile);
       }
+      // Mid-chat is state the canvas shows as a bubble; mirror it onto the
+      // overlay so it is inspectable (and assertable) without reading pixels.
+      const chatting = c.chatMs > 0 ? "true" : "false";
+      if (node.dataset.chatting !== chatting) node.dataset.chatting = chatting;
+
       const where = node.dataset.where;
       const full = where ? `${node.dataset.base ?? ""} · ${where}` : (node.dataset.base ?? "");
       if (node.title !== full) {

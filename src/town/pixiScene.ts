@@ -58,6 +58,8 @@ interface CharView {
   container: Container;
   sprite: Sprite;
   ring: Graphics;
+  /** The "…" bubble shown while this character is mid-chat. */
+  bubble: Graphics;
   anim: number;
   agentKey: string;
 }
@@ -467,9 +469,26 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       .fill({ color: 0x000000, alpha: 0.22 });
     const ring = new Graphics().circle(0, -6, 13).stroke({ width: 2, color: 0xe03131, alpha: 0.9 });
     ring.visible = false;
-    container.addChild(shadow, ring, sprite);
+    // Chat bubble: a small rounded plate with three dots and a tail, floated
+    // over the head while two idle characters stop to talk. Deliberately
+    // wordless — dialogue is an explicit spec non-goal; this only has to say
+    // "these two are talking" at a glance, at this sprite scale.
+    const bubble = new Graphics();
+    // Sits clear of the head: the sprite is a 16px frame scaled by `scale`,
+    // anchored at 0.9, so its top edge is ~-29 in this container's space.
+    bubble
+      .roundRect(-9, -46, 18, 11, 4)
+      .fill({ color: 0xffffff, alpha: 0.94 })
+      .stroke({ width: 1, color: 0x000000, alpha: 0.25 })
+      .poly([-3, -36, 2, -36, -1, -31])
+      .fill({ color: 0xffffff, alpha: 0.94 });
+    for (const dx of [-4, 0, 4]) {
+      bubble.circle(dx, -40.5, 1.3).fill({ color: 0x4a4a4a, alpha: 0.85 });
+    }
+    bubble.visible = false;
+    container.addChild(shadow, ring, sprite, bubble);
     charLayer.addChild(container);
-    return { container, sprite, ring, anim: 0, agentKey };
+    return { container, sprite, ring, bubble, anim: 0, agentKey };
   }
 
   function syncChars(
@@ -501,7 +520,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       // Lingering at a leisure spot, or seated heads-down at a desk (both not
       // walking) → a gentle activity loop, not a frozen frame. Seated work reads
       // as typing: a slow frame cycle + a tiny bob.
-      const dwelling = (c.spotId !== null || c.seated) && !c.moving;
+      // Chatting counts: a pair frozen on frame 0 reads as two sprites stuck,
+      // not as two people talking.
+      const dwelling = (c.spotId !== null || c.seated || c.chatMs > 0) && !c.moving;
       if (c.moving && !theme.reducedMotion) {
         v.anim += dtMs;
         v.sprite.texture = seq[Math.floor(v.anim / FRAME_MS) % seq.length];
@@ -520,6 +541,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       v.container.zIndex = c.pos.y;
       const st = style?.state;
       v.ring.visible = st === "blocked";
+      v.bubble.visible = c.chatMs > 0;
       if (c.intent === "off") {
         v.sprite.alpha = Math.max(0.1, v.sprite.alpha - dtMs / 1500);
       } else {

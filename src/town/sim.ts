@@ -39,6 +39,13 @@ const SPOT_CHANCE = 0.5;
 const DWELL_MS = 2600;
 /** dt is clamped so a long pause/resume can't teleport anyone across the map. */
 const MAX_DT_MS = 100;
+/** How close (tiles) two idle characters must pass to stop and chat. */
+const CHAT_RANGE = 1.6;
+/** How long (ms) a chat lasts. Bounded: nobody is stuck talking. */
+const CHAT_MS = 2200;
+/** How long (ms) before a character will stop to chat again — without it, two
+ *  wanderers who stay near each other chat on a loop and never wander. */
+const CHAT_COOLDOWN_MS = 6000;
 
 export type Facing = "up" | "down" | "left" | "right";
 
@@ -75,6 +82,15 @@ export interface CharAgent {
   /** True once the character is sitting on its `seat` — drives the desk "typing"
    *  animation and tells the renderer it is heads-down at the monitor. */
   seated: boolean;
+  /** Remaining time (ms) of a chat with a passer-by; 0 when not chatting. While
+   *  it runs the character stands still, faces its partner, and the renderer
+   *  shows a bubble over it. Cosmetic — there is no dialogue (spec non-goal). */
+  chatMs: number;
+  /** The character on the other side of that chat, or null. */
+  chatWith: number | null;
+  /** Time (ms) before this character will stop to chat again, so two that stay
+   *  near each other do not chat on a loop instead of wandering. */
+  chatCooldownMs: number;
 }
 
 export interface SimState {
@@ -114,6 +130,8 @@ function snapToRest(c: CharAgent, world: TownWorld): void {
   c.seated = c.intent === "home" && c.seat !== null;
   c.spotId = null;
   c.dwellMs = 0;
+  c.chatMs = 0;
+  c.chatWith = null;
 }
 
 /** Settle the sim in place: everyone at a resting tile, nothing walking, no
@@ -128,6 +146,61 @@ export function settleSim(sim: SimState, world: TownWorld): SimState {
   sim.occupied.clear();
   for (const c of sim.chars.values()) snapToRest(c, world);
   return sim;
+}
+
+/** End a chat, and start this character's cooldown. */
+function endChat(c: CharAgent) {
+  c.chatMs = 0;
+  c.chatWith = null;
+  c.chatCooldownMs = CHAT_COOLDOWN_MS;
+}
+
+/**
+ * Light social: two idle characters who pass close stop, face each other and
+ * chat briefly (spec v2c). Cosmetic — the bubble carries no dialogue, which is
+ * an explicit non-goal; what it buys is that the town looks inhabited rather
+ * than like independent agents on independent errands.
+ *
+ * O(n²) over the roster, which the spec calls trivial per frame and is: this
+ * runs over at most a couple of dozen characters, so no spatial index.
+ */
+function stepChats(sim: SimState, dt: number) {
+  for (const c of sim.chars.values()) {
+    if (c.chatMs > 0) {
+      c.chatMs -= dt;
+      if (c.chatMs <= 0) endChat(c);
+    } else if (c.chatCooldownMs > 0) {
+      c.chatCooldownMs = Math.max(0, c.chatCooldownMs - dt);
+    }
+  }
+
+  // Only wanderers, and only ones not already busy: a character walking to or
+  // sitting at a leisure spot is doing something, and a worker is indoors.
+  const free = [...sim.chars.values()].filter(
+    (c) => c.intent === "wander" && c.chatMs === 0 && c.chatCooldownMs === 0 && c.spotId === null,
+  );
+  for (let i = 0; i < free.length; i++) {
+    const a = free[i];
+    if (a.chatMs > 0) continue; // paired earlier in this same pass
+    for (let j = i + 1; j < free.length; j++) {
+      const b = free[j];
+      if (b.chatMs > 0) continue;
+      const dx = b.pos.x - a.pos.x;
+      const dy = b.pos.y - a.pos.y;
+      if (Math.hypot(dx, dy) > CHAT_RANGE) continue;
+      for (const c of [a, b]) {
+        c.chatMs = CHAT_MS;
+        c.path = []; // stop where they are; they re-plan when the chat ends
+        c.moving = false;
+        c.wanderPauseMs = 0;
+      }
+      a.chatWith = b.taskId;
+      b.chatWith = a.taskId;
+      a.facing = facingOf(dx, dy, a.facing);
+      b.facing = facingOf(-dx, -dy, b.facing);
+      break; // one partner each
+    }
+  }
 }
 
 /** Release any leisure spot this character holds. */
@@ -400,6 +473,8 @@ export function stepTownSim(
         c.path = [];
         c.wanderPauseMs = 0;
         releaseSpot(sim, c);
+        // Work does not wait on small talk: an intent change ends the chat.
+        if (c.chatMs > 0) endChat(c);
       }
       c.buildingIndex = r.buildingIndex;
       c.intent = newIntent;
@@ -421,6 +496,9 @@ export function stepTownSim(
       seat: null,
       restTile: null,
       seated: false,
+      chatMs: 0,
+      chatWith: null,
+      chatCooldownMs: 0,
     });
   }
 
@@ -457,8 +535,19 @@ export function stepTownSim(
     }
   }
 
+  // --- Light social: idle passers-by stop for a moment. Before the resolve
+  // loop, so a chatting character is already standing still when it runs. ---
+  stepChats(sim, dt);
+
   // --- Resolve intent → path, then integrate movement. ---
   for (const [id, c] of sim.chars) {
+    // Mid-chat: stand still and keep facing the other one. Leaving (`off`) is
+    // the exception — a despawning character must not be held up by a chat.
+    if (c.chatMs > 0 && c.intent !== "off") {
+      c.moving = false;
+      continue;
+    }
+
     const here = round(c.pos);
 
     // Any non-wander intent gives up a held spot (resumed work, blocked, off).

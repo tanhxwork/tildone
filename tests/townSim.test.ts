@@ -408,6 +408,101 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
   });
 });
 
+// Light social (spec v2c): idle characters who pass close stop, face each
+// other and chat briefly. Cosmetic and bounded — the point is that the town
+// looks inhabited, so the properties worth pinning are that it happens, that
+// it ENDS, and that it never holds up real work.
+describe("light social — chatting", () => {
+  /** Run until the predicate holds, or give up after `n` steps. */
+  function runUntil(
+    sim: SimState,
+    r: RosterChar[],
+    world: TownWorld,
+    n: number,
+    rng: () => number,
+    done: (s: SimState) => boolean,
+  ): boolean {
+    for (let i = 0; i < n; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      if (done(sim)) return true;
+    }
+    return false;
+  }
+  const chatting = (s: SimState) => [...s.chars.values()].filter((c) => c.chatMs > 0);
+
+  it("pairs two idle characters that pass close, facing each other", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [1, 2, 3, 4].map((id) => roster(id, "quiet", true, id % 2));
+    const met = runUntil(sim, r, world, 4000, mulberry32(21), (s) => chatting(s).length >= 2);
+    expect(met).toBe(true);
+
+    const pair = chatting(sim);
+    expect(pair.length % 2).toBe(0); // nobody chats alone
+    for (const c of pair) {
+      const other = sim.chars.get(c.chatWith!)!;
+      expect(other).toBeDefined();
+      expect(other.chatWith).toBe(c.taskId); // the link points both ways
+      expect(c.moving).toBe(false); // they stopped
+      expect(Math.hypot(other.pos.x - c.pos.x, other.pos.y - c.pos.y)).toBeLessThanOrEqual(1.6);
+    }
+  });
+
+  it("ends the chat and lets them wander on", () => {
+    const world = world2();
+    const sim = createSim();
+    const r = [1, 2, 3, 4].map((id) => roster(id, "quiet", true, id % 2));
+    expect(runUntil(sim, r, world, 4000, mulberry32(22), (s) => chatting(s).length >= 2)).toBe(true);
+
+    // A chat is bounded: well under 4s of sim time everyone is free again.
+    const freed = runUntil(sim, r, world, 250, mulberry32(23), (s) => chatting(s).length === 0);
+    expect(freed).toBe(true);
+    for (const c of sim.chars.values()) expect(c.chatWith).toBeNull();
+  });
+
+  it("never chats while working — only idle characters stop", () => {
+    const world = world2();
+    const sim = createSim();
+    // Two workers in the same building walk the same route to adjacent desks,
+    // so they pass well within chat range.
+    const r = [roster(1, "working", true, 0), roster(2, "working", true, 0)];
+    run(sim, r, world, 2000, mulberry32(24));
+    for (const c of sim.chars.values()) expect(c.chatMs).toBe(0);
+  });
+
+  it("drops the chat the moment a character is needed at its desk", () => {
+    const world = world2();
+    const sim = createSim();
+    const idle = [1, 2, 3, 4].map((id) => roster(id, "quiet", true, id % 2));
+    expect(runUntil(sim, idle, world, 4000, mulberry32(25), (s) => chatting(s).length >= 2)).toBe(
+      true,
+    );
+    const talker = chatting(sim)[0].taskId;
+
+    // That agent starts working: the intent change must end the chat rather
+    // than leave it standing in the street for the rest of the bubble.
+    const back = idle.map((r) =>
+      r.taskId === talker ? roster(r.taskId, "working", true, r.buildingIndex) : r,
+    );
+    stepTownSim(sim, back, 16, world, mulberry32(26));
+    expect(sim.chars.get(talker)!.chatMs).toBe(0);
+    expect(sim.chars.get(talker)!.chatWith).toBeNull();
+  });
+
+  it("still gets everyone home afterwards — a chat delays, it does not strand", () => {
+    const world = world2();
+    const sim = createSim();
+    const idle = [1, 2].map((id) => roster(id, "quiet", true, 0));
+    run(sim, idle, world, 2000, mulberry32(27));
+    const working = [1, 2].map((id) => roster(id, "working", true, 0));
+    run(sim, working, world, 2000, mulberry32(28));
+    for (const c of sim.chars.values()) {
+      expect(c.seated).toBe(true);
+      expect(c.chatMs).toBe(0);
+    }
+  });
+});
+
 // What "becoming visible again" runs (spec: reconcile against the roster and
 // snap everyone to a valid resting position, then resume). The bug it replaces
 // was calling createSim(), which threw the population away and let the next

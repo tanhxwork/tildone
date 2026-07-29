@@ -311,6 +311,13 @@ describe("town view", () => {
     expect(where).toContain("'s house");
     expect(await char.getAttribute("aria-label")).toContain(where);
 
+    // Chat state is mirrored from the sim onto the overlay every frame. Only the
+    // wiring is asserted here — that it is published, and that a working
+    // character is never mid-chat. WHETHER two idle characters meet is
+    // stochastic, so its coverage is the seeded townSim cases; an e2e that
+    // waited for a random encounter would just be a flake.
+    expect(await char.getAttribute("data-chatting")).toBe("false");
+
     // --- quiet: the same character leaves and wanders. Same node, no respawn. ---
     await beat("idle");
     await expect(char).toHaveAttribute("data-state", "quiet");
