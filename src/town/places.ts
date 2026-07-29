@@ -53,6 +53,15 @@ const FURNITURE_NAME: Record<Furniture["kind"], string> = {
   nightstand: "the nightstand",
   rug: "the rug",
   plant: "a plant",
+  // Clutter — named as loosely as it is placed. "Someone's mug" rather than "the
+  // mug": the point of these is that they belong to whoever lives here.
+  mug: "a mug",
+  papers: "a pile of papers",
+  laundry: "the laundry basket",
+  guitar: "a guitar",
+  boxes: "some boxes",
+  catbed: "the cat bed",
+  bookstack: "a stack of books",
 };
 
 const SPOT_NAME: Record<LeisureSpot["kind"], string> = {

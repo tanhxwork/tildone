@@ -360,9 +360,12 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
       roster(3, "working", true, 0),
       roster(4, "blocked", true, 0),
     ];
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 450; i++) {
       stepTownSim(sim, r, 16, world, rng);
-      if (i < 150) continue; // let everyone reach their settled position first
+      // Let everyone reach their settled position first. The window tracks how
+      // deep the house is: the back seat is now behind the front seat off a
+      // hall, so the last walker settles at step ~169 rather than ~150.
+      if (i < 220) continue;
       const pos = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
       expect(new Set(pos).size).toBe(pos.length); // no pile-up once settled
     }

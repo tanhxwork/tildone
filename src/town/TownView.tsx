@@ -21,7 +21,7 @@ import { agentIdentity } from "../agents";
 import { timeAgo } from "../utils/dates";
 import { buildWorld, TILE_PX, type TownWorld } from "./world";
 import { buildPlaces, describePlace, placeAt } from "./places";
-import { createSim, settleSim, stepTownSim, type RosterChar } from "./sim";
+import { createSim, settleSim, stepTownSim, type Activity, type RosterChar } from "./sim";
 import { charKeyForAgent, createTownScene, type CharStyle, type TownTheme } from "./pixiScene";
 import { loadTownTextures, type TownTextures } from "./assets";
 import {
@@ -76,6 +76,27 @@ interface TownChar extends RosterChar {
   lastLog: string | null;
   at: string;
 }
+
+/** The activity badge, in words, for the hover tooltip. The user's decision was
+ *  a glyph in the world and the name on hover (2026-07-29) — a label floating
+ *  over every head reads as a status board rather than a town. */
+const ACTIVITY_PHRASE: Record<Activity, string> = {
+  typing: "at the desk",
+  building: "building",
+  testing: "running tests",
+  reading: "reading",
+  writing: "writing",
+  waiting: "waiting",
+  coffee: "making coffee",
+  washing: "washing up",
+  eating: "eating",
+  resting: "on the sofa",
+  sleeping: "asleep",
+  walking: "walking",
+  chatting: "talking",
+  stuck: "stuck",
+  leaving: "leaving",
+};
 
 function charsFromModel(model: ReturnType<typeof townModel>): TownChar[] {
   const out: TownChar[] = [];
@@ -249,11 +270,17 @@ export function TownView() {
           const h = hostRef.current;
           if (!h) return;
           const theme = resolveTheme(h);
+          // The day/night phase is resolved before the sim runs, not after: the
+          // renderer needs it for the tint and the sim needs it to decide who is
+          // in bed, and they have to be the same phase for the same frame.
+          const now = new Date();
+          const amb = dayNightPhase(now.getHours() + now.getMinutes() / 60);
           accRef.current += dtMs;
           let steps = 0;
           while (accRef.current >= SIM_STEP_MS && steps < MAX_SIM_STEPS) {
             stepTownSim(simRef.current, rosterRef.current, SIM_STEP_MS, worldRef.current, Math.random, {
               reducedMotion: theme.reducedMotion,
+              night: amb.night,
             });
             accRef.current -= SIM_STEP_MS;
             steps++;
@@ -295,9 +322,7 @@ export function TownView() {
           scene.setCamera(camRef.current);
           scene.syncChars(simRef.current, styleRef.current, dtMs, theme);
 
-          // Day/night from the wall clock; lit windows for live offices.
-          const now = new Date();
-          const amb = dayNightPhase(now.getHours() + now.getMinutes() / 60);
+          // Lit windows for live offices, over the phase resolved above.
           scene.setAmbience(amb, (i) => liveBuildingsRef.current.has(i));
 
           positionOverlay();
@@ -494,9 +519,15 @@ export function TownView() {
       // overlay so it is inspectable (and assertable) without reading pixels.
       const chatting = c.chatMs > 0 ? "true" : "false";
       if (node.dataset.chatting !== chatting) node.dataset.chatting = chatting;
+      // Likewise the activity: the canvas draws it as a badge, and the same
+      // value lands here so it is readable in words on hover and assertable in
+      // a spec without reading pixels.
+      if (node.dataset.activity !== c.activity) node.dataset.activity = c.activity;
 
       const where = node.dataset.where;
-      const full = where ? `${node.dataset.base ?? ""} · ${where}` : (node.dataset.base ?? "");
+      const doing = ACTIVITY_PHRASE[c.activity];
+      const base = `${node.dataset.base ?? ""} · ${doing}`;
+      const full = where ? `${base} · ${where}` : base;
       if (node.title !== full) {
         node.title = full;
         node.setAttribute("aria-label", full);

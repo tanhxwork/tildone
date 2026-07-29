@@ -8,11 +8,34 @@
 // ticker calls it each frame; a store reload only feeds it a fresh roster.
 //
 // Behaviour spine (a re-reading of presence — no new agent data):
-//   working                 → walks inside and sits at its own desk (heads-down)
-//   quiet & live (idle)     → walks out and gathers at the central plaza
-//   quiet & not live (rest) → sits at its desk (no live heartbeat to wander)
+//   working                 → walks inside and works at its own desk
+//   quiet & live, by day    → walks out and gathers at the central plaza
+//   quiet & live, at night  → goes home to bed
+//   quiet & NOT live        → goes home to the sofa (or to bed, at night)
 //   blocked                 → paces just outside its own building
 //   roster drops it (ended) → walks off to the world edge and despawns
+//
+// Working and quiet-not-live used to be the same picture: both resolved to the
+// same intent, the same seat and the same animation, so an agent grinding for 25
+// minutes and one whose session died an hour ago were visually identical (only
+// the building's window glow carried the difference, and that is a property of
+// the building, not the person). That threw away the exact distinction presence.ts
+// exists to preserve — it refuses to report "working" without a heartbeat
+// precisely because guessing from a fresh timestamp was the old bug. A dead
+// session now visibly stops: it leaves the desk and goes to the sofa.
+//
+// Night comes from the same day/night phase the renderer tints with, and the
+// session wins over the clock (user decision, 2026-07-29): a quiet agent goes to
+// bed at 3am, a working one is still at its desk. So the town at night reads as
+// "these two projects are still going", which is the thing worth knowing.
+//
+// A working character is not a pose held for 25 minutes, either. It spends most
+// of its time at its desk and takes short trips — coffee at the counter, a wash
+// at the sink, a book off the shelf — because rendering heads-down work as 25
+// unbroken minutes of the same bob is what made the town feel deadest at exactly
+// the moment it was busiest. Trips resolve to an (object, verb) affordance the
+// world declares (world.ts), the Generative-Agents shape: an action is a verb
+// against a named object, not a coordinate.
 //
 // "Sits at its own desk": each building has a row of interior seat tiles (one
 // per workstation). A working/resting character claims a seat *stickily* — it
@@ -27,7 +50,14 @@
 
 import type { PresenceState } from "../utils/presence";
 import { findPath } from "./pathfind";
-import { isWalkable, type LeisureSpot, type Tile, type TownWorld } from "./world";
+import {
+  isWalkable,
+  type Affordance,
+  type ActivityVerb,
+  type LeisureSpot,
+  type Tile,
+  type TownWorld,
+} from "./world";
 
 /** Tiles traversed per second while walking. */
 const SPEED = 2.4;
@@ -46,11 +76,84 @@ const CHAT_MS = 2200;
 /** How long (ms) before a character will stop to chat again — without it, two
  *  wanderers who stay near each other chat on a loop and never wander. */
 const CHAT_COOLDOWN_MS = 6000;
+/** How long (ms) a worker stays at its desk between short trips. Deliberately
+ *  long: a trip every few seconds reads as a fidget, and the point of the
+ *  routine is that heads-down work is *mostly* heads-down. */
+const CHORE_MIN_MS = 18_000;
+const CHORE_SPREAD_MS = 16_000;
+/** How long (ms) a worker spends on the trip before heading back to its desk. */
+const CHORE_DWELL_MS = 3200;
 
 export type Facing = "up" | "down" | "left" | "right";
 
-/** What presence resolves a character to want, physically. */
-type Intent = "home" | "wander" | "pace" | "off";
+/** What presence resolves a character to want, physically.
+ *
+ *  `work` and `rest` were one intent (`home`) until TIL-198 — which is exactly
+ *  why a live agent and a dead one looked the same. */
+type Intent = "work" | "rest" | "wander" | "pace" | "off";
+
+/**
+ * What a character is visibly doing — the thing the town renders a glyph for and
+ * the tooltip says in words.
+ *
+ * The first six come from the agent's own last log line rather than from the
+ * sim: `lastLog` already reaches the town model and was being spent on hover
+ * text alone, while the town drove itself off a three-value enum. The rest are
+ * physical states the sim owns.
+ */
+export type Activity =
+  // What the agent says it is doing, classified from its last log line.
+  | "typing"
+  | "building"
+  | "testing"
+  | "reading"
+  | "writing"
+  | "waiting"
+  // What the sim can see it doing.
+  | "coffee"
+  | "washing"
+  | "eating"
+  | "resting"
+  | "sleeping"
+  | "walking"
+  | "chatting"
+  | "stuck"
+  | "leaving";
+
+/** The activity a log line implies, or null when it says nothing useful. Kept
+ *  deliberately small and literal — this is a legibility aid, not an intent
+ *  classifier, and a wrong guess here shows up as a wrong glyph over someone's
+ *  head.
+ *
+ *  Order is first-match, and it is load-bearing: not-making-progress words beat
+ *  everything (a line is about waiting whatever it is waiting *for* — "waiting
+ *  on the review" is not reading), then the two concrete machine activities,
+ *  then the broad verbs, which are broad enough to swallow anything left. */
+const LOG_PATTERNS: [RegExp, Activity][] = [
+  [/\b(wait|block|pending|queue|retry|stuck)/i, "waiting"],
+  [/\b(test|spec|suite|vitest|jest|pytest|e2e)/i, "testing"],
+  [/\b(build|compil|bundl|tsc|cargo|webpack|vite)/i, "building"],
+  [/\b(read|inspect|search|grep|scan|explor|audit|review)/i, "reading"],
+  [/\b(writ|edit|implement|refactor|add|updat|fix|commit)/i, "writing"],
+];
+
+/** Classify an agent's last log line into something the town can draw. */
+export function classifyLog(lastLog: string | null | undefined): Activity | null {
+  if (!lastLog) return null;
+  for (const [re, activity] of LOG_PATTERNS) if (re.test(lastLog)) return activity;
+  return null;
+}
+
+/** The activity a trip to a piece of furniture reads as. */
+const VERB_ACTIVITY: Record<ActivityVerb, Activity> = {
+  working: "typing",
+  coffee: "coffee",
+  washing: "washing",
+  eating: "eating",
+  reading: "reading",
+  resting: "resting",
+  sleeping: "sleeping",
+};
 
 export interface CharAgent {
   taskId: number;
@@ -79,9 +182,24 @@ export interface CharAgent {
    *  near its building, assigned so two overflow workers never share one. Null
    *  unless this character is overflow. */
   restTile: Tile | null;
+  /** The sofa- or bed-side tile a `rest` character has claimed in its own house,
+   *  or null when it is not resting. Exclusive, like a desk seat: two quiet
+   *  agents never share a bed. */
+  restSpot: Tile | null;
+  /** Which it is — what the character is resting *on*, for the glyph. */
+  restKind: "sofa" | "bed" | null;
+  /** The short trip a working character is on: where it is going and what for.
+   *  Null while it is at its desk. */
+  chore: { tile: Tile; verb: ActivityVerb } | null;
+  /** Countdown (ms) at the desk until the next trip; then the dwell at it. */
+  choreMs: number;
+  choreDwellMs: number;
   /** True once the character is sitting on its `seat` — drives the desk "typing"
    *  animation and tells the renderer it is heads-down at the monitor. */
   seated: boolean;
+  /** What this character is visibly doing, recomputed every step. The renderer
+   *  draws it as a glyph over the head and the tooltip says it in words. */
+  activity: Activity;
   /** Remaining time (ms) of a chat with a passer-by; 0 when not chatting. While
    *  it runs the character stands still, faces its partner, and the renderer
    *  shows a bubble over it. Cosmetic — there is no dialogue (spec non-goal). */
@@ -98,6 +216,10 @@ export interface SimState {
   /** Which character currently holds each leisure spot (spotId → taskId). A spot
    *  in this map is taken; that is what keeps two idlers off the same spot. */
   occupied: Map<number, number>;
+  /** Indoor tiles claimed exclusively — rest spots and trip destinations, keyed
+   *  `"x,y" → taskId`. The outdoor equivalent of `occupied`, and it exists for
+   *  the same reason: without it two characters stand in the same armchair. */
+  claims: Map<string, number>;
 }
 
 /** One roster entry the sim consumes — a townModel character plus its building. */
@@ -107,14 +229,22 @@ export interface RosterChar {
   state: PresenceState;
   live: boolean;
   buildingIndex: number;
+  /** The agent's own last log line. Classified into an activity so a working
+   *  character shows what it is working *on* rather than a generic desk pose —
+   *  the app already carries this to the town and used to spend it on nothing
+   *  but hover text. */
+  lastLog?: string | null;
 }
 
 export interface StepOpts {
   reducedMotion?: boolean;
+  /** True when the day/night phase says it is dark. Passed in rather than read
+   *  from a clock so the sim stays pure and the behaviour is testable. */
+  night?: boolean;
 }
 
 export function createSim(): SimState {
-  return { chars: new Map(), occupied: new Map() };
+  return { chars: new Map(), occupied: new Map(), claims: new Map() };
 }
 
 /** Snap one character to "a valid resting position" (the spec's phrase): a
@@ -122,16 +252,18 @@ export function createSim(): SimState {
  *  leisure claim. Shared by the reduced-motion tableau and settleSim so the two
  *  cannot drift apart. */
 function snapToRest(c: CharAgent, world: TownWorld): void {
-  const rest = c.intent === "home" ? workTile(world, c) : homeTile(world, c.buildingIndex);
+  const rest = indoorTarget(world, c) ?? homeTile(world, c.buildingIndex);
   c.pos = { x: rest.x, y: rest.y };
   c.path = [];
   c.moving = false;
   c.facing = "up";
-  c.seated = c.intent === "home" && c.seat !== null;
+  c.seated = c.intent === "work" && c.seat !== null;
+  c.chore = null;
   c.spotId = null;
   c.dwellMs = 0;
   c.chatMs = 0;
   c.chatWith = null;
+  c.activity = activityOf(c, null);
 }
 
 /** Settle the sim in place: everyone at a resting tile, nothing walking, no
@@ -144,6 +276,9 @@ function snapToRest(c: CharAgent, world: TownWorld): void {
  *  walking home from the street (TIL-190). */
 export function settleSim(sim: SimState, world: TownWorld): SimState {
   sim.occupied.clear();
+  // Rest-spot claims survive: unlike a leisure spot, the tile a quiet character
+  // is settled *on* is where it stays, so dropping the claim here would let the
+  // next step hand the same sofa to somebody else.
   for (const c of sim.chars.values()) snapToRest(c, world);
   return sim;
 }
@@ -234,10 +369,22 @@ function freeSpot(world: TownWorld, sim: SimState, from: Tile): LeisureSpot | nu
   return best;
 }
 
-function intentOf(state: PresenceState, live: boolean): Intent {
+/**
+ * What presence means, physically.
+ *
+ * The one substantive change from v3: `working` and `quiet & not live` no longer
+ * collapse together. A heartbeat is the whole difference between an agent that
+ * is grinding and one that died an hour ago, and the town used to render both as
+ * the same figure at the same desk.
+ *
+ * `night` only ever moves a *quiet* character — the session wins over the clock
+ * (user decision, 2026-07-29), so a working agent is at its desk at 3am.
+ */
+function intentOf(state: PresenceState, live: boolean, night: boolean): Intent {
   if (state === "blocked") return "pace";
-  if (state === "quiet" && live) return "wander";
-  return "home"; // working, or quiet-not-live (rest at home)
+  if (state === "working") return "work";
+  if (live && !night) return "wander"; // quiet but alive: out at the plaza
+  return "rest"; // quiet and dead, or quiet and it is the middle of the night
 }
 
 /** The building door — a character's outside entry/rest tile. */
@@ -246,11 +393,28 @@ function homeTile(world: TownWorld, buildingIndex: number): Tile {
   return b ? b.door : { x: 0, y: 0 };
 }
 
-/** Where a `home` character heads: its claimed desk seat if it has one, else its
- *  assigned overflow rest tile (distinct per worker — see assignSeats), or the
- *  door as a last resort. */
-function workTile(world: TownWorld, c: CharAgent): Tile {
-  return c.seat ?? c.restTile ?? homeTile(world, c.buildingIndex);
+/** Where a character that belongs indoors is heading right now: the trip it is
+ *  on, else its desk seat / rest spot, else its assigned overflow tile (distinct
+ *  per worker — see assignAnchors), else the door as a last resort. */
+function indoorTarget(world: TownWorld, c: CharAgent): Tile | null {
+  if (c.intent !== "work" && c.intent !== "rest") return null;
+  if (c.chore) return c.chore.tile;
+  return c.seat ?? c.restSpot ?? c.restTile ?? homeTile(world, c.buildingIndex);
+}
+
+/** What to draw over this character's head, from what it is actually doing.
+ *  `logActivity` is its own last log line classified (null when it says nothing),
+ *  and only ever applies while it is heads-down at its desk — a character
+ *  walking to the kettle is making coffee whatever its log says. */
+function activityOf(c: CharAgent, logActivity: Activity | null): Activity {
+  if (c.intent === "off") return "leaving";
+  if (c.chatMs > 0) return "chatting";
+  if (c.intent === "pace") return "stuck";
+  if (c.chore) return c.moving ? "walking" : VERB_ACTIVITY[c.chore.verb];
+  if (c.moving) return "walking";
+  if (c.intent === "work") return c.seated ? (logActivity ?? "typing") : "waiting";
+  if (c.intent === "rest") return c.restKind === "bed" ? "sleeping" : "resting";
+  return c.spotId !== null ? "resting" : "walking";
 }
 
 /** `count` distinct walkable tiles near a building's door, nearest first, for
@@ -295,36 +459,81 @@ function nearbyRestTiles(world: TownWorld, buildingIndex: number, count: number)
   return out.length ? out : [{ x: door.x, y: door.y + 1 }];
 }
 
+/** Drop every indoor claim this character holds (rest spot and trip target). */
+function releaseClaims(sim: SimState, c: CharAgent) {
+  for (const [key, id] of sim.claims) if (id === c.taskId) sim.claims.delete(key);
+  c.restSpot = null;
+  c.restKind = null;
+  c.chore = null;
+}
+
+/** Claim an indoor tile for this character, if nobody else holds it. */
+function claim(sim: SimState, c: CharAgent, t: Tile): boolean {
+  const key = `${t.x},${t.y}`;
+  const holder = sim.claims.get(key);
+  if (holder !== undefined && holder !== c.taskId) return false;
+  sim.claims.set(key, c.taskId);
+  return true;
+}
+
 /**
- * Give each `home`-intent character an interior desk seat in its building —
- * *stickily*. A character keeps the seat it already holds; only seatless home
- * characters claim a free one (lowest task id first, deterministic). So a worker
- * that is already seated never moves when another session joins or leaves the
- * same project (the TIL-178 reshuffle bug). Non-home / departed / building-moved
- * characters release their seat; overflow past the desk count gets `seat = null`
- * and waits at a frontage tile (see workTile).
+ * Give every character that belongs indoors somewhere of its own to be —
+ * *stickily*.
+ *
+ * A working character keeps the desk seat it already holds; only seatless ones
+ * claim a free seat (lowest task id first, deterministic), so a worker already
+ * sitting never moves when another session joins or leaves the same project (the
+ * TIL-178 reshuffle bug). A resting character gets the same treatment over its
+ * house's rest spots, preferring a bed at night and a sofa by day. Whoever is
+ * past the count of either waits on a distinct tile outside (see
+ * `nearbyRestTiles`) rather than stacking on the door.
  */
-function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterChar>) {
-  // 1. Release seats no longer valid (not home, gone, or wrong building), and
-  //    collect the home characters per building.
-  const homeByBuilding = new Map<number, number[]>();
+function assignAnchors(
+  sim: SimState,
+  world: TownWorld,
+  byId: Map<number, RosterChar>,
+  night: boolean,
+) {
+  // 1. Release anchors no longer valid (wrong intent, gone, or moved building),
+  //    and collect who wants what, per building.
+  const workByBuilding = new Map<number, number[]>();
+  const restByBuilding = new Map<number, number[]>();
   for (const [id, c] of sim.chars) {
-    if (c.intent !== "home" || !byId.has(id)) {
+    const indoors = (c.intent === "work" || c.intent === "rest") && byId.has(id);
+    if (!indoors) {
       c.seat = null;
       c.restTile = null;
+      releaseClaims(sim, c);
       continue;
     }
-    if (c.seat) {
-      const seats = world.buildings[c.buildingIndex]?.seats ?? [];
-      if (!seats.some((s) => s.x === c.seat!.x && s.y === c.seat!.y)) c.seat = null;
+    const b = world.buildings[c.buildingIndex];
+    if (c.intent === "work") {
+      if (c.restSpot) releaseClaims(sim, c);
+      if (c.seat && !(b?.seats ?? []).some((s) => s.x === c.seat!.x && s.y === c.seat!.y)) {
+        c.seat = null;
+      }
+      const list = workByBuilding.get(c.buildingIndex) ?? [];
+      list.push(id);
+      workByBuilding.set(c.buildingIndex, list);
+    } else {
+      c.seat = null;
+      const want = night ? "bed" : "sofa";
+      // Give up a sofa when night falls, and a bed when morning comes — the
+      // claim is on a *kind* of rest, not on a tile.
+      const stillRight =
+        c.restSpot &&
+        (b?.restSpots ?? []).some(
+          (r) => r.tile.x === c.restSpot!.x && r.tile.y === c.restSpot!.y && r.kind === want,
+        );
+      if (!stillRight) releaseClaims(sim, c);
+      const list = restByBuilding.get(c.buildingIndex) ?? [];
+      list.push(id);
+      restByBuilding.set(c.buildingIndex, list);
     }
-    const list = homeByBuilding.get(c.buildingIndex) ?? [];
-    list.push(id);
-    homeByBuilding.set(c.buildingIndex, list);
   }
-  // 2. Fill free seats with the seatless, keeping already-held seats put (sticky);
-  //    workers past the desk count become overflow on distinct rest tiles.
-  for (const [buildingIndex, ids] of homeByBuilding) {
+
+  // 2. Desk seats for the workers, sticky; the rest become overflow.
+  for (const [buildingIndex, ids] of workByBuilding) {
     const seats = world.buildings[buildingIndex]?.seats ?? [];
     const taken = new Set<string>();
     for (const id of ids) {
@@ -344,17 +553,47 @@ function assignSeats(sim: SimState, world: TownWorld, byId: Map<number, RosterCh
         overflow.push(id);
       }
     });
-    if (overflow.length) {
-      const tiles = nearbyRestTiles(world, buildingIndex, overflow.length);
-      overflow.forEach((id, i) => {
-        sim.chars.get(id)!.restTile = tiles[Math.min(i, tiles.length - 1)];
-      });
-    }
+    assignOverflow(sim, world, buildingIndex, overflow);
     for (const id of ids) {
       const c = sim.chars.get(id)!;
       if (c.seat) c.restTile = null;
     }
   }
+
+  // 3. Sofas and beds for the quiet, preferred kind first then anything free.
+  const want: "sofa" | "bed" = night ? "bed" : "sofa";
+  for (const [buildingIndex, ids] of restByBuilding) {
+    const spots = world.buildings[buildingIndex]?.restSpots ?? [];
+    const preferred = spots.filter((s) => s.kind === want);
+    const overflow: number[] = [];
+    for (const id of [...ids].sort((a, b) => a - b)) {
+      const c = sim.chars.get(id)!;
+      if (c.restSpot) continue; // sticky — already settled somewhere valid
+      const spot = preferred.find((s) => claim(sim, c, s.tile));
+      if (spot) {
+        c.restSpot = spot.tile;
+        c.restKind = spot.kind;
+        c.restTile = null;
+      } else {
+        overflow.push(id);
+      }
+    }
+    assignOverflow(sim, world, buildingIndex, overflow);
+  }
+}
+
+/** Park characters with no anchor on distinct tiles near their building. */
+function assignOverflow(
+  sim: SimState,
+  world: TownWorld,
+  buildingIndex: number,
+  overflow: number[],
+) {
+  if (!overflow.length) return;
+  const tiles = nearbyRestTiles(world, buildingIndex, overflow.length);
+  overflow.forEach((id, i) => {
+    sim.chars.get(id)!.restTile = tiles[Math.min(i, tiles.length - 1)];
+  });
 }
 
 /** Is tile `t` within the plaza rectangle? */
@@ -446,6 +685,7 @@ export function stepTownSim(
   opts: StepOpts = {},
 ): SimState {
   const dt = Math.min(Math.max(dtMs, 0), MAX_DT_MS);
+  const night = opts.night ?? false;
   const byId = new Map(roster.map((r) => [r.taskId, r]));
   // Leisure-spot tiles are off-limits to wanderers — only a spot's claimant
   // stands on it, so two bodies never share a spot.
@@ -455,31 +695,41 @@ export function stepTownSim(
   // momentarily stands on — a spot another character is occupying.
   const avoidSpots = (target: Tile) => (x: number, y: number) =>
     spotTiles.has(`${x},${y}`) && !(x === target.x && y === target.y);
-  // Interior seat tiles are the only walkable tiles inside a house (a cul-de-sac
-  // off the green). Wanderers must never step onto them — only a `home`
-  // character heading to *its* seat enters, via an explicit path. So wander's
-  // random steps avoid them, and a character standing inside (its intent just
-  // flipped away from work) is first walked back out to the door.
+  // A house's interior is a cul-de-sac off the green: the doorway is its only
+  // opening. Wanderers must never step into one — only a character heading to
+  // *its own* desk, sofa or kettle goes in, via an explicit path. So wander's
+  // random steps avoid every interior tile (and the doorway itself, which is
+  // what actually seals the house), and a character standing inside when its
+  // intent flips outward is first walked back out to the door.
   const interiorTiles = new Set(
-    world.buildings.flatMap((b) => [
-      ...b.seats.map((s) => `${s.x},${s.y}`),
-      `${b.door.x},${b.door.y - 1}`, // the doorway (front-wall gap) is inside too
-    ]),
+    world.buildings.flatMap((b) => {
+      const keys = [`${b.door.x},${b.door.y - 1}`]; // the front-wall gap
+      for (let y = b.interior.y; y < b.interior.y + b.interior.h; y++) {
+        for (let x = b.interior.x; x < b.interior.x + b.interior.w; x++) keys.push(`${x},${y}`);
+      }
+      return keys;
+    }),
   );
   const insideKey = (t: Tile) => interiorTiles.has(`${t.x},${t.y}`);
+  // Each agent's own account of what it is doing, classified once per step
+  // rather than per character per frame.
+  const logActivity = new Map<number, Activity | null>(
+    roster.map((r) => [r.taskId, classifyLog(r.lastLog)]),
+  );
 
   // --- Spawn newcomers at their building door. ---
   for (const r of roster) {
     if (sim.chars.has(r.taskId)) {
       const c = sim.chars.get(r.taskId)!;
       c.agentName = r.agentName;
-      const newIntent = intentOf(r.state, r.live);
+      const newIntent = intentOf(r.state, r.live, night);
       // A changed intent (or building) invalidates the current path — drop it so
       // the new state is honoured next resolve, not after a stale walk finishes.
       if (newIntent !== c.intent || r.buildingIndex !== c.buildingIndex) {
         c.path = [];
         c.wanderPauseMs = 0;
         releaseSpot(sim, c);
+        releaseClaims(sim, c);
         // Work does not wait on small talk: an intent change ends the chat.
         if (c.chatMs > 0) endChat(c);
       }
@@ -495,27 +745,36 @@ export function stepTownSim(
       pos: { x: door.x, y: door.y },
       facing: "down",
       path: [],
-      intent: intentOf(r.state, r.live),
+      intent: intentOf(r.state, r.live, night),
       moving: false,
       wanderPauseMs: 0,
       spotId: null,
       dwellMs: 0,
       seat: null,
       restTile: null,
+      restSpot: null,
+      restKind: null,
+      chore: null,
+      choreMs: CHORE_MIN_MS + rng() * CHORE_SPREAD_MS,
+      choreDwellMs: 0,
       seated: false,
+      activity: "walking",
       chatMs: 0,
       chatWith: null,
       chatCooldownMs: 0,
     });
   }
 
-  // Assign interior desk seats to working/resting characters (see assignSeats).
-  assignSeats(sim, world, byId);
+  // Give everyone indoors a desk seat or a rest spot of its own.
+  assignAnchors(sim, world, byId, night);
 
-  // Safety net: drop spot claims held by characters that no longer exist, so a
-  // missed release can never leave a spot permanently blocked.
+  // Safety net: drop claims held by characters that no longer exist, so a missed
+  // release can never leave a spot, a sofa or a kettle permanently blocked.
   for (const [spotId, taskId] of sim.occupied) {
     if (!sim.chars.has(taskId)) sim.occupied.delete(spotId);
+  }
+  for (const [key, taskId] of sim.claims) {
+    if (!sim.chars.has(taskId)) sim.claims.delete(key);
   }
 
   // --- Reduced motion: still tableau. Snap everyone home, no motion. ---
@@ -537,6 +796,8 @@ export function stepTownSim(
     if (c.intent !== "off") {
       c.intent = "off";
       releaseSpot(sim, c); // give up any spot on the way out
+      releaseClaims(sim, c);
+      c.seat = null;
       c.path = findPath(world, round(c.pos), world.edge, avoidSpots(world.edge)).slice(1);
       if (c.path.length === 0) sim.chars.delete(id); // already at edge / stuck
     }
@@ -569,15 +830,27 @@ export function stepTownSim(
       c.seated = false;
     }
 
-    if (c.intent === "home") {
-      const target = workTile(world, c); // its desk seat, or the door on overflow
+    if (c.intent === "work" || c.intent === "rest") {
+      // Where it is meant to be right now: mid-trip, that is the kettle; else
+      // its desk seat / sofa, or its overflow tile if the house is full.
+      const target = indoorTarget(world, c)!;
       if (c.path.length === 0) {
         if (!sameTile(here, target)) {
-          c.path = findPath(world, here, target, avoidSpots(target)).slice(1);
+          const path = findPath(world, here, target, avoidSpots(target)).slice(1);
+          if (path.length > 0) c.path = path;
+          else if (c.chore) endChore(sim, c, rng); // unreachable — go back to work
         } else if (c.pos.x !== target.x || c.pos.y !== target.y) {
           // On the target tile but stopped mid-tile (e.g. path cleared by an
           // intent flip) — snap the residual float to the exact rest tile.
           c.pos = { x: target.x, y: target.y };
+        } else if (c.chore) {
+          // At the kettle: use it for a moment, then head back to the desk.
+          c.choreDwellMs -= dt;
+          if (c.choreDwellMs <= 0) endChore(sim, c, rng);
+        } else if (c.intent === "work" && c.seat && sameTile(here, c.seat)) {
+          // Heads-down. Count towards the next trip out.
+          c.choreMs -= dt;
+          if (c.choreMs <= 0) startChore(sim, world, c, rng);
         }
       }
     } else if (c.intent === "wander") {
@@ -676,16 +949,55 @@ export function stepTownSim(
       }
     } else {
       c.moving = false;
-      // Resting at its desk → face up into the monitor, and mark it seated once
-      // it is actually on its seat tile (drives the desk "typing" animation).
-      if (c.intent === "home") {
+      // Settled indoors → face up into the monitor / the room, and mark it
+      // seated once it is actually on its seat (drives the typing animation and
+      // tells the renderer to light that monitor).
+      if (c.intent === "work" || c.intent === "rest") {
         c.facing = "up";
-        c.seated = c.seat !== null && sameTile(here, c.seat);
+        c.seated = c.intent === "work" && c.seat !== null && sameTile(here, c.seat);
       } else {
         c.seated = false;
       }
     }
+
+    c.activity = activityOf(c, logActivity.get(id) ?? null);
   }
 
   return sim;
+}
+
+/**
+ * Send a working character out on a short trip.
+ *
+ * Anything in its own house with a verb other than "working" — the counter, the
+ * sink, the table, the bookshelf — as long as nobody else has claimed the tile.
+ * The claim is what stops two workers standing in the same kettle; it is
+ * released by `endChore`, and by the despawn sweep if the session dies mid-trip.
+ * With nothing free the character simply stays at its desk and tries again after
+ * the next interval, which is the right answer for a crowded house.
+ */
+function startChore(sim: SimState, world: TownWorld, c: CharAgent, rng: () => number) {
+  const all = world.buildings[c.buildingIndex]?.affordances ?? [];
+  const options = all.filter(
+    (a: Affordance) => a.verb !== "working" && !sim.claims.has(`${a.tile.x},${a.tile.y}`),
+  );
+  if (!options.length) {
+    c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
+    return;
+  }
+  const pick = options[Math.floor(rng() * options.length)];
+  if (!claim(sim, c, pick.tile)) {
+    c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
+    return;
+  }
+  c.chore = { tile: pick.tile, verb: pick.verb };
+  c.choreDwellMs = CHORE_DWELL_MS;
+}
+
+/** Finish a trip: give the object back and start counting to the next one. */
+function endChore(sim: SimState, c: CharAgent, rng: () => number) {
+  if (c.chore) sim.claims.delete(`${c.chore.tile.x},${c.chore.tile.y}`);
+  c.chore = null;
+  c.choreDwellMs = 0;
+  c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;
 }

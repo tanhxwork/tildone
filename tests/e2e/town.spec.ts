@@ -167,6 +167,34 @@ describe("town view", () => {
     });
     await browser.saveScreenshot("./tests/e2e/artifacts/town-wide.png");
 
+    // A session with no heartbeat is quiet-and-NOT-live, and it must not look
+    // like a working one. Until TIL-198 both resolved to the same intent, the
+    // same desk seat and the same animation, so this character — an agent that
+    // touched the card once and left — sat at a desk indistinguishable from one
+    // grinding. It now goes home to the sofa (or, after dark, to bed), which is
+    // the whole point: presence.ts refuses to *say* "working" without a
+    // heartbeat, and the town must not draw it either.
+    await browser.execute(() => {
+      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
+      for (let i = 0; i < 600; i++) step?.(16);
+    });
+    // Captured *after* it has settled, which the earlier shots never were: the
+    // activity badge only appears once a character stops walking, so every
+    // screenshot this spec used to take showed a town with no badges in it. A
+    // green spec proving nothing about how it looked is how three defects
+    // shipped through TIL-189.
+    await browser.saveScreenshot("./tests/e2e/artifacts/town-settled.png");
+    const activity = await char.getAttribute("data-activity");
+    // Which of the two depends on the wall clock, and the spec must not care —
+    // asserting "on the sofa" would fail every evening.
+    expect(["resting", "sleeping"]).toContain(activity);
+    const restingWhere = await char.getAttribute("data-where");
+    expect(restingWhere).toMatch(/in the (lounge|bedroom)/);
+    expect(restingWhere).not.toContain("in the workroom");
+    // The tooltip says it in words — the user's decision was a glyph in the
+    // world and the name on hover, so the words have to actually be there.
+    expect(await char.getAttribute("title")).toMatch(/on the sofa|asleep/);
+
     // Escape releases the follow (spec: cleared by background click / Escape).
     await browser.execute(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -311,6 +339,16 @@ describe("town view", () => {
     expect(where).toContain("'s house");
     expect(await char.getAttribute("aria-label")).toContain(where);
 
+    // Heads-down at the desk is its own activity, distinct from the resting one
+    // asserted in the case above. A working character takes occasional trips —
+    // coffee, a wash — so accept those too rather than pinning a single frame of
+    // a routine; what must never appear here is resting or sleeping.
+    const workActivity = await char.getAttribute("data-activity");
+    expect(["typing", "building", "testing", "reading", "writing", "waiting", "coffee", "washing", "eating", "walking"]).toContain(
+      workActivity,
+    );
+    expect(["resting", "sleeping"]).not.toContain(workActivity);
+
     // Chat state is mirrored from the sim onto the overlay every frame. Only the
     // wiring is asserted here — that it is published, and that a working
     // character is never mid-chat. WHETHER two idle characters meet is
@@ -351,12 +389,20 @@ describe("town view", () => {
     expect(await idsOf()).toEqual(idsBefore); // same population
     expect(await atHome(tid, building)).toBe(true); // still indoors, not on the door
 
-    // --- quiet: the same character leaves and wanders. Same node, no respawn. ---
+    // --- quiet: the same character leaves its desk. Same node, no respawn. ---
+    //
+    // What it does next depends on the clock — by day it walks out to the plaza,
+    // after dark it goes to bed — so the assertion is the part that is true
+    // either way: it is no longer working at its desk in the workroom. Asserting
+    // "outdoors" would have passed every afternoon and failed every night.
     await beat("idle");
     await expect(char).toHaveAttribute("data-state", "quiet");
     await step(1200);
-    expect(await atHome(tid, building)).toBe(false);
-    await expect(char).toBeExisting(); // it walked out; it did not vanish and return
+    await expect(char).toBeExisting(); // it left its desk; it did not vanish and return
+    const quietWhere = await char.getAttribute("data-where");
+    expect(quietWhere).not.toContain("in the workroom");
+    const quietActivity = await char.getAttribute("data-activity");
+    expect(["typing", "building", "testing", "reading", "writing"]).not.toContain(quietActivity);
   });
 
 });

@@ -27,7 +27,7 @@ import type { PresenceState } from "../utils/presence";
 import type { Camera } from "./camera";
 import type { DirFrames, TownTextures } from "./assets";
 import type { SimState } from "./sim";
-import { TILE_PX, type TownWorld } from "./world";
+import { inRect, TILE_PX, type RoomKind, type Tile, type TownWorld } from "./world";
 
 export interface TownTheme {
   ground: number;
@@ -60,9 +60,36 @@ interface CharView {
   ring: Graphics;
   /** The "…" bubble shown while this character is mid-chat. */
   bubble: Graphics;
+  /** The activity badge floated over the head — what this character is doing. */
+  glyph: Sprite;
   anim: number;
   agentKey: string;
 }
+
+/** A monitor's warm glow, lit only while somebody is actually sitting at that
+ *  desk. Object state, Generative-Agents style: the desk itself carries "in use",
+ *  so an empty workroom reads as an empty workroom rather than as six machines
+ *  left running. */
+interface DeskLight {
+  /** The seat below this desk — how the sim says who, if anyone, is at it. */
+  seat: Tile;
+  sprite: Sprite;
+}
+
+/** What each room is floored with. Rooms are marked by *material*, which is how
+ *  top-down games mark them — an interior wall would cost a whole row of the
+ *  floor these rooms are supposed to have. Tinting one wood texture per room was
+ *  tried first and could not work: a multiply over saturated orange planks only
+ *  ever yields browner planks, so the rooms read as blotches. Boards take a
+ *  slight tint to separate the three that share them; the kitchen and bedroom
+ *  get their own tile and carpet. */
+const ROOM_FLOOR: Record<RoomKind, { material: "boards" | "tile" | "carpet"; tint?: number }> = {
+  workroom: { material: "boards" },
+  hall: { material: "boards", tint: 0xd8cbb8 }, // a worn strip down the middle
+  kitchen: { material: "tile" },
+  lounge: { material: "boards", tint: 0xffd9ab },
+  bedroom: { material: "carpet" },
+};
 
 /** A window-glow sprite tagged with the building it belongs to and its world
  *  tile (projected to screen each frame, since it lives at the stage). */
@@ -117,6 +144,8 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
   let animatedSpots: { sprite: Sprite; frames: Texture[] }[] = [];
   /** Cloud shadows drifting across the terrain (world-px positions + speeds). */
   let clouds: { sprite: Sprite; speed: number }[] = [];
+  /** Monitor glows, lit per frame from whoever is actually sitting at the desk. */
+  let deskLights: DeskLight[] = [];
   /** World width in px — the wrap point for drifting clouds. */
   let worldPxW = 0;
   let propAnim = 0;
@@ -158,9 +187,21 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     // across the *whole* interior, then walls as a frame, then furniture. Painting
     // wall texture everywhere and floor only under the seats is what made a house
     // read as a solid block with a one-tile corridor in it.
+    //
+    // The floor is tinted per room, which is what makes the plan legible as a
+    // plan: without it a hall with two wings either side is one undifferentiated
+    // slab of boards with furniture standing on it.
     for (let y = interior.y; y < interior.y + interior.h; y++) {
       for (let x = interior.x; x < interior.x + interior.w; x++) {
-        g.addChild(tile(int.floor, x, y));
+        const room = place.rooms.find((r) => inRect(r.rect, { x, y }));
+        const floor = room ? ROOM_FLOOR[room.kind] : { material: "boards" as const };
+        const texture =
+          floor.material === "tile"
+            ? int.tiledFloor
+            : floor.material === "carpet"
+              ? int.carpet
+              : int.floor;
+        g.addChild(tile(texture, x, y, floor.tint));
       }
     }
     for (let dy = 0; dy < th; dy++) {
@@ -193,12 +234,22 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       g.addChild(s);
     }
 
-    // The desk counter, with a monitor lifted onto each workstation.
+    // The desk counter, with a monitor lifted onto each workstation, and a warm
+    // pool over the screen that syncChars lights only while somebody is sitting
+    // at *that* desk.
     place.desks.forEach((d, i) => {
       g.addChild(tile(i % 2 === 0 ? int.deskL : int.deskR, d.x, d.y));
       const comp = tile(int.computer, d.x, d.y);
       comp.y -= 5 * scale;
       g.addChild(comp);
+      const lit = new Sprite(tex.facade.windowGlow);
+      lit.anchor.set(0.5, 0.5);
+      lit.blendMode = "add";
+      lit.alpha = 0;
+      lit.scale.set(scale * 0.7);
+      lit.position.set(d.x * tilePx + tilePx / 2, d.y * tilePx + tilePx / 2 - 3 * scale);
+      g.addChild(lit);
+      deskLights.push({ seat: place.seats[i] ?? { x: d.x, y: d.y + 1 }, sprite: lit });
     });
 
     // Facade: the door, with a window either side of it.
@@ -274,6 +325,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     fountainSprite = null;
     animatedSpots = [];
     clouds = [];
+    deskLights = [];
 
     const isBuilding = new Set<string>();
     for (const b of w.buildings) {
@@ -486,9 +538,17 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       bubble.circle(dx, -40.5, 1.3).fill({ color: 0x4a4a4a, alpha: 0.85 });
     }
     bubble.visible = false;
-    container.addChild(shadow, ring, sprite, bubble);
+    // The activity badge. Sits where the chat bubble does — the two are mutually
+    // exclusive by construction (a character mid-chat is chatting, and that is
+    // its activity), so they never stack.
+    const glyph = new Sprite();
+    glyph.anchor.set(0.5, 1);
+    glyph.scale.set(scale * 0.8);
+    glyph.position.set(0, -32);
+    glyph.visible = false;
+    container.addChild(shadow, ring, sprite, bubble, glyph);
     charLayer.addChild(container);
-    return { container, sprite, ring, bubble, anim: 0, agentKey };
+    return { container, sprite, ring, bubble, glyph, anim: 0, agentKey };
   }
 
   function syncChars(
@@ -542,11 +602,28 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       const st = style?.state;
       v.ring.visible = st === "blocked";
       v.bubble.visible = c.chatMs > 0;
+      // What it is doing, over its head. The badge is the only thing in the town
+      // that distinguishes a live agent grinding from one whose session died —
+      // before this, both were the same figure at the same desk.
+      const badge = tex.glyphs[c.activity];
+      v.glyph.visible = badge !== null && c.chatMs === 0;
+      if (badge) v.glyph.texture = badge;
       if (c.intent === "off") {
         v.sprite.alpha = Math.max(0.1, v.sprite.alpha - dtMs / 1500);
       } else {
         v.sprite.alpha = st === "quiet" && style?.live === false ? 0.55 : 1;
       }
+    }
+
+    // Light the monitors that somebody is actually sitting at. Object state, not
+    // building state: a house with one worker in a six-desk room should show one
+    // lit screen, which is also the quickest read of how busy a project is.
+    const inUse = new Set<string>();
+    for (const c of sim.chars.values()) {
+      if (c.seated && c.seat) inUse.add(`${c.seat.x},${c.seat.y}`);
+    }
+    for (const d of deskLights) {
+      d.sprite.alpha = inUse.has(`${d.seat.x},${d.seat.y}`) ? 0.55 : 0;
     }
 
     // Animate the plaza props — fountain shimmer, campfire flicker, pond ripple
@@ -619,6 +696,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       fountainSprite = null;
       animatedSpots = [];
       clouds = [];
+      deskLights = [];
     },
   };
 }

@@ -11,9 +11,17 @@ export interface DayNight {
   /** 0..1 window-glow strength for lit windows — rises with darkness (so lit
    *  offices read strongest at night, invisible at noon). */
   glow: number;
+  /** True once it is properly dark — not merely dusk. The sim reads this to send
+   *  quiet agents home to bed (a working one stays at its desk whatever the
+   *  hour). Derived here so the renderer's night and the sim's night can never
+   *  drift apart: the town going dark and the town going to bed are the same
+   *  event, and two thresholds would eventually disagree about when it happened. */
+  night: boolean;
 }
 
 export const MAX_DARK = 0.55;
+/** How dark it has to be to count as night — past dusk, short of deepest. */
+const NIGHT_AT = MAX_DARK * 0.7;
 
 const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
 
@@ -29,5 +37,5 @@ export function dayNightPhase(hour: number): DayNight {
   const tint = warm ? 0xff8a4c : 0x0a1633;
   const glow = clamp01(darkness / MAX_DARK); // 0 at noon, 1 at deepest night
 
-  return { darkness, tint, glow };
+  return { darkness, tint, glow, night: darkness >= NIGHT_AT };
 }

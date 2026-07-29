@@ -71,9 +71,9 @@ const BELOW_MARGIN = 2; // green below the road before the next cell
 export const CELL_W = MAX_BUILDING_W + 5; // 17
 export const CELL_H = ROAD_ROW + 1 + BELOW_MARGIN; // 16
 
-/** A piece of interior furniture. Everything except `rug` is blocked — the floor
- *  plan is walls and furniture around open circulation space, which is what makes
- *  a room read as a room rather than a grid of objects. */
+/** A piece of interior furniture. Everything except `rug` and `chair` is blocked
+ *  — the floor plan is walls and furniture around open circulation space, which
+ *  is what makes a room read as a room rather than a grid of objects. */
 export type FurnitureKind =
   | "desk"
   | "counter"
@@ -85,7 +85,74 @@ export type FurnitureKind =
   | "bed"
   | "nightstand"
   | "rug"
-  | "plant";
+  | "plant"
+  | ClutterKind;
+
+/** The small personal things that make a house somebody's rather than anybody's.
+ *  Chosen per project from its name (see `clutterFor`), which is why Alpha's
+ *  house always looks like Alpha's house. Everything structural above is decided
+ *  by the tier; everything here is decided by *whose* house it is. */
+export type ClutterKind =
+  | "mug"
+  | "papers"
+  | "laundry"
+  | "guitar"
+  | "boxes"
+  | "catbed"
+  | "bookstack";
+
+/** What a character can *do* at a piece of furniture. The place tree (places.ts)
+ *  already says where something is — "the counter, in the kitchen, in Alpha's
+ *  house"; the verb is the other half of the sentence, and is what lets a working
+ *  character take a trip to make coffee rather than only ever sitting still.
+ *  Generative Agents (Park et al.) models an action as an (object, verb) pair for
+ *  the same reason: a destination alone is not an activity. */
+export type ActivityVerb =
+  | "working"
+  | "coffee"
+  | "washing"
+  | "eating"
+  | "reading"
+  | "resting"
+  | "sleeping";
+
+/** Which furniture affords what. Absent kinds are scenery — you walk past a
+ *  bookshelf's neighbours all day, but only a bookshelf can be read at. */
+const FURNITURE_VERB: Partial<Record<FurnitureKind, ActivityVerb>> = {
+  desk: "working",
+  counter: "coffee",
+  sink: "washing",
+  table: "eating",
+  bookshelf: "reading",
+  sofa: "resting",
+  bed: "sleeping",
+};
+
+/**
+ * Somewhere to stand, and the thing you stand there to use.
+ *
+ * The object itself is blocked — you cannot occupy a counter — so an affordance
+ * is the *adjacent floor tile*, resolved here rather than in the sim, for the
+ * same reason `pruneUnclaimableSpots` exists: only the builder can see the
+ * finished grid, and an affordance whose standing tile got furnished over is
+ * advertised capacity that silently never materialises.
+ */
+export interface Affordance {
+  /** The walkable tile a character stands on to use it. */
+  tile: Tile;
+  /** The furniture being used. */
+  object: Tile;
+  kind: FurnitureKind;
+  verb: ActivityVerb;
+  room: RoomKind | null;
+}
+
+/** Where a character with nothing to do goes: beside the sofa by day, beside the
+ *  bed at night. Both are walkable floor next to the blocked item. */
+export interface RestSpot {
+  tile: Tile;
+  kind: "sofa" | "bed";
+}
 
 /** A named room of a house. "Room" here is the room you stand in — a project's
  *  place in the town is a **building** (glossary: `room` was renamed to
@@ -134,10 +201,23 @@ export interface BuildingPlacement {
   seats: Tile[];
   /** Desk tiles (blocked) directly above each seat — where a monitor is drawn. */
   desks: Tile[];
-  /** Interior partition walls (blocked) dividing the house into rooms. */
+  /** Interior partition walls (blocked) dividing the house into rooms. Empty in
+   *  the wing plan below: at these interior sizes a wall costs a whole row of
+   *  floor, and the rooms already read through the hall and through grouped
+   *  furniture (Slynyrd's rule) without spending it. Kept because the renderer
+   *  and the pathfinder treat it as data, not as a promise that it is non-empty. */
   partitions: Tile[];
-  /** Everything else in the house, for the renderer to draw. */
+  /** Everything else in the house, for the renderer to draw — the tier's fitted
+   *  furniture *and* this project's clutter (which is also listed separately). */
   furniture: Furniture[];
+  /** This project's personal things, a subset of `furniture`. Separate so the
+   *  renderer can treat it as clutter and a test can assert two projects differ. */
+  clutter: Furniture[];
+  /** Standing tile + verb for everything usable in the house. Derived after the
+   *  floor is finished, so every one of these is reachable. */
+  affordances: Affordance[];
+  /** Where a character rests when its session has gone quiet. */
+  restSpots: RestSpot[];
   /** The named rooms of the house, as rects over the interior. Declared here so
    *  the renderer, the sim and the place tree all read one source rather than
    *  each re-deriving "where the kitchen is" from tile positions. */
@@ -704,15 +784,30 @@ function furnishCommonsGreen(
  *
  * A house is a wall ring around an open interior, entered through one door in
  * the facade — the bottom row, which stays visible when the roof lifts. Inside,
- * the plan is a workroom across the back (the desks, which are what the project
- * actually is), a circulation row, and the home rooms below it off a hall:
- * kitchen to one side, lounge to the other, with a bed nook in the larger tiers.
+ * the plan is a **hall down the middle with a wing either side**: the workroom
+ * and the kitchen to the left, the lounge and the bedroom to the right. The hall
+ * runs from the front door to the back wall and is never furnished, so every
+ * room opens off it and none can be sealed in by its own contents.
  *
- * The rule the old geometry broke is that a room needs *more floor than
- * furniture*: everything here hugs a wall and the hall stays clear, so the plan
- * reads as rooms rather than as a grid of objects. The workroom seats stay
- * reachable only through the front door, so wanderers never route through a
- * house — the cul-de-sac property the sim depends on.
+ * This replaces the plan TIL-197 measured, which was an office with a flat
+ * pushed to the back wall: the workroom took 60/50/43% of the interior, and the
+ * bedroom was three tiles holding three blocked items — 0% standable, a label on
+ * a rect that no character could ever be inside. The invariants now held, and
+ * checked in tests/townInteriors.test.ts:
+ *
+ *   - the workroom is at most a **third** of the interior;
+ *   - every named room is **≥50% standable with ≥2 free tiles**, measured by a
+ *     walk from the doorway rather than by walkability (a room walled off by its
+ *     own furniture is walkable and unreachable — the same distinction that bit
+ *     the leisure spots in TIL-189);
+ *   - furniture density is held at **0.40–0.45 items per interior tile at every
+ *     tier**, so a bigger house means more life rather than more floor. It used
+ *     to fall 0.44 → 0.33, which handed the busiest project the emptiest home.
+ *
+ * Furniture hugs the outer wall of its wing and the column beside the hall stays
+ * clear, which is both the circulation rule (Slynyrd: groups against walls,
+ * middle open) and what keeps the reachability invariant true by construction
+ * rather than by luck.
  */
 function placeBuilding(
   room: TownRoom,
@@ -769,106 +864,133 @@ function placeBuilding(
   const furniture: Furniture[] = [];
   /** Furniture you can stand on — a chair is for sitting, a rug is floor. */
   const walkableKind = (k: FurnitureKind) => k === "rug" || k === "chair";
-  const put = (lx: number, ly: number, kind: FurnitureKind) => {
-    if (lx < 0 || ly < 0 || lx >= iw || ly >= ih) return;
+  const put = (lx: number, ly: number, kind: FurnitureKind): Furniture | null => {
+    if (lx < 0 || ly < 0 || lx >= iw || ly >= ih) return null;
     const tile = { x: ix + lx, y: iy + ly };
+    if (furniture.some((f) => f.tile.x === tile.x && f.tile.y === tile.y)) return null;
     if (!walkableKind(kind)) blocked[idx(tile.x, tile.y, cols)] = true;
-    furniture.push({ tile, kind, room: null }); // room resolved from the rects below
+    const item: Furniture = { tile, kind, room: null }; // room resolved from the rects below
+    furniture.push(item);
+    return item;
   };
 
-  // --- Workroom: a desk counter along the back wall, seats below it. ---
-  const deskStart = Math.floor((iw - deskCount) / 2);
+  // --- The plan: a hall column with a wing either side. ---
+  const leftW = hallCol; // workroom over kitchen
+  const rightW = iw - hallCol - 1; // lounge over bedroom
+
+  // Desks fill the left wing's top band, laid as (desk row, seat row) pairs — a
+  // character sits below its own desk facing up into the monitor, which is the
+  // arrangement the renderer draws. Two short rows rather than one long run
+  // against the back wall: six desks in a line is the shape that reads
+  // institutional (TIL-197), and it is also what drove the workroom over a
+  // third of the house.
+  const deskRows = Math.ceil(deskCount / leftW);
+  const workH = deskRows * 2;
   for (let i = 0; i < deskCount; i++) {
-    const lx = deskStart + i;
-    put(lx, 0, "desk");
-    desks.push({ x: ix + lx, y: iy });
-    seats.push({ x: ix + lx, y: iy + 1 });
-  }
-  put(0, 0, "plant"); // back corners
-  put(iw - 1, 0, "plant");
-
-  // --- Rooms below: a partition where there is height for one, else open plan.
-  // Row 2 is left clear as circulation between the workroom and the home. ---
-  const hasPartition = ih >= 7;
-  const homeTop = hasPartition ? 4 : 3;
-  if (hasPartition) {
-    for (let lx = 0; lx < iw; lx++) {
-      if (lx === hallCol) continue; // the doorway through to the workroom
-      const tile = { x: ix + lx, y: iy + 3 };
-      blocked[idx(tile.x, tile.y, cols)] = true;
-      partitions.push(tile);
-    }
+    const lx = i % leftW;
+    const ly = Math.floor(i / leftW) * 2;
+    put(lx, ly, "desk");
+    desks.push({ x: ix + lx, y: iy + ly });
+    seats.push({ x: ix + lx, y: iy + ly + 1 });
   }
 
-  // --- Kitchen, left of the hall: a counter run with a sink, then a table. ---
-  put(0, homeTop, "counter");
-  if (hallCol > 1) put(1, homeTop, "counter");
-  if (hallCol > 2) put(2, homeTop, "sink");
-  if (homeTop + 1 < ih) {
-    put(1, homeTop + 1, "table");
-    put(0, homeTop + 1, "chair");
-    if (hallCol > 2) put(2, homeTop + 1, "chair");
+  // Room bands. The bedroom gets a third row once there is height for one; the
+  // lounge takes the rest of the right wing.
+  const bedH = ih >= 7 ? 3 : 2;
+  const loungeH = ih - bedH;
+  const kitchenTop = workH;
+  const rightX = hallCol + 1;
+
+  // --- Kitchen: a counter run down the outer wall, and a table out in the room
+  // where there is width for one. Everything blocked stays in that one column,
+  // which is what leaves each unit a free tile beside it *inside the kitchen* —
+  // an object you can only reach by standing in the next room along is an object
+  // the sim cannot use, and the place tree would describe using it wrongly. ---
+  for (let ly = kitchenTop; ly < ih; ly++) {
+    put(0, ly, ly === kitchenTop + 1 ? "sink" : "counter");
+  }
+  // A table needs a column clear of both the counter run and the hall-side
+  // circulation, so only the widest wing gets one.
+  if (leftW >= 4 && kitchenTop + 2 < ih) {
+    put(2, kitchenTop + 1, "table");
+    put(2, kitchenTop + 2, "chair");
   }
 
-  // --- Lounge, right of the hall: a sofa, a rug in front of it, a bookshelf. ---
-  put(hallCol + 1, homeTop, "sofa");
-  if (hallCol + 2 < iw - 1) put(hallCol + 2, homeTop, "sofa");
-  put(iw - 1, homeTop, "bookshelf");
-  if (homeTop + 1 < ih) {
-    put(hallCol + 1, homeTop + 1, "rug");
-    put(hallCol + 2, homeTop + 1, "rug");
-  }
+  // --- Lounge: bookshelf and sofa against the outer wall, rug on the floor in
+  // front of them (a rug is floor, so it costs no standing room). ---
+  put(iw - 1, 0, "bookshelf");
+  put(iw - 1, 1, "sofa");
+  if (loungeH >= 4) put(iw - 1, 2, "sofa");
+  if (rightW >= 2) put(iw - 2, 1, "rug");
+  if (rightW >= 2 && loungeH >= 4) put(iw - 2, 2, "rug");
+  if (loungeH >= 4) put(iw - 1, loungeH - 1, "plant");
 
-  // --- Bed nook along the back of the home area, where there is a third row. ---
-  if (ih - 1 >= homeTop + 2) {
-    put(0, ih - 1, "bed");
-    if (hallCol > 1) put(1, ih - 1, "bed");
-    if (hallCol > 2) put(2, ih - 1, "nightstand");
-    put(iw - 1, ih - 1, "plant");
-  }
+  // --- Bedroom: the bed against the outer wall with a nightstand beside it. ---
+  put(iw - 1, loungeH, "bed");
+  put(iw - 1, loungeH + 1, "bed");
+  if (rightW >= 2) put(iw - 2, loungeH, "nightstand");
+  if (bedH >= 3) put(iw - 1, ih - 1, "plant");
 
   const door: Tile = { x: ix + hallCol, y: frontWallY + 1 }; // the yard apron
   const gate: Tile = { x: door.x, y: lotBottom };
 
-  // --- The floor plan, as rects. Everything above lays furniture out by hand
-  // against these boundaries; declaring them makes the plan readable data
+  // --- The floor plan, as rects. Declaring them makes the plan readable data
   // instead of something a reader has to reconstruct from the put() calls, and
-  // it is what lets a character say which room it is standing in (TIL-193). ---
-  const hasBedNook = ih - 1 >= homeTop + 2;
+  // it is what lets a character say which room it is standing in (TIL-193).
+  // Every interior tile falls in exactly one of these. ---
   const rooms: HouseRoom[] = [
-    // Desks, their seats, and the circulation row in front of them.
-    { kind: "workroom", name: "the workroom", rect: { x: ix, y: iy, w: iw, h: 3 } },
-    // The spine: the column running from the workroom down to the front door,
-    // through the partition's doorway.
-    { kind: "hall", name: "the hall", rect: { x: ix + hallCol, y: iy + 3, w: 1, h: ih - 3 } },
+    { kind: "workroom", name: "the workroom", rect: { x: ix, y: iy, w: leftW, h: workH } },
     {
       kind: "kitchen",
       name: "the kitchen",
-      rect: {
-        x: ix,
-        y: iy + homeTop,
-        w: hallCol,
-        h: (hasBedNook ? ih - 1 : ih) - homeTop,
-      },
+      rect: { x: ix, y: iy + kitchenTop, w: leftW, h: ih - kitchenTop },
     },
+    // The spine: the column from the back wall down to the front door.
+    { kind: "hall", name: "the hall", rect: { x: ix + hallCol, y: iy, w: 1, h: ih } },
+    { kind: "lounge", name: "the lounge", rect: { x: ix + rightX, y: iy, w: rightW, h: loungeH } },
     {
-      kind: "lounge",
-      name: "the lounge",
-      rect: { x: ix + hallCol + 1, y: iy + homeTop, w: iw - hallCol - 1, h: ih - homeTop },
-    },
-  ];
-  if (hasBedNook) {
-    rooms.push({
       kind: "bedroom",
       name: "the bedroom",
-      rect: { x: ix, y: iy + ih - 1, w: hallCol, h: 1 },
-    });
-  }
+      rect: { x: ix + rightX, y: iy + loungeH, w: rightW, h: bedH },
+    },
+  ];
 
-  // Resolve each item's room from where it actually stands. Doing it here rather
-  // than at each put() means a furniture item cannot claim a room it is not in,
-  // and moving one is enough to re-home it.
-  for (const f of furniture) f.room = roomKindAt(rooms, f.tile);
+  const roomOf = (t: Tile) => roomKindAt(rooms, t);
+  for (const f of furniture) f.room = roomOf(f.tile);
+
+  const isFree = (t: Tile) => !blocked[idx(t.x, t.y, cols)];
+  const interiorRect: Rect = { x: ix, y: iy, w: iw, h: ih };
+  const doorway: Tile = { x: door.x, y: frontWallY };
+
+  // Standing tiles of the base plan are protected from the clutter pass —
+  // otherwise a mug takes the only tile beside the bed and the house quietly
+  // loses its ability to sleep anyone.
+  const protectedTiles = new Set<string>([
+    ...seats.map((s) => `${s.x},${s.y}`),
+    ...deriveAffordances(furniture, interiorRect, doorway, isFree, roomOf).map(
+      (a) => `${a.tile.x},${a.tile.y}`,
+    ),
+  ]);
+
+  const clutter = scatterClutter(
+    room.name,
+    furniture,
+    rooms,
+    interiorRect,
+    doorway,
+    protectedTiles,
+    blocked,
+    cols,
+    put,
+    roomOf,
+  );
+
+  // Derived from the *finished* grid, after the clutter is down — protecting a
+  // standing tile stops clutter landing on it, but not clutter elsewhere cutting
+  // the route to it, and an affordance you cannot walk to is exactly the kind of
+  // advertised-but-unusable capacity that stalls a character at its own door.
+  const affordances = deriveAffordances(furniture, interiorRect, doorway, isFree, roomOf);
+  const restSpots = deriveRestSpots(affordances);
 
   return {
     room,
@@ -877,7 +999,7 @@ function placeBuilding(
     ty,
     tw: bw,
     th: bh,
-    interior: { x: ix, y: iy, w: iw, h: ih },
+    interior: interiorRect,
     frontWallY,
     door,
     gate,
@@ -885,10 +1007,218 @@ function placeBuilding(
     desks,
     partitions,
     furniture,
+    clutter,
+    affordances,
+    restSpots,
     rooms,
     // Filled by furnishLot, which is the pass that knows where the fence runs.
     lot: { x: tx, y: ty, w: bw, h: bh },
   };
+}
+
+/** The interior tiles a character can actually reach, walking in through the
+ *  doorway. Walkability is not reachability: a room sealed behind its own
+ *  furniture passes `isWalkable` on every one of its tiles and is still a room
+ *  nobody can enter — the same trap `pruneUnclaimableSpots` guards outdoors. */
+function reachableInside(interior: Rect, doorway: Tile, isFree: (t: Tile) => boolean): Set<string> {
+  const seen = new Set<string>();
+  const queue: Tile[] = [];
+  const push = (t: Tile) => {
+    const key = `${t.x},${t.y}`;
+    if (seen.has(key) || !inRect(interior, t) || !isFree(t)) return;
+    seen.add(key);
+    queue.push(t);
+  };
+  // Start from the tile the doorway opens into (the bottom of the hall).
+  push({ x: doorway.x, y: doorway.y - 1 });
+  while (queue.length) {
+    const t = queue.shift()!;
+    for (const [dx, dy] of ORTHO) push({ x: t.x + dx, y: t.y + dy });
+  }
+  return seen;
+}
+
+/** A standing tile beside every usable item, keeping only the ones a character
+ *  can walk to. Deterministic: neighbours are tried in a fixed order. */
+function deriveAffordances(
+  furniture: Furniture[],
+  interior: Rect,
+  doorway: Tile,
+  isFree: (t: Tile) => boolean,
+  roomOf: (t: Tile) => RoomKind | null,
+): Affordance[] {
+  const reached = reachableInside(interior, doorway, isFree);
+  const out: Affordance[] = [];
+  for (const f of furniture) {
+    const verb = FURNITURE_VERB[f.kind];
+    if (!verb) continue;
+    const options = ORTHO.map(([dx, dy]) => ({ x: f.tile.x + dx, y: f.tile.y + dy })).filter(
+      (t) => inRect(interior, t) && reached.has(`${t.x},${t.y}`),
+    );
+    // You use the counter *from the kitchen*. A bed on the bedroom's top row has
+    // a reachable neighbour one tile up in the lounge, and taking it would put a
+    // character asleep in the lounge — which the place tree would then say out
+    // loud in the tooltip. An object with no reachable tile in its own room is
+    // simply not usable from that room, and is dropped: a two-tile bed has a
+    // second tile that does have one, so nothing worth having is lost.
+    const tile = options.find((t) => roomOf(t) === f.room);
+    if (!tile) continue;
+    out.push({ tile, object: f.tile, kind: f.kind, verb, room: roomOf(tile) });
+  }
+  return out;
+}
+
+/** Somewhere to sit and somewhere to sleep, read straight off the affordances so
+ *  the two can never disagree about which tiles are usable. */
+function deriveRestSpots(affordances: Affordance[]): RestSpot[] {
+  const out: RestSpot[] = [];
+  const seen = new Set<string>();
+  for (const a of affordances) {
+    const kind = a.kind === "sofa" ? "sofa" : a.kind === "bed" ? "bed" : null;
+    if (!kind) continue;
+    const key = `${a.tile.x},${a.tile.y}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ tile: a.tile, kind });
+  }
+  return out;
+}
+
+/** Clutter kinds and the rooms each belongs in. Order is the fallback order when
+ *  a kind has nowhere to go, so it is deliberately mixed across rooms rather
+ *  than grouped — a house that fills its lounge before touching its kitchen
+ *  reads as half-finished. */
+const CLUTTER_ROOMS: { kind: ClutterKind; rooms: RoomKind[] }[] = [
+  { kind: "papers", rooms: ["workroom"] },
+  { kind: "laundry", rooms: ["bedroom"] },
+  { kind: "mug", rooms: ["kitchen", "workroom"] },
+  { kind: "guitar", rooms: ["lounge"] },
+  { kind: "boxes", rooms: ["bedroom", "lounge"] },
+  { kind: "bookstack", rooms: ["lounge", "workroom"] },
+  { kind: "catbed", rooms: ["lounge", "bedroom"] },
+];
+
+/** Items per interior tile every house is furnished to. The midpoint of the
+ *  0.40–0.45 band the invariant test pins, so rounding cannot fall outside it. */
+const DENSITY_TARGET = 0.425;
+
+/**
+ * Fill the house up to the density target with this project's own things.
+ *
+ * Two rules keep the result honest. A clutter item may only land where it
+ * **touches a wall or something already there** — an object stranded mid-floor
+ * is the thing that makes a room read as a grid rather than a room. And after
+ * each tentative placement the reachability invariant is re-checked, so clutter
+ * can never be what seals a room off; if a tile would break it, the item goes
+ * somewhere else. That is the same shape as `pruneUnclaimableSpots`: only the
+ * pass that can see the finished grid is allowed to decide what fits.
+ *
+ * Which kinds, in which order, and where the scan starts all come from a hash of
+ * the project name, so Alpha's house always looks like Alpha's house and never
+ * like Beta's (user decision, 2026-07-29).
+ */
+function scatterClutter(
+  projectName: string,
+  furniture: Furniture[],
+  rooms: HouseRoom[],
+  interior: Rect,
+  doorway: Tile,
+  /** Tiles clutter may neither cover nor cut off: desk seats, and the standing
+   *  tile of every affordance the base plan laid down. */
+  mustReach: Set<string>,
+  blocked: boolean[],
+  cols: number,
+  put: (lx: number, ly: number, kind: FurnitureKind) => Furniture | null,
+  roomOf: (t: Tile) => RoomKind | null,
+): Furniture[] {
+  const area = interior.w * interior.h;
+  const target = Math.round(area * DENSITY_TARGET);
+  const clutter: Furniture[] = [];
+  const isFree = (t: Tile) => !blocked[idx(t.x, t.y, cols)];
+  const occupied = new Set(furniture.map((f) => `${f.tile.x},${f.tile.y}`));
+
+  /** Every room still has ≥2 reachable tiles and ≥half its floor standable, and
+   *  every protected tile is still walkable *to*.
+   *
+   *  The second half is not redundant. A desk seat boxed in by a wall, its own
+   *  desk, a counter and one mug satisfies the room test — the room simply
+   *  counts one fewer reachable tile and stays above half — while the worker
+   *  assigned that seat can never sit down. Keeping clutter *off* a tile is not
+   *  the same as keeping the route to it open. */
+  const invariantHolds = (): boolean => {
+    const reached = reachableInside(interior, doorway, isFree);
+    for (const key of mustReach) if (!reached.has(key)) return false;
+    for (const r of rooms) {
+      let free = 0;
+      for (let y = r.rect.y; y < r.rect.y + r.rect.h; y++) {
+        for (let x = r.rect.x; x < r.rect.x + r.rect.w; x++) {
+          if (reached.has(`${x},${y}`)) free++;
+        }
+      }
+      if (free < 2 || free * 2 < r.rect.w * r.rect.h) return false;
+    }
+    return true;
+  };
+
+  // A rotation of the kind list, and a starting offset into each room's tiles.
+  const rot = Math.floor(hashStr(projectName, 101) * CLUTTER_ROOMS.length);
+  const skew = hashStr(projectName, 211);
+  const kinds = CLUTTER_ROOMS.map((_, i) => CLUTTER_ROOMS[(i + rot) % CLUTTER_ROOMS.length]);
+
+  const candidatesIn = (kind: RoomKind): Tile[] => {
+    const r = rooms.find((x) => x.kind === kind);
+    if (!r) return [];
+    const tiles: Tile[] = [];
+    for (let y = r.rect.y; y < r.rect.y + r.rect.h; y++) {
+      for (let x = r.rect.x; x < r.rect.x + r.rect.w; x++) tiles.push({ x, y });
+    }
+    // Start the scan somewhere different per project so two houses of the same
+    // tier put the same kind of thing in different corners.
+    const start = Math.floor(skew * tiles.length);
+    return [...tiles.slice(start), ...tiles.slice(0, start)];
+  };
+
+  /** Touching a wall, or another item — never stranded in open floor. */
+  const anchored = (t: Tile) =>
+    ORTHO.some(([dx, dy]) => {
+      const n = { x: t.x + dx, y: t.y + dy };
+      return !inRect(interior, n) || occupied.has(`${n.x},${n.y}`) || !isFree(n);
+    });
+
+  // Cycle the kind list until the house is full. `misses` stops an unfillable
+  // house — every remaining candidate refused by the anchor or the invariant —
+  // from looping forever: one full pass with nothing placed means it is done.
+  let attempt = 0;
+  let misses = 0;
+  while (furniture.length < target && misses < kinds.length) {
+    const spec = kinds[attempt % kinds.length];
+    attempt++;
+    let placed = false;
+    for (const roomKind of spec.rooms) {
+      for (const t of candidatesIn(roomKind)) {
+        const key = `${t.x},${t.y}`;
+        if (occupied.has(key) || mustReach.has(key) || !isFree(t)) continue;
+        if (roomOf(t) !== roomKind) continue; // rects overlap nowhere, but be exact
+        if (!anchored(t)) continue;
+        const item = put(t.x - interior.x, t.y - interior.y, spec.kind);
+        if (!item) continue;
+        if (!invariantHolds()) {
+          // Undo: this tile was what sealed a room in.
+          blocked[idx(t.x, t.y, cols)] = false;
+          furniture.pop();
+          continue;
+        }
+        item.room = roomOf(item.tile);
+        occupied.add(key);
+        clutter.push(item);
+        placed = true;
+        break;
+      }
+      if (placed) break;
+    }
+    misses = placed ? 0 : misses + 1;
+  }
+  return clutter;
 }
 
 /** True when `t` lies inside `r`. */

@@ -16,11 +16,9 @@
 // art is contained: repoint the grid coordinates below.
 
 import { Rectangle, Texture, type TextureSource } from "pixi.js";
-import type { FurnitureKind, PropKind, SpotKind } from "./world";
+import type { Activity } from "./sim";
+import type { ClutterKind, FurnitureKind, PropKind, SpotKind } from "./world";
 
-/** The furniture kinds drawn procedurally here. `desk`, `rug` and `plant` come
- *  from the Kenney interior sheet instead. */
-type HomeFurnitureKind = Exclude<FurnitureKind, "desk" | "rug" | "plant">;
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
 import grass2Url from "./assets/world/grass2.png";
@@ -30,6 +28,18 @@ import bushUrl from "./assets/world/bush.png";
 import mushroomsUrl from "./assets/world/mushrooms.png";
 import indoorsUrl from "./assets/kenney/roguelike-indoors.png";
 import urbanUrl from "./assets/kenney/rpg-urban.png";
+
+/** The fitted furniture drawn procedurally here. `desk`, `rug` and `plant` come
+ *  from the Kenney interior sheet instead, and clutter has its own drawer. */
+type HomeFurnitureKind =
+  | "counter"
+  | "sink"
+  | "table"
+  | "chair"
+  | "sofa"
+  | "bookshelf"
+  | "bed"
+  | "nightstand";
 
 export type Dir = "down" | "up" | "left" | "right";
 
@@ -57,6 +67,10 @@ export interface WorldTiles {
  *  plus homey props so it reads as a real house, not a shut exterior. */
 export interface InteriorTiles {
   floor: Texture;
+  /** Pale checkered tiling — the kitchen. */
+  tiledFloor: Texture;
+  /** Soft pile — the bedroom. */
+  carpet: Texture;
   wall: Texture;
   deskL: Texture;
   deskR: Texture;
@@ -117,6 +131,10 @@ export interface TownTextures {
   lamp: Texture;
   /** Self-authored soft cloud shadow that drifts across the terrain. */
   cloud: Texture;
+  /** One small icon per activity, floated over a character's head. Null for the
+   *  activities that need no icon — walking is legible from the walk cycle, and
+   *  chatting already has its own bubble. */
+  glyphs: Record<Activity, Texture | null>;
 }
 
 const FRAME = 16;
@@ -351,16 +369,26 @@ function drawFurniture(c: CanvasRenderingContext2D, kind: HomeFurnitureKind) {
     c.fillRect(4, 12, 1, 2);
     c.fillRect(11, 12, 1, 2);
   } else if (kind === "sofa") {
-    c.fillStyle = "#3f6f7a"; // back
-    c.fillRect(0, 2, FRAME, 5);
-    c.fillStyle = "#4d838f"; // seat cushions
-    c.fillRect(0, 6, FRAME, 8);
-    c.fillStyle = "#5c98a5"; // cushion highlight
-    c.fillRect(1, 7, 6, 5);
-    c.fillRect(9, 7, 6, 5);
-    c.fillStyle = "#345c66"; // seam + skirt
-    c.fillRect(7, 6, 2, 8);
-    c.fillRect(0, 14, FRAME, 1);
+    // Arms *and* a back, in a colour family the bed does not use. Drawn flat,
+    // the old one was a plain blue-grey rectangle — indistinguishable from the
+    // bed two tiles away and, next to a window on the same wall, from a window.
+    // A resting character is described as "on the sofa", so the sofa has to be
+    // the thing the eye lands on.
+    c.fillStyle = "#5a4470"; // back rail
+    c.fillRect(1, 1, 14, 4);
+    c.fillStyle = "#6d5488"; // back highlight
+    c.fillRect(2, 2, 12, 2);
+    c.fillStyle = "#5a4470"; // arms
+    c.fillRect(0, 4, 3, 9);
+    c.fillRect(13, 4, 3, 9);
+    c.fillStyle = "#8a6fa8"; // seat cushions
+    c.fillRect(3, 5, 10, 8);
+    c.fillStyle = "#9f84bb"; // cushion tops
+    c.fillRect(4, 6, 4, 5);
+    c.fillRect(9, 6, 4, 5);
+    c.fillStyle = "#4a3760"; // seam + shadow under the front edge
+    c.fillRect(8, 5, 1, 8);
+    c.fillRect(0, 13, FRAME, 2);
   } else if (kind === "bookshelf") {
     c.fillStyle = woodDark; // case
     c.fillRect(1, 1, 14, 14);
@@ -410,6 +438,263 @@ function drawFurniture(c: CanvasRenderingContext2D, kind: HomeFurnitureKind) {
   }
 }
 
+/**
+ * Draw one 16×16 piece of clutter — the personal things.
+ *
+ * Deliberately smaller and lower-contrast than the fitted furniture above: these
+ * are what a *specific* project's house has lying around, and if they carried
+ * the same visual weight as a sofa the room would read as a shop floor. They are
+ * drawn to the same flat top-down convention and single light direction so a
+ * cluttered room still reads as one room.
+ */
+function drawClutter(c: CanvasRenderingContext2D, kind: ClutterKind) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  const shadow = () => {
+    c.fillStyle = "rgba(0,0,0,0.14)";
+    c.fillRect(3, 13, 10, 2);
+  };
+  if (kind === "mug") {
+    shadow();
+    c.fillStyle = "#f2efe8"; // body
+    c.fillRect(5, 6, 6, 7);
+    c.fillStyle = "#d8d2c6"; // shaded side
+    c.fillRect(9, 6, 2, 7);
+    c.fillStyle = "#6b4a2f"; // what is in it
+    c.fillRect(6, 6, 4, 2);
+    c.fillStyle = "#e8e2d6"; // handle
+    c.fillRect(11, 8, 2, 1);
+    c.fillRect(12, 9, 1, 2);
+    c.fillRect(11, 11, 2, 1);
+  } else if (kind === "papers") {
+    shadow();
+    c.fillStyle = "#efe9dc"; // a spilled stack
+    c.fillRect(2, 7, 8, 6);
+    c.fillStyle = "#f7f3ea";
+    c.fillRect(5, 5, 8, 6);
+    c.fillStyle = "#c9c1ae"; // edges
+    c.fillRect(5, 5, 8, 1);
+    c.fillStyle = "#a8a091"; // lines of text
+    c.fillRect(7, 7, 5, 1);
+    c.fillRect(7, 9, 4, 1);
+  } else if (kind === "laundry") {
+    shadow();
+    c.fillStyle = "#9a8a6f"; // basket
+    c.fillRect(3, 8, 10, 6);
+    c.fillStyle = "#b3a184";
+    c.fillRect(3, 8, 10, 1);
+    c.fillStyle = "#7d6f58"; // weave
+    c.fillRect(6, 9, 1, 5);
+    c.fillRect(9, 9, 1, 5);
+    c.fillStyle = "#cfd8e6"; // clothes spilling over
+    c.fillRect(5, 5, 6, 4);
+    c.fillStyle = "#e2b6c4";
+    c.fillRect(8, 4, 4, 3);
+  } else if (kind === "guitar") {
+    shadow();
+    c.fillStyle = "#8a5a2b"; // body
+    c.fillRect(4, 8, 8, 6);
+    c.fillRect(5, 6, 6, 3);
+    c.fillStyle = "#5e3d1c"; // sound hole
+    c.fillRect(7, 9, 3, 3);
+    c.fillStyle = "#3f2d18"; // neck
+    c.fillRect(7, 1, 2, 6);
+    c.fillStyle = "#d8d2c6"; // head
+    c.fillRect(6, 0, 4, 2);
+  } else if (kind === "boxes") {
+    shadow();
+    c.fillStyle = "#b08a5a"; // lower carton
+    c.fillRect(2, 7, 9, 7);
+    c.fillStyle = "#8f6c42";
+    c.fillRect(2, 7, 9, 1);
+    c.fillStyle = "#c49a66"; // stacked one
+    c.fillRect(8, 4, 7, 7);
+    c.fillStyle = "#a07d4d";
+    c.fillRect(8, 4, 7, 1);
+    c.fillStyle = "#e6dcc6"; // tape
+    c.fillRect(11, 4, 1, 7);
+    c.fillRect(6, 7, 1, 7);
+  } else if (kind === "catbed") {
+    shadow();
+    c.fillStyle = "#7f6f9a"; // cushion rim
+    c.fillRect(2, 6, 12, 8);
+    c.fillStyle = "#9a8ab5";
+    c.fillRect(2, 6, 12, 1);
+    c.fillStyle = "#5f527a"; // hollow
+    c.fillRect(4, 8, 8, 4);
+    c.fillStyle = "#3a3340"; // the cat, curled
+    c.fillRect(5, 8, 6, 4);
+    c.fillStyle = "#565060"; // ear + tail
+    c.fillRect(5, 7, 2, 1);
+    c.fillRect(10, 11, 2, 1);
+  } else {
+    // bookstack — a leaning pile, spines out
+    shadow();
+    c.fillStyle = "#8c4a3f";
+    c.fillRect(3, 11, 11, 3);
+    c.fillStyle = "#3f6a8c";
+    c.fillRect(3, 8, 10, 3);
+    c.fillStyle = "#6a8c4a";
+    c.fillRect(4, 5, 9, 3);
+    c.fillStyle = "rgba(0,0,0,0.18)"; // page edges
+    c.fillRect(12, 8, 1, 3);
+    c.fillRect(12, 5, 1, 3);
+    c.fillRect(13, 11, 1, 3);
+  }
+}
+
+/**
+ * Activity badges — the small icon floated over a character's head.
+ *
+ * Drawn in code at 16px rather than set as emoji, for the same reason the
+ * furniture is: the town is entirely self-authored pixel art, and a colour emoji
+ * dropped into it reads as a sticker from another program. It is also the only
+ * way to guarantee the icon renders identically wherever the app runs — an emoji
+ * is whatever the platform font decides it is.
+ *
+ * Each badge is a dark rounded plate with a light icon on it, the same
+ * plate-behind-text device the nameplates use, and for the same reason: a bare
+ * glyph over grass or a roof washes out at this size.
+ */
+const GLYPH_INK = "#f5f2ea";
+
+function glyphPlate(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "rgba(30,27,22,0.82)";
+  // A 14×12 plate with the corners knocked off — a rounded rect at this size.
+  c.fillRect(2, 2, 12, 12);
+  c.fillRect(1, 3, 14, 10);
+  c.fillStyle = "rgba(245,242,234,0.16)"; // top edge catch-light
+  c.fillRect(2, 2, 12, 1);
+}
+
+function drawGlyph(c: CanvasRenderingContext2D, activity: Activity) {
+  glyphPlate(c);
+  const ink = GLYPH_INK;
+  if (activity === "typing") {
+    c.fillStyle = ink; // keyboard: two rows of keys and a space bar
+    for (const x of [4, 6, 8, 10]) c.fillRect(x, 5, 1, 2);
+    for (const x of [4, 6, 8, 10]) c.fillRect(x, 8, 1, 2);
+    c.fillRect(5, 11, 6, 1);
+  } else if (activity === "building") {
+    c.fillStyle = "#c9a227"; // hammer head
+    c.fillRect(4, 4, 7, 3);
+    c.fillStyle = ink; // handle
+    c.fillRect(7, 7, 2, 6);
+  } else if (activity === "testing") {
+    c.fillStyle = ink; // flask neck + body
+    c.fillRect(7, 3, 2, 3);
+    c.fillRect(5, 6, 6, 2);
+    c.fillRect(4, 8, 8, 4);
+    c.fillStyle = "#6aa84f"; // what is in it
+    c.fillRect(5, 9, 6, 3);
+  } else if (activity === "reading") {
+    c.fillStyle = ink; // open book, two leaves
+    c.fillRect(3, 5, 5, 7);
+    c.fillRect(8, 5, 5, 7);
+    c.fillStyle = "rgba(30,27,22,0.82)"; // spine + page lines
+    c.fillRect(7, 5, 2, 7);
+    c.fillRect(4, 7, 3, 1);
+    c.fillRect(9, 7, 3, 1);
+  } else if (activity === "writing") {
+    c.fillStyle = "#c9a227"; // pencil barrel
+    c.fillRect(9, 3, 3, 3);
+    c.fillRect(7, 5, 3, 3);
+    c.fillRect(5, 7, 3, 3);
+    c.fillStyle = ink; // tip
+    c.fillRect(3, 9, 3, 3);
+    c.fillStyle = "#3a3340";
+    c.fillRect(3, 11, 2, 1);
+  } else if (activity === "waiting") {
+    c.fillStyle = ink; // hourglass
+    c.fillRect(4, 3, 8, 1);
+    c.fillRect(4, 12, 8, 1);
+    c.fillRect(5, 4, 6, 1);
+    c.fillRect(6, 5, 4, 1);
+    c.fillRect(7, 6, 2, 3);
+    c.fillRect(6, 9, 4, 1);
+    c.fillRect(5, 10, 6, 2);
+    c.fillStyle = "#c9a227"; // the sand that has fallen
+    c.fillRect(6, 10, 4, 2);
+  } else if (activity === "coffee") {
+    c.fillStyle = ink; // cup + handle
+    c.fillRect(4, 7, 7, 6);
+    c.fillRect(11, 8, 2, 3);
+    c.fillStyle = "#6b4a2f";
+    c.fillRect(5, 7, 5, 2);
+    c.fillStyle = "rgba(245,242,234,0.55)"; // steam
+    c.fillRect(6, 3, 1, 3);
+    c.fillRect(9, 2, 1, 4);
+  } else if (activity === "washing") {
+    c.fillStyle = "#7fb0d8"; // a falling drop
+    c.fillRect(7, 3, 2, 4);
+    c.fillRect(6, 6, 4, 3);
+    c.fillRect(7, 9, 2, 1);
+    c.fillStyle = "rgba(245,242,234,0.8)"; // suds
+    c.fillRect(3, 10, 3, 2);
+    c.fillRect(10, 11, 3, 2);
+  } else if (activity === "eating") {
+    c.fillStyle = ink; // plate
+    c.fillRect(4, 7, 8, 4);
+    c.fillStyle = "rgba(30,27,22,0.82)";
+    c.fillRect(6, 8, 4, 2);
+    c.fillStyle = ink; // fork
+    c.fillRect(2, 4, 1, 8);
+    c.fillRect(13, 4, 1, 8);
+  } else if (activity === "resting") {
+    // A sofa seen head-on: back rail, two arms, seat — with dark gaps between
+    // them. Drawn as one solid block first, the parts merged at this size into a
+    // white rectangle that read as a blank card, so the gaps are the icon.
+    c.fillStyle = ink;
+    c.fillRect(3, 4, 10, 2); // back rail
+    c.fillRect(3, 7, 2, 5); // left arm
+    c.fillRect(11, 7, 2, 5); // right arm
+    c.fillRect(6, 8, 4, 4); // seat cushion
+    c.fillRect(3, 12, 10, 1); // base
+  } else {
+    // sleeping — the universal stack of Zs
+    c.fillStyle = ink;
+    c.fillRect(8, 3, 5, 1);
+    c.fillRect(10, 4, 2, 1);
+    c.fillRect(9, 5, 2, 1);
+    c.fillRect(8, 6, 5, 1);
+    c.fillRect(3, 8, 4, 1);
+    c.fillRect(5, 9, 2, 1);
+    c.fillRect(4, 10, 2, 1);
+    c.fillRect(3, 11, 4, 1);
+  }
+}
+
+/** One badge per activity that has something to show. Walking is legible from
+ *  the walk cycle, chatting already has its own bubble, and a character that has
+ *  left is on its way off the map — a badge on any of those is noise. */
+function buildGlyphs(): Record<Activity, Texture | null> {
+  const drawn: Activity[] = [
+    "typing",
+    "building",
+    "testing",
+    "reading",
+    "writing",
+    "waiting",
+    "coffee",
+    "washing",
+    "eating",
+    "resting",
+    "sleeping",
+  ];
+  const out = {
+    walking: null,
+    chatting: null,
+    stuck: null,
+    leaving: null,
+  } as Record<Activity, Texture | null>;
+  for (const a of drawn) out[a] = canvasTexture((c) => drawGlyph(c, a));
+  // `stuck` reuses the waiting hourglass rather than inventing a second "not
+  // making progress" icon — the ring around a blocked character already says
+  // which of the two it is.
+  out.stuck = out.waiting;
+  return out;
+}
+
 /** Desktop computer — a monitor with a glowing screen + keyboard. Self-authored
  *  (the roguelike packs ship no computer) so it stays CC0; sits on the desk. */
 function drawComputer(x: CanvasRenderingContext2D) {
@@ -439,6 +724,61 @@ function drawYard(c: CanvasRenderingContext2D) {
   for (let y = 0; y < FRAME; y += 4) c.fillRect(0, y, FRAME, 2);
   c.fillStyle = "#93bd61";
   c.fillRect(0, 0, FRAME, 1);
+}
+
+/**
+ * Kitchen tiling and bedroom carpet — the two floors a house needs that are not
+ * boards.
+ *
+ * Tinting the Kenney wood floor per room was tried first and cannot work: a
+ * multiply over a saturated orange plank can only ever produce a browner plank,
+ * so the "cool tile" kitchen came out as dark wood and the rooms read as
+ * blotches rather than as different materials. A floor is a material, and the
+ * material is what says which room you are in.
+ */
+function drawKitchenFloor(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#d9d6cd"; // pale tile
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#cfccc2"; // the checker, one shade off so it reads as tiling
+  c.fillRect(0, 0, 8, 8);
+  c.fillRect(8, 8, 8, 8);
+  c.fillStyle = "#bab7ad"; // grout
+  c.fillRect(0, 7, FRAME, 1);
+  c.fillRect(7, 0, 1, FRAME);
+  c.fillRect(0, 15, FRAME, 1);
+  c.fillRect(15, 0, 1, FRAME);
+}
+
+function drawCarpet(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  // Muted and greyed rather than a saturated mauve: the sofa is the strongest
+  // purple in the house and a carpet competing with it flattens the lounge.
+  c.fillStyle = "#9a8f9c";
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#a89ca9"; // flecks, so it reads as a weave not a flat fill
+  for (const [x, y] of [
+    [2, 3],
+    [9, 1],
+    [5, 8],
+    [13, 6],
+    [1, 12],
+    [10, 13],
+    [6, 11],
+  ]) {
+    c.fillRect(x, y, 2, 1);
+  }
+  c.fillStyle = "#8b8090";
+  for (const [x, y] of [
+    [4, 1],
+    [12, 4],
+    [8, 6],
+    [2, 9],
+    [14, 11],
+    [7, 14],
+  ]) {
+    c.fillRect(x, y, 1, 2);
+  }
 }
 
 /** A worn path — trodden earth with scattered grit. */
@@ -749,6 +1089,8 @@ export async function loadTownTextures(): Promise<TownTextures> {
       garden: [canvasTexture((c) => drawSpot(c, "garden"))],
     },
     interior: {
+      tiledFloor: canvasTexture(drawKitchenFloor),
+      carpet: canvasTexture(drawCarpet),
       floor: sub(indoors, 24, 0), // wood plank floor
       wall: sub(urban, 18, 4), // tan brick wall
       deskL: sub(indoors, 0, 0), // table, left half
@@ -770,6 +1112,13 @@ export async function loadTownTextures(): Promise<TownTextures> {
       desk: sub(indoors, 0, 0), // Kenney table half, tiled into a desk counter
       rug: sub(indoors, 5, 9),
       plant: sub(indoors, 16, 0),
+      mug: canvasTexture((c) => drawClutter(c, "mug")),
+      papers: canvasTexture((c) => drawClutter(c, "papers")),
+      laundry: canvasTexture((c) => drawClutter(c, "laundry")),
+      guitar: canvasTexture((c) => drawClutter(c, "guitar")),
+      boxes: canvasTexture((c) => drawClutter(c, "boxes")),
+      catbed: canvasTexture((c) => drawClutter(c, "catbed")),
+      bookstack: canvasTexture((c) => drawClutter(c, "bookstack")),
       counter: canvasTexture((c) => drawFurniture(c, "counter")),
       sink: canvasTexture((c) => drawFurniture(c, "sink")),
       table: canvasTexture((c) => drawFurniture(c, "table")),
@@ -794,6 +1143,7 @@ export async function loadTownTextures(): Promise<TownTextures> {
     fountain: [0, 1, 2].map((f) => canvasTexture((c) => drawFountain(c, f))),
     lamp: canvasTexture(drawLamp),
     cloud: canvasTextureSized(CLOUD_W, CLOUD_H, drawCloudShadow),
+    glyphs: buildGlyphs(),
   };
   return cache;
 }

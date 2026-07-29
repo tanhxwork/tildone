@@ -42,4 +42,22 @@ describe("dayNightPhase", () => {
     expect(dayNightPhase(24)).toEqual(dayNightPhase(0));
     expect(dayNightPhase(-1)).toEqual(dayNightPhase(23));
   });
+
+  // `night` is what the sim reads to send quiet agents to bed, so it has to mean
+  // properly dark rather than merely dim — sending the town to bed at dusk would
+  // empty the plaza hours early.
+  it.each([0, 1, 2, 3, 22, 23])("is night at %p", (h) => {
+    expect(dayNightPhase(h).night).toBe(true);
+  });
+
+  it.each([8, 12, 16, 18])("is not night at %p", (h) => {
+    expect(dayNightPhase(h).night).toBe(false);
+  });
+
+  it("is not night while the sky is still only dusk-warm", () => {
+    for (let h = 0; h < 24; h += 0.25) {
+      const { tint, night } = dayNightPhase(h);
+      if (tint === 0xff8a4c) expect(night).toBe(false); // the warm dawn/dusk band
+    }
+  });
 });

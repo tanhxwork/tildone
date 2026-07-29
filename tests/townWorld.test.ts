@@ -137,7 +137,20 @@ describe("buildWorld — enclosed single-door office", () => {
     for (const k of ["desk", "counter", "table", "sofa", "bed", "bookshelf"]) {
       expect(kinds.has(k as (typeof b.furniture)[number]["kind"])).toBe(true);
     }
-    expect(b.partitions.length).toBeGreaterThan(0); // the house is divided
+    // The house is divided — by rooms that tile the interior exactly, with no
+    // tile in two rooms and none in none. (It used to be divided by a partition
+    // wall; the wing plan spends that row on floor instead and divides with the
+    // hall, so the invariant worth pinning is the tiling, not the wall.)
+    const seen = new Set<string>();
+    for (const r of b.rooms) {
+      for (let y = r.rect.y; y < r.rect.y + r.rect.h; y++) {
+        for (let x = r.rect.x; x < r.rect.x + r.rect.w; x++) {
+          expect(seen.has(`${x},${y}`)).toBe(false);
+          seen.add(`${x},${y}`);
+        }
+      }
+    }
+    expect(seen.size).toBe(b.interior.w * b.interior.h);
     // The hall is clear: the door reaches a desk seat without passing furniture
     // it would have to walk through.
     expect(findPath(world, b.door, b.seats[0]).length).toBeGreaterThan(0);
