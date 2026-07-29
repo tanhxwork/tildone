@@ -219,6 +219,11 @@ export interface TownWorld {
   /** Street-lamp tiles lining the roads. Blocked (so characters path around
    *  them, never through) and rendered + lit at night by the Pixi layer. */
   lamps: Tile[];
+  /** Cells deliberately left unbuilt: open green with water, a fire and a
+   *  planted bed. What stops the grid reading as a grid of identical cells —
+   *  and, incidentally, leisure capacity out among the streets rather than all
+   *  of it on the square. Empty below four buildings. */
+  parks: Rect[];
 }
 
 function idx(x: number, y: number, cols: number): number {
@@ -273,6 +278,110 @@ function pruneUnclaimableSpots(
  * The world is sized to the roster — `_viewportWidth`/`scale` are accepted for
  * call-site compatibility but no longer drive the layout (a camera scrolls it).
  */
+/** A small stable hash — the town must look the same every time it is built,
+ *  so variation is derived from names and indices, never from Math.random. */
+function hashStr(s: string, salt: number): number {
+  let h = 2166136261 ^ salt;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+/** How far this house sits off its cell's centre line, and how deep its front
+ *  yard is. Both are clamped inside the cell by placeBuilding. */
+function cellJitter(name: string, cell: number): { dx: number; setback: number } {
+  return {
+    dx: Math.floor(hashStr(name, cell * 7 + 1) * 5) - 2, // -2..2
+    setback: Math.floor(hashStr(name, cell * 13 + 5) * 3), // 0..2
+  };
+}
+
+/** Spread `count` park cells across the grid, never on the plaza cell and never
+ *  two in a row, so the gaps land as breathing space rather than as a hole. */
+function pickParkCells(
+  total: number,
+  plazaCell: number,
+  count: number,
+  perRow: number,
+): Set<number> {
+  const parks = new Set<number>();
+  if (count <= 0) return parks;
+  // The step must not be a multiple of the row length, or every park lands in
+  // the same column and the fix for one lattice introduces another (seen at
+  // both 12 and 18 cells, from two different strides). Bump it until it walks
+  // across columns as well as down rows.
+  let step = Math.max(2, Math.floor(total / (count + 1)));
+  if (perRow > 1) while (step % perRow === 0) step += 1;
+  for (let i = 1; parks.size < count && i <= total; i++) {
+    let cell = (i * step) % total;
+    // Walk forward off any cell we cannot take (plaza, already a park, or
+    // adjacent to one) rather than skipping the slot entirely.
+    for (let tries = 0; tries < total; tries++) {
+      const ok = cell !== plazaCell && !parks.has(cell) && !parks.has(cell - 1) && !parks.has(cell + 1);
+      if (ok) break;
+      cell = (cell + 1) % total;
+    }
+    if (cell !== plazaCell && !parks.has(cell)) parks.add(cell);
+  }
+  return parks;
+}
+
+/**
+ * Furnish a park: a pond, a fire and a planted bed, spaced well apart.
+ *
+ * Spacing is not cosmetic. The sim routes around every leisure spot except the
+ * one it is walking to, so two spots side by side can make each other
+ * unclaimable; three tiles apart leaves each one free neighbours on all sides.
+ */
+function furnishPark(
+  rect: Rect,
+  cols: number,
+  rows: number,
+  blocked: boolean[],
+  road: boolean[],
+  spots: LeisureSpot[],
+  props: TownProp[],
+) {
+  const cx = rect.x + Math.floor(rect.w / 2);
+  const cy = rect.y + Math.floor(rect.h / 2);
+  const free = (x: number, y: number) =>
+    x > 0 && y > 0 && x < cols - 1 && y < rows - 1 && !blocked[idx(x, y, cols)] && !road[idx(x, y, cols)];
+
+  const add = (x: number, y: number, kind: SpotKind) => {
+    if (!free(x, y)) return;
+    spots.push({ id: spots.length, tile: { x, y }, kind });
+  };
+
+  // The slots are fixed (that is the spacing guarantee); what varies is which
+  // feature lands in which one, and whether the layout is flipped. Two parks
+  // built to the identical plan is the same "generated" tell as two identical
+  // house cells, so the variation has to reach in here too.
+  const seed = `park${rect.x},${rect.y}`;
+  const turn = Math.floor(hashStr(seed, 3) * 5);
+  const flip = hashStr(seed, 9) < 0.5 ? -1 : 1;
+  const slots: [number, number][] = [
+    [-3, -2],
+    [3, -2],
+    [0, 2],
+    [-3, 2],
+    [3, 2],
+  ];
+  // A rotation, so each of pond / campfire / garden still appears exactly once
+  // however the plan is turned — a park without water is not the variation we
+  // are after.
+  const kinds: SpotKind[] = ["pond", "campfire", "garden", "bench", "bench"];
+  slots.forEach(([sx, sy], i) => add(cx + sx, cy + sy * flip, kinds[(i + turn) % kinds.length]));
+
+  // One blocked centrepiece so the park has something to gather around, and so
+  // the eye reads it as a place rather than a gap between houses.
+  if (free(cx, cy - flip)) {
+    blocked[idx(cx, cy - flip, cols)] = true;
+    props.push({ tile: { x: cx, y: cy - flip }, kind: "planter" });
+  }
+}
+
 export function buildWorld(
   model: TownModel,
   _viewportWidth?: number,
@@ -280,7 +389,10 @@ export function buildWorld(
 ): TownWorld {
   const rooms = model.rooms;
   const n = rooms.length;
-  const total = n + 1; // +1 cell reserved for the central plaza
+  // Parks are cells left unbuilt (TIL-192). Only once the town is big enough to
+  // spare one — in a three-house town an empty cell reads as a bug, not a park.
+  const parkCount = n >= 4 ? Math.max(1, Math.round(n / 5)) : 0;
+  const total = n + 1 + parkCount; // +1 cell reserved for the central plaza
   const perRow = Math.max(1, Math.ceil(Math.sqrt(total)));
   const rowCount = Math.max(1, Math.ceil(total / perRow));
   const cols = perRow * CELL_W;
@@ -312,7 +424,14 @@ export function buildWorld(
     Math.floor(rowCount / 2) * perRow + Math.floor(perRow / 2),
   );
 
+  // Which cells are parks. A town of identical cells reads as generated however
+  // good the houses are, so some of the grid is deliberately not built on
+  // (TIL-192): a park is a cell with no house, which puts water, a fire and a
+  // planted bed out among the streets instead of only beside the square.
+  const parkCells = pickParkCells(total, plazaCell, parkCount, perRow);
+
   const buildings: BuildingPlacement[] = [];
+  const parks: Rect[] = [];
   let roomPtr = 0;
   let plaza: Rect = { x: 0, y: 0, w: 0, h: 0 };
   let plazaCellX = 0;
@@ -345,8 +464,17 @@ export function buildWorld(
       continue;
     }
 
+    if (parkCells.has(cell)) {
+      parks.push({ x: cellX + 1, y: cellY + TOP_MARGIN, w: CELL_W - 2, h: ROAD_ROW - TOP_MARGIN });
+      continue;
+    }
+
     const roomForCell = rooms[roomPtr++];
-    buildings.push(placeBuilding(roomForCell, cellX, cellY, cols, blocked));
+    // Jitter, derived from the project name so it is stable for a given town:
+    // every house standing at the same offset with the same setback is what
+    // makes the grid legible as a grid.
+    const j = cellJitter(roomForCell.name, cell);
+    buildings.push(placeBuilding(roomForCell, cellX, cellY, cols, blocked, j.dx, j.setback));
   }
 
   // Lots are fenced after every footprint is written, so a fence can never be
@@ -369,6 +497,7 @@ export function buildWorld(
   const props: TownProp[] = [];
   furnishPlaza(plaza, cols, blocked, spots, props);
   furnishCommonsGreen(plazaCellX, plazaCellY, cols, rows, blocked, road, spots);
+  for (const p of parks) furnishPark(p, cols, rows, blocked, road, spots, props);
 
   // Street lamps: one every few columns on the green immediately south of a
   // horizontal road. Blocked so pathfinding routes around them (a departure
@@ -412,6 +541,7 @@ export function buildWorld(
     path,
     fences,
     lamps,
+    parks,
   };
 }
 
@@ -590,6 +720,8 @@ function placeBuilding(
   cellY: number,
   cols: number,
   blocked: boolean[],
+  dx = 0,
+  setback = 0,
 ): BuildingPlacement {
   const tier = tierFor(room.openTaskCount);
   const deskCount = TIER_DESKS[tier];
@@ -597,10 +729,25 @@ function placeBuilding(
   const bw = iw + 2;
   const bh = ih + 2;
 
-  const tx = cellX + Math.floor((CELL_W - bw) / 2);
-  // Bottom-aligned to the yard, so every facade stands the same setback back
-  // from the street whatever the tier.
-  const ty = cellY + ROAD_ROW - YARD_DEPTH - bh;
+  // Offset off the cell's centre line, clamped so the LOT (footprint plus its
+  // one-tile fence) always stays inside the cell and off the vertical street at
+  // the cell's left edge.
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const tx = clamp(
+    cellX + Math.floor((CELL_W - bw) / 2) + dx,
+    cellX + 2,
+    cellX + CELL_W - 1 - bw,
+  );
+  // Bottom-aligned to the street, then pushed back by the jitter — which deepens
+  // the front yard rather than moving the fence, because the lot now runs down
+  // to the road whatever the setback.
+  const ty = clamp(
+    cellY + ROAD_ROW - YARD_DEPTH - bh - setback,
+    cellY + TOP_MARGIN,
+    cellY + ROAD_ROW - YARD_DEPTH - bh,
+  );
+  /** The fence's street edge: one tile above the road, whatever the setback. */
+  const lotBottom = cellY + ROAD_ROW - 1;
   const ix = tx + 1; // interior origin
   const iy = ty + 1;
   const frontWallY = ty + bh - 1;
@@ -681,7 +828,7 @@ function placeBuilding(
   }
 
   const door: Tile = { x: ix + hallCol, y: frontWallY + 1 }; // the yard apron
-  const gate: Tile = { x: door.x, y: frontWallY + YARD_DEPTH };
+  const gate: Tile = { x: door.x, y: lotBottom };
 
   // --- The floor plan, as rects. Everything above lays furniture out by hand
   // against these boundaries; declaring them makes the plan readable data
@@ -781,7 +928,10 @@ function furnishLot(
   const left = b.tx - 1;
   const right = b.tx + b.tw;
   const top = b.ty - 1;
-  const bottom = b.frontWallY + YARD_DEPTH;
+  // The gate is on the street edge of the lot by construction, so taking the
+  // bottom from it keeps the fence against the road however far back the house
+  // was set — a deeper setback becomes a deeper front yard, not a floating lot.
+  const bottom = b.gate.y;
   const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < cols && y < rows;
   b.lot = { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
 

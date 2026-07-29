@@ -322,8 +322,13 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     // up against a street, because managed ground is what reads as inhabited.
     const built = (x: number, y: number) =>
       isBuilding.has(`${x},${y}`) || isFence.has(`${x},${y}`);
+    // A park is an unbuilt cell, so it has to read as planted rather than as a
+    // gap between houses: force woodland inside one instead of leaving it to the
+    // coarse mask, which can miss a whole cell (TIL-192).
+    const inPark = (x: number, y: number) =>
+      w.parks.some((p) => x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h);
     const grove = (x: number, y: number) =>
-      hash(Math.floor(x / 6) * 31 + 7, Math.floor(y / 6) * 17 + 3) < 0.34;
+      inPark(x, y) || hash(Math.floor(x / 6) * 31 + 7, Math.floor(y / 6) * 17 + 3) < 0.34;
     for (let y = 0; y < w.rows; y++) {
       for (let x = 0; x < w.cols; x++) {
         const key = `${x},${y}`;

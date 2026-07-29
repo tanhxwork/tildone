@@ -355,4 +355,111 @@ describe("buildWorld — the furnished commons", () => {
     const seats = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
     for (const l of world.lamps) expect(seats.has(`${l.x},${l.y}`)).toBe(false);
   });
+
+  // TIL-192: the houses and the commons were worth looking at, but every cell
+  // was identical — same offset, same setback, always built on — which is the
+  // other half of what makes a generated place read as generated.
+  describe("breaking the lattice", () => {
+    const big = () =>
+      buildWorld(model("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota"));
+
+    it("does not stand every house at the same place in its cell", () => {
+      const world = big();
+      const offsets = new Set<number>();
+      const depths = new Set<number>();
+      for (const b of world.buildings) {
+        offsets.add(b.tx - Math.floor(b.tx / CELL_W) * CELL_W); // off the cell's left edge
+        depths.add(b.gate.y - b.frontWallY); // how deep the front yard is
+      }
+      expect(offsets.size).toBeGreaterThan(1);
+      expect(depths.size).toBeGreaterThan(1);
+    });
+
+    it("keeps every lot inside its own cell and off the vertical street", () => {
+      const world = big();
+      for (const b of world.buildings) {
+        const cellX = Math.floor(b.tx / CELL_W) * CELL_W;
+        expect(b.lot.x, b.room.name).toBeGreaterThanOrEqual(cellX + 1);
+        expect(b.lot.x + b.lot.w, b.room.name).toBeLessThanOrEqual(cellX + CELL_W);
+      }
+      // The streets down the cell columns stay clear of every fence post.
+      for (const f of world.fences) expect(f.x % CELL_W).not.toBe(0);
+    });
+
+    it("holds the fence against the street however far back the house sits", () => {
+      // A deeper setback must become a deeper yard, not a lot floating off the
+      // road — otherwise the gate stops being on the street.
+      const world = big();
+      for (const b of world.buildings) {
+        expect(b.lot.y + b.lot.h - 1, b.room.name).toBe(b.gate.y);
+        expect(b.gate.y - b.frontWallY, b.room.name).toBeGreaterThanOrEqual(3);
+      }
+    });
+
+    it("leaves parks unbuilt once the town can spare a cell, and not before", () => {
+      expect(buildWorld(model("A", "B", "C")).parks).toHaveLength(0);
+      for (const n of [4, 7, 9, 14]) {
+        const rooms = Array.from({ length: n }, (_, i) => room(`P${i}`, i + 1));
+        const world = buildWorld({ rooms });
+        expect(world.parks.length, `roster ${n}`).toBe(Math.max(1, Math.round(n / 5)));
+        expect(world.buildings.length, `roster ${n}`).toBe(n); // parks cost no house
+      }
+    });
+
+    it("furnishes a park with water, fire and planting, clear of the square", () => {
+      const world = big();
+      const inRect = (r: { x: number; y: number; w: number; h: number }, t: { x: number; y: number }) =>
+        t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h;
+      for (const park of world.parks) {
+        const kinds = new Set(world.spots.filter((s) => inRect(park, s.tile)).map((s) => s.kind));
+        expect(kinds.has("pond")).toBe(true);
+        expect(kinds.has("campfire")).toBe(true);
+        expect(kinds.has("garden")).toBe(true);
+        // A park is somewhere else, never a second name for the commons.
+        expect(inRect(park, { x: world.plaza.x, y: world.plaza.y })).toBe(false);
+      }
+    });
+
+    it("does not build every park to the same plan, or stack them in one column", () => {
+      // Fixing a lattice with a lattice: the first cut put both parks in
+      // column 0 with identical layouts, which reads exactly as generated as
+      // the uniform cells did.
+      const inRect = (r: { x: number; y: number; w: number; h: number }, t: { x: number; y: number }) =>
+        t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h;
+
+      // Swept, because the stacking bug was size-dependent: it appeared at 12
+      // cells, was "fixed" by a constant, and came straight back at 18.
+      for (const n of [9, 12, 14, 20, 25]) {
+        const world = buildWorld(model(...Array.from({ length: n }, (_, i) => `P${i}`)));
+        const label = `roster ${n}`;
+        expect(world.parks.length, label).toBeGreaterThan(1);
+        expect(new Set(world.parks.map((p) => p.x)).size, label).toBeGreaterThan(1);
+
+        // Same features, laid out differently: compare each park's spot kinds
+        // by their offset from its own top-left.
+        const plans = world.parks.map((p) =>
+          world.spots
+            .filter((s) => inRect(p, s.tile))
+            .map((s) => `${s.tile.x - p.x},${s.tile.y - p.y}:${s.kind}`)
+            .sort()
+            .join("|"),
+        );
+        expect(new Set(plans).size, label).toBeGreaterThan(1);
+      }
+    });
+
+    it("is still deterministic — the same roster builds the same town twice", () => {
+      // Variation comes from hashing the project name, never from Math.random:
+      // a town that reshuffled itself on every render would be unusable.
+      const shape = (w: TownWorld) =>
+        JSON.stringify({
+          cols: w.cols,
+          rows: w.rows,
+          b: w.buildings.map((b) => [b.tx, b.ty, b.tw, b.th, b.gate.x, b.gate.y]),
+          parks: w.parks,
+          spots: w.spots.map((s) => [s.tile.x, s.tile.y, s.kind]),
+        });
+      expect(shape(big())).toBe(shape(big()));
+    });
+  });
 });
