@@ -83,6 +83,17 @@ const CHORE_MIN_MS = 18_000;
 const CHORE_SPREAD_MS = 16_000;
 /** How long (ms) a worker spends on the trip before heading back to its desk. */
 const CHORE_DWELL_MS = 3200;
+/**
+ * What a working character may get up to do.
+ *
+ * An allow-list, not "anything that is not a desk". Excluding only `working`
+ * admitted the sofa and the bed, so a live agent grinding away would get up,
+ * walk to bed and render as `sleeping` — the exact picture this change exists to
+ * reserve for a session that has actually stopped (Codex finding on 67114c2).
+ * The research's phrase for this loop is "coffee, a stretch at the window, back
+ * to the desk"; lying down is not in it.
+ */
+const CHORE_VERBS: ActivityVerb[] = ["coffee", "washing", "eating", "reading"];
 
 export type Facing = "up" | "down" | "left" | "right";
 
@@ -278,9 +289,33 @@ export function settleSim(sim: SimState, world: TownWorld): SimState {
   sim.occupied.clear();
   // Rest-spot claims survive: unlike a leisure spot, the tile a quiet character
   // is settled *on* is where it stays, so dropping the claim here would let the
-  // next step hand the same sofa to somebody else.
+  // next step hand the same sofa to somebody else. Trips in flight do not —
+  // snapToRest cancels them, and the ledger has to say so at once rather than
+  // wait for the next step to notice.
   for (const c of sim.chars.values()) snapToRest(c, world);
+  reconcileClaims(sim);
   return sim;
+}
+
+/**
+ * Make the indoor-claim ledger exactly what characters are holding.
+ *
+ * Derived rather than swept for dead owners. A despawn check is not enough: a
+ * live character can stop holding something without despawning — settling the
+ * sim on a visibility resume cancels a trip in flight, and the kettle it was
+ * walking to stayed reserved by a character that still existed, so no
+ * owner-based sweep ever collected it (Codex finding on 67114c2). Deriving the
+ * ledger from the holders makes "a claim nobody holds" unrepresentable.
+ */
+function reconcileClaims(sim: SimState) {
+  const held = new Set<string>();
+  for (const c of sim.chars.values()) {
+    if (c.chore) held.add(`${c.chore.tile.x},${c.chore.tile.y}`);
+    if (c.restSpot) held.add(`${c.restSpot.x},${c.restSpot.y}`);
+  }
+  for (const key of sim.claims.keys()) {
+    if (!held.has(key)) sim.claims.delete(key);
+  }
 }
 
 /** End a chat, and start this character's cooldown. */
@@ -498,6 +533,9 @@ function assignAnchors(
   //    and collect who wants what, per building.
   const workByBuilding = new Map<number, number[]>();
   const restByBuilding = new Map<number, number[]>();
+  /** Everyone with no anchor, pooled per building so step 4 can hand out
+   *  distinct waiting tiles across BOTH kinds of overflow at once. */
+  const overflowByBuilding = new Map<number, number[]>();
   for (const [id, c] of sim.chars) {
     const indoors = (c.intent === "work" || c.intent === "rest") && byId.has(id);
     if (!indoors) {
@@ -508,14 +546,19 @@ function assignAnchors(
     }
     const b = world.buildings[c.buildingIndex];
     if (c.intent === "work") {
-      if (c.restSpot) releaseClaims(sim, c);
+      if (c.restSpot) {
+        releaseClaims(sim, c);
+        c.path = [];
+      }
       if (c.seat && !(b?.seats ?? []).some((s) => s.x === c.seat!.x && s.y === c.seat!.y)) {
         c.seat = null;
+        c.path = [];
       }
       const list = workByBuilding.get(c.buildingIndex) ?? [];
       list.push(id);
       workByBuilding.set(c.buildingIndex, list);
     } else {
+      if (c.seat) c.path = [];
       c.seat = null;
       const want = night ? "bed" : "sofa";
       // Give up a sofa when night falls, and a bed when morning comes — the
@@ -525,7 +568,14 @@ function assignAnchors(
         (b?.restSpots ?? []).some(
           (r) => r.tile.x === c.restSpot!.x && r.tile.y === c.restSpot!.y && r.kind === want,
         );
-      if (!stillRight) releaseClaims(sim, c);
+      if (!stillRight) {
+        releaseClaims(sim, c);
+        // …and drop the route to it. Keeping the path meant a character that
+        // gave up the sofa at nightfall finished walking to the sofa anyway —
+        // by then unclaimed, so another quiet agent could be settling on it —
+        // before turning round for the bed (Codex finding on 67114c2).
+        c.path = [];
+      }
       const list = restByBuilding.get(c.buildingIndex) ?? [];
       list.push(id);
       restByBuilding.set(c.buildingIndex, list);
@@ -553,7 +603,10 @@ function assignAnchors(
         overflow.push(id);
       }
     });
-    assignOverflow(sim, world, buildingIndex, overflow);
+    for (const id of overflow) overflowByBuilding.set(buildingIndex, [
+      ...(overflowByBuilding.get(buildingIndex) ?? []),
+      id,
+    ]);
     for (const id of ids) {
       const c = sim.chars.get(id)!;
       if (c.seat) c.restTile = null;
@@ -578,7 +631,21 @@ function assignAnchors(
         overflow.push(id);
       }
     }
-    assignOverflow(sim, world, buildingIndex, overflow);
+    if (overflow.length) {
+      overflowByBuilding.set(buildingIndex, [
+        ...(overflowByBuilding.get(buildingIndex) ?? []),
+        ...overflow,
+      ]);
+    }
+  }
+
+  // 4. Park everyone left over. Both passes above feed one pool per building, so
+  //    the waiting tiles are handed out ONCE. Assigning them per pass meant the
+  //    work overflow and the rest overflow each asked for "the nearest free
+  //    tiles to the door" without telling the other, got the same answer, and
+  //    settled on top of each other (Codex finding on 67114c2).
+  for (const [buildingIndex, ids] of overflowByBuilding) {
+    assignOverflow(sim, world, buildingIndex, [...ids].sort((a, b) => a - b));
   }
 }
 
@@ -768,14 +835,12 @@ export function stepTownSim(
   // Give everyone indoors a desk seat or a rest spot of its own.
   assignAnchors(sim, world, byId, night);
 
-  // Safety net: drop claims held by characters that no longer exist, so a missed
-  // release can never leave a spot, a sofa or a kettle permanently blocked.
+  // Safety net: drop leisure-spot claims held by characters that no longer
+  // exist, so a missed release can never leave a spot permanently blocked.
   for (const [spotId, taskId] of sim.occupied) {
     if (!sim.chars.has(taskId)) sim.occupied.delete(spotId);
   }
-  for (const [key, taskId] of sim.claims) {
-    if (!sim.chars.has(taskId)) sim.claims.delete(key);
-  }
+  reconcileClaims(sim);
 
   // --- Reduced motion: still tableau. Snap everyone home, no motion. ---
   if (opts.reducedMotion) {
@@ -979,7 +1044,8 @@ export function stepTownSim(
 function startChore(sim: SimState, world: TownWorld, c: CharAgent, rng: () => number) {
   const all = world.buildings[c.buildingIndex]?.affordances ?? [];
   const options = all.filter(
-    (a: Affordance) => a.verb !== "working" && !sim.claims.has(`${a.tile.x},${a.tile.y}`),
+    (a: Affordance) =>
+      CHORE_VERBS.includes(a.verb) && !sim.claims.has(`${a.tile.x},${a.tile.y}`),
   );
   if (!options.length) {
     c.choreMs = CHORE_MIN_MS + rng() * CHORE_SPREAD_MS;

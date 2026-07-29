@@ -906,8 +906,15 @@ function placeBuilding(
   // which is what leaves each unit a free tile beside it *inside the kitchen* —
   // an object you can only reach by standing in the next room along is an object
   // the sim cannot use, and the place tree would describe using it wrongly. ---
-  for (let ly = kitchenTop; ly < ih; ly++) {
-    put(0, ly, ly === kitchenTop + 1 ? "sink" : "counter");
+  // The run is capped in the narrowest wing. A third counter there filled the
+  // house to its density target on fitted furniture alone, leaving room for only
+  // two pieces of clutter — and clutter is the whole of what makes a house
+  // *someone's*, so the small tier came out the most anonymous of the three
+  // (Codex spec-axis finding on 67114c2). The research asks for 3–5 per house.
+  const counterRun = leftW >= 3 ? ih - kitchenTop : Math.min(2, ih - kitchenTop);
+  for (let i = 0; i < counterRun; i++) {
+    const ly = kitchenTop + i;
+    put(0, ly, i === 1 ? "sink" : "counter");
   }
   // A table needs a column clear of both the counter run and the hall-side
   // circulation, so only the widest wing gets one.
