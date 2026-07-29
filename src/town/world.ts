@@ -202,6 +202,47 @@ function idx(x: number, y: number, cols: number): number {
   return y * cols + x;
 }
 
+/** The four orthogonal steps — the only moves the pathfinder makes. */
+const ORTHO: [number, number][] = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+/**
+ * Drop leisure spots a character could never actually claim.
+ *
+ * The sim routes around *every* spot tile except the one it is heading to, so a
+ * character has to be able to stand on a tile next to its target that is not
+ * itself a spot. A bench in the middle of a solid run, boxed in by a planter on
+ * one side and a lamp on the other, satisfies plain walkability but can never be
+ * reached — it is advertised capacity that silently never materialises, and an
+ * idle character that picks it stalls at its door.
+ *
+ * Runs after every blocking pass (footprints, props, fountain, fences, lamps) so
+ * it sees the finished grid. Ids are left alone rather than re-packed: they are
+ * opaque keys for `sim.occupied`, and renumbering them across a rebuild would
+ * silently transfer one character's claim to a different bench.
+ */
+function pruneUnclaimableSpots(
+  spots: LeisureSpot[],
+  blocked: boolean[],
+  cols: number,
+  rows: number,
+): LeisureSpot[] {
+  const spotTiles = new Set(spots.map((s) => `${s.tile.x},${s.tile.y}`));
+  return spots.filter(({ tile }) =>
+    ORTHO.some(([dx, dy]) => {
+      const nx = tile.x + dx;
+      const ny = tile.y + dy;
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) return false;
+      if (blocked[idx(nx, ny, cols)]) return false;
+      return !spotTiles.has(`${nx},${ny}`);
+    }),
+  );
+}
+
 /**
  * Build the tiled world from the town roster. Buildings + one central plaza wrap
  * into a roughly-square lattice of equal cells (so the town grows outward, not
@@ -315,12 +356,17 @@ export function buildWorld(
   const edgeX = Math.floor(cols / 2);
   const LAMP_GAP = 5;
   // A lamp must never land on a leisure spot — a spot is walkable, so blocking it
-  // would strand its claimant and quietly cost the town a seat.
+  // would strand its claimant and quietly cost the town a seat. It must not land
+  // *beside* one either: the sim routes around every spot tile except its own
+  // target, so a lamp on a seat's last free neighbour makes that seat
+  // unclaimable even though plain walkability says it is fine.
   const spotTiles = new Set(spots.map((s) => `${s.tile.x},${s.tile.y}`));
+  const besideSpot = (x: number, y: number) =>
+    ORTHO.some(([dx, dy]) => spotTiles.has(`${x + dx},${y + dy}`));
   for (let y = 1; y < rows; y++) {
     for (let x = 2; x < cols; x += LAMP_GAP) {
       if (x === edgeX && y === rows - 1) continue; // never block the walk-off edge
-      if (spotTiles.has(`${x},${y}`)) continue;
+      if (spotTiles.has(`${x},${y}`) || besideSpot(x, y)) continue;
       const here = idx(x, y, cols);
       if (road[here] || blocked[here] || !road[idx(x, y - 1, cols)]) continue;
       blocked[here] = true;
@@ -337,7 +383,7 @@ export function buildWorld(
     plaza,
     plazaCenter,
     edge: { x: edgeX, y: rows - 1 },
-    spots,
+    spots: pruneUnclaimableSpots(spots, blocked, cols, rows),
     props,
     yard,
     path,

@@ -332,9 +332,19 @@ describe("buildWorld — the furnished commons", () => {
         for (const s of b.seats) {
           expect(findPath(world, b.door, s).length, label).toBeGreaterThan(0);
         }
-        // And to every shared spot in town.
+        // And to every shared spot in town — under the SIM's path predicate,
+        // which routes around every leisure tile except the one it is heading
+        // to. Plain walkability is not enough and checking it was the gap that
+        // let an unclaimable bench ship: a seat boxed in by other seats, a
+        // planter and a lamp passes isWalkable and can still never be claimed.
+        const spotTiles = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
         for (const s of world.spots) {
-          expect(findPath(world, b.door, s.tile).length, label).toBeGreaterThan(0);
+          const avoid = (x: number, y: number) =>
+            spotTiles.has(`${x},${y}`) && !(x === s.tile.x && y === s.tile.y);
+          expect(
+            findPath(world, b.door, s.tile, avoid).length,
+            `${label}: spot ${s.id} at ${s.tile.x},${s.tile.y}`,
+          ).toBeGreaterThan(0);
         }
       }
     }
