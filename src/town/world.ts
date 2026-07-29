@@ -87,12 +87,29 @@ export type FurnitureKind =
   | "rug"
   | "plant";
 
+/** A named room of a house. "Room" here is the room you stand in — a project's
+ *  place in the town is a **building** (glossary: `room` was renamed to
+ *  `building` for that sense; `BuildingPlacement.room` is the legacy field name
+ *  and still means the project). */
+export type RoomKind = "workroom" | "hall" | "kitchen" | "lounge" | "bedroom";
+
+export interface HouseRoom {
+  kind: RoomKind;
+  /** What to call it in prose: "the kitchen". */
+  name: string;
+  rect: Rect;
+}
+
 export interface Furniture {
   tile: Tile;
   kind: FurnitureKind;
+  /** Which room it stands in, resolved from the room rects rather than declared
+   *  at each `put()` — so a furniture item can never claim a room it is not in. */
+  room: RoomKind | null;
 }
 
 export interface BuildingPlacement {
+  /** The project this building belongs to (the legacy sense of "room"). */
   room: TownRoom;
   tier: BuildingTier;
   /** Footprint top-left tile and size. The wall ring and the furniture are
@@ -121,6 +138,12 @@ export interface BuildingPlacement {
   partitions: Tile[];
   /** Everything else in the house, for the renderer to draw. */
   furniture: Furniture[];
+  /** The named rooms of the house, as rects over the interior. Declared here so
+   *  the renderer, the sim and the place tree all read one source rather than
+   *  each re-deriving "where the kitchen is" from tile positions. */
+  rooms: HouseRoom[];
+  /** The fenced lot: the footprint plus its yard, out to the street. */
+  lot: Rect;
 }
 
 /** A shared leisure activity an idle character can visit (clustered in the plaza). */
@@ -603,7 +626,7 @@ function placeBuilding(
     if (lx < 0 || ly < 0 || lx >= iw || ly >= ih) return;
     const tile = { x: ix + lx, y: iy + ly };
     if (!walkableKind(kind)) blocked[idx(tile.x, tile.y, cols)] = true;
-    furniture.push({ tile, kind });
+    furniture.push({ tile, kind, room: null }); // room resolved from the rects below
   };
 
   // --- Workroom: a desk counter along the back wall, seats below it. ---
@@ -660,6 +683,46 @@ function placeBuilding(
   const door: Tile = { x: ix + hallCol, y: frontWallY + 1 }; // the yard apron
   const gate: Tile = { x: door.x, y: frontWallY + YARD_DEPTH };
 
+  // --- The floor plan, as rects. Everything above lays furniture out by hand
+  // against these boundaries; declaring them makes the plan readable data
+  // instead of something a reader has to reconstruct from the put() calls, and
+  // it is what lets a character say which room it is standing in (TIL-193). ---
+  const hasBedNook = ih - 1 >= homeTop + 2;
+  const rooms: HouseRoom[] = [
+    // Desks, their seats, and the circulation row in front of them.
+    { kind: "workroom", name: "the workroom", rect: { x: ix, y: iy, w: iw, h: 3 } },
+    // The spine: the column running from the workroom down to the front door,
+    // through the partition's doorway.
+    { kind: "hall", name: "the hall", rect: { x: ix + hallCol, y: iy + 3, w: 1, h: ih - 3 } },
+    {
+      kind: "kitchen",
+      name: "the kitchen",
+      rect: {
+        x: ix,
+        y: iy + homeTop,
+        w: hallCol,
+        h: (hasBedNook ? ih - 1 : ih) - homeTop,
+      },
+    },
+    {
+      kind: "lounge",
+      name: "the lounge",
+      rect: { x: ix + hallCol + 1, y: iy + homeTop, w: iw - hallCol - 1, h: ih - homeTop },
+    },
+  ];
+  if (hasBedNook) {
+    rooms.push({
+      kind: "bedroom",
+      name: "the bedroom",
+      rect: { x: ix, y: iy + ih - 1, w: hallCol, h: 1 },
+    });
+  }
+
+  // Resolve each item's room from where it actually stands. Doing it here rather
+  // than at each put() means a furniture item cannot claim a room it is not in,
+  // and moving one is enough to re-home it.
+  for (const f of furniture) f.room = roomKindAt(rooms, f.tile);
+
   return {
     room,
     tier,
@@ -675,7 +738,24 @@ function placeBuilding(
     desks,
     partitions,
     furniture,
+    rooms,
+    // Filled by furnishLot, which is the pass that knows where the fence runs.
+    lot: { x: tx, y: ty, w: bw, h: bh },
   };
+}
+
+/** True when `t` lies inside `r`. */
+export function inRect(r: Rect, t: Tile): boolean {
+  return t.x >= r.x && t.x < r.x + r.w && t.y >= r.y && t.y < r.y + r.h;
+}
+
+/** Which named room a tile falls in. The bed nook is carved out of the kitchen's
+ *  column, so the more specific room must win — hence last-match, matching the
+ *  order rooms are declared in. */
+function roomKindAt(rooms: HouseRoom[], t: Tile): RoomKind | null {
+  let found: RoomKind | null = null;
+  for (const r of rooms) if (inRect(r.rect, t)) found = r.kind;
+  return found;
 }
 
 /**
@@ -703,6 +783,7 @@ function furnishLot(
   const top = b.ty - 1;
   const bottom = b.frontWallY + YARD_DEPTH;
   const inBounds = (x: number, y: number) => x >= 0 && y >= 0 && x < cols && y < rows;
+  b.lot = { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
 
   for (let y = top; y <= bottom; y++) {
     for (let x = left; x <= right; x++) {

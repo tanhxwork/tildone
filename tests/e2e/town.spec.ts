@@ -304,6 +304,13 @@ describe("town view", () => {
     await step(900); // long enough to walk the yard, the gate and the house
     expect(await atHome(tid, building)).toBe(true);
 
+    // The place tree is live, not decoration: the frame loop names where the
+    // character is standing, and at its desk that has to be the workroom.
+    const where = await char.getAttribute("data-where");
+    expect(where).toContain("in the workroom");
+    expect(where).toContain("'s house");
+    expect(await char.getAttribute("aria-label")).toContain(where);
+
     // --- quiet: the same character leaves and wanders. Same node, no respawn. ---
     await beat("idle");
     await expect(char).toHaveAttribute("data-state", "quiet");

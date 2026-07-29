@@ -20,6 +20,7 @@ import { townModel } from "../selectors";
 import { agentIdentity } from "../agents";
 import { timeAgo } from "../utils/dates";
 import { buildWorld, TILE_PX, type TownWorld } from "./world";
+import { buildPlaces, describePlace, placeAt } from "./places";
 import { createSim, settleSim, stepTownSim, type RosterChar } from "./sim";
 import { charKeyForAgent, createTownScene, type CharStyle, type TownTheme } from "./pixiScene";
 import { loadTownTextures, type TownTextures } from "./assets";
@@ -153,10 +154,14 @@ export function TownView() {
   // World is roster-driven (not viewport-driven) — resizing must not rebuild it.
   const world = useMemo(() => buildWorld(model), [model]);
   const worldPx = useMemo(() => ({ w: world.cols * BASE_TILE, h: world.rows * BASE_TILE }), [world]);
+  /** The town as named places, derived from the same world — what lets a
+   *  character's tooltip say "in the kitchen" instead of a coordinate. */
+  const places = useMemo(() => buildPlaces(world), [world]);
 
   // Latest-value refs so the ticker reads current state without re-subscribing.
   const rosterRef = useRef(roster);
   const worldRef = useRef<TownWorld>(world);
+  const placesRef = useRef(places);
   const worldPxRef = useRef(worldPx);
   const viewRef = useRef(view);
   const camRef = useRef<Camera>({ x: 0, y: 0, zoom: DEFAULT_ZOOM });
@@ -166,6 +171,7 @@ export function TownView() {
   const followRef = useRef<number | null>(followId);
   rosterRef.current = roster;
   worldRef.current = world;
+  placesRef.current = places;
   worldPxRef.current = worldPx;
   viewRef.current = view;
   followRef.current = followId;
@@ -473,6 +479,23 @@ export function TownView() {
       node.style.display = "block";
       node.style.left = `${sx - 18}px`;
       node.style.top = `${sy - 34}px`;
+
+      // Where it is, in words — "at the counter, in the kitchen, in Alpha's
+      // house". Written imperatively beside the transform because the place
+      // changes as the character walks, and re-rendering React every frame to
+      // move a tooltip would be absurd. Only touched when the place changes.
+      const tile = { x: Math.round(c.pos.x), y: Math.round(c.pos.y) };
+      const place = placeAt(placesRef.current, tile);
+      if (place && node.dataset.place !== place.id) {
+        node.dataset.place = place.id;
+        node.dataset.where = describePlace(placesRef.current, tile);
+      }
+      const where = node.dataset.where;
+      const full = where ? `${node.dataset.base ?? ""} · ${where}` : (node.dataset.base ?? "");
+      if (node.title !== full) {
+        node.title = full;
+        node.setAttribute("aria-label", full);
+      }
     }
     for (const [i, node] of buildingRefs.current) {
       const b = worldRef.current.buildings[i];
@@ -523,6 +546,9 @@ export function TownView() {
                 data-testid={`town-char-${r.taskId}`}
                 data-state={r.state}
                 data-building={r.buildingIndex}
+                // The rendered title is the identity half; the frame loop appends
+                // where the character currently is (data-base is what it builds on).
+                data-base={title}
                 title={title}
                 aria-label={title}
                 type="button"
