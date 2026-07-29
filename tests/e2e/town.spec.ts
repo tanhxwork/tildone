@@ -318,6 +318,39 @@ describe("town view", () => {
     // waited for a random encounter would just be a flake.
     expect(await char.getAttribute("data-chatting")).toBe("false");
 
+    // --- Visibility resume settles in place; it does not re-spawn the town. ---
+    // Asserted HERE, with the character seated at its desk, because that is the
+    // only state where the two behaviours differ observably: settling a working
+    // character is a no-op, while createSim() empties the sim and the next step
+    // puts it back on its door, outside the house. Asserting this on a WANDERING
+    // character proves nothing — settle and respawn both send it to the door —
+    // and the first version of this check did exactly that, so it passed with
+    // the bug still present (caught by the Codex verify of TIL-190).
+    const posOf = () =>
+      browser.execute((t) => {
+        const n = document.querySelector(`[data-testid="town-char-${t}"]`) as HTMLElement | null;
+        return n ? { left: n.style.left, top: n.style.top } : null;
+      }, tid);
+    const idsOf = () =>
+      browser.execute(() =>
+        [...document.querySelectorAll(".town-char")]
+          .map((n) => (n as HTMLElement).dataset.testid ?? "")
+          .sort(),
+      );
+
+    const posBefore = await posOf();
+    const idsBefore = await idsOf();
+    expect(posBefore).not.toBeNull();
+
+    // The handler is keyed on visibilitychange and the document is visible, so
+    // firing the event runs exactly the resume branch.
+    await browser.execute(() => document.dispatchEvent(new Event("visibilitychange")));
+    await step(2);
+
+    expect(await posOf()).toEqual(posBefore); // did not budge
+    expect(await idsOf()).toEqual(idsBefore); // same population
+    expect(await atHome(tid, building)).toBe(true); // still indoors, not on the door
+
     // --- quiet: the same character leaves and wanders. Same node, no respawn. ---
     await beat("idle");
     await expect(char).toHaveAttribute("data-state", "quiet");
@@ -326,40 +359,4 @@ describe("town view", () => {
     await expect(char).toBeExisting(); // it walked out; it did not vanish and return
   });
 
-  // Restoring a hidden window used to call createSim(), which threw the whole
-  // population away — the next step then re-spawned everyone at their doors and
-  // the town visibly walked home again. The spec asks for a reconcile that snaps
-  // everyone to a resting position, so nobody may end up back on a door (TIL-190).
-  it("settles the town in place on a visibility resume rather than re-spawning it", async () => {
-    const step = (n: number) =>
-      browser.execute((frames) => {
-        const s = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-        for (let i = 0; i < frames; i++) s?.(16);
-      }, n);
-    const nodeIds = () =>
-      browser.execute(() =>
-        [...document.querySelectorAll(".town-char")]
-          .map((n) => (n as HTMLElement).dataset.testid ?? "")
-          .sort(),
-      );
-
-    await step(400);
-    const before = await nodeIds();
-    expect(before.length).toBeGreaterThan(0);
-
-    // The handler is keyed on visibilitychange, and the document is visible here,
-    // so firing the event runs exactly the resume branch.
-    await browser.execute(() => document.dispatchEvent(new Event("visibilitychange")));
-    await step(1);
-
-    // Same population, same nodes — a createSim() would have emptied the sim and
-    // left the overlay without a single positioned character on the next frame.
-    expect(await nodeIds()).toEqual(before);
-    const positioned = await browser.execute(() =>
-      [...document.querySelectorAll(".town-char")].every((n) =>
-        /^-?\d/.test((n as HTMLElement).style.top ?? ""),
-      ),
-    );
-    expect(positioned).toBe(true);
-  });
 });

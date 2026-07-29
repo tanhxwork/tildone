@@ -12,30 +12,39 @@ import { db } from "./support/dbMock";
 
 const SRC = join(import.meta.dir, "..", "src", "db.ts");
 
-function exportedFunctions(source: string): string[] {
-  return [...source.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]).sort();
+/** Every value src/db.ts exports, however it is spelled. Matching only
+ *  `export async function` let `export const x = async …` drift in unnoticed,
+ *  which is the same silent-gap failure this file exists to prevent. */
+function exportedNames(source: string): string[] {
+  const re = /^export (?:async )?(?:function|const|let|var) (\w+)/gm;
+  return [...source.matchAll(re)].map((m) => m[1]).sort();
 }
 
 describe("the shared db mock", () => {
-  it("mirrors every function src/db.ts exports", () => {
-    expect(Object.keys(db).sort()).toEqual(exportedFunctions(readFileSync(SRC, "utf8")));
+  it("mirrors every value src/db.ts exports", () => {
+    expect(Object.keys(db).sort()).toEqual(exportedNames(readFileSync(SRC, "utf8")));
   });
+
+  // Both guards below are built from concatenated pieces so this file never
+  // matches itself, and both are quote-agnostic: a guard that only knew the
+  // double-quoted spelling was one `'` away from being bypassed, which is a
+  // guard that reports safety it is not providing.
+  const testFiles = () =>
+    readdirSync(import.meta.dir)
+      .filter((f) => f.endsWith(".test.ts") && f !== "dbSurface.test.ts")
+      .map((f) => [f, readFileSync(join(import.meta.dir, f), "utf8")] as const);
 
   it("is the only db mock — no test file registers its own", () => {
-    const needle = ["mock", ".module(", '"../src/db"'].join(""); // split so this file never self-matches
-    const offenders = readdirSync(import.meta.dir)
-      .filter((f) => f.endsWith(".test.ts"))
-      .filter((f) => readFileSync(join(import.meta.dir, f), "utf8").includes(needle));
-    expect(offenders).toEqual([]);
+    const re = new RegExp(["mock", "\\s*\\.\\s*module\\(\\s*['\"]", "\\.\\./src/db"].join(""));
+    expect(testFiles().filter(([, src]) => re.test(src)).map(([f]) => f)).toEqual([]);
   });
 
-  it("is the only route to the store — no test imports ../src/store directly", () => {
-    // A direct static import only binds the mocked module while dbMock happens
-    // to be imported above it in the same file. That is an import-order
-    // dependency, i.e. the exact class of bug this module exists to delete.
-    const offenders = readdirSync(import.meta.dir)
-      .filter((f) => f.endsWith(".test.ts"))
-      .filter((f) => /^import .* from "\.\.\/src\/store"/m.test(readFileSync(join(import.meta.dir, f), "utf8")));
-    expect(offenders).toEqual([]);
+  it("is the only route to the store — no test reaches ../src/store itself", () => {
+    // Binding the store directly only works while dbMock happens to be imported
+    // above it in the same file. That is an import-order dependency, i.e. the
+    // exact class of bug this module exists to delete — and it is just as true
+    // of a dynamic `await import(...)` as of a static one.
+    const re = new RegExp(["(?:from|import\\()\\s*['\"]", "\\.\\./src/store", "['\"]"].join(""));
+    expect(testFiles().filter(([, src]) => re.test(src)).map(([f]) => f)).toEqual([]);
   });
 });

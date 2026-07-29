@@ -167,6 +167,13 @@ function endChat(c: CharAgent) {
 function stepChats(sim: SimState, dt: number) {
   for (const c of sim.chars.values()) {
     if (c.chatMs > 0) {
+      // The other one may have despawned mid-chat (walked off the edge, dropped
+      // from the roster). Without this the survivor stands paused for the rest
+      // of the bubble holding a chatWith that points at nobody.
+      if (c.chatWith === null || !sim.chars.has(c.chatWith)) {
+        endChat(c);
+        continue;
+      }
       c.chatMs -= dt;
       if (c.chatMs <= 0) endChat(c);
     } else if (c.chatCooldownMs > 0) {

@@ -489,6 +489,31 @@ describe("light social — chatting", () => {
     expect(sim.chars.get(talker)!.chatWith).toBeNull();
   });
 
+  it("ends the chat when the other one despawns mid-sentence", () => {
+    // Found by the Codex verify: the leavers pass deletes a character before
+    // chats are stepped, so the survivor was left paused for the rest of the
+    // bubble holding a chatWith pointing at nobody.
+    const world = world2();
+    const sim = createSim();
+    const r = [1, 2, 3, 4].map((id) => roster(id, "quiet", true, id % 2));
+    expect(runUntil(sim, r, world, 4000, mulberry32(31), (s) => chatting(s).length >= 2)).toBe(true);
+
+    // a's ACTUAL partner, not just the next character that happens to be
+    // chatting — with four idlers there can be two independent pairs.
+    const a = chatting(sim)[0];
+    const b = sim.chars.get(a.chatWith!)!;
+    expect(b).toBeDefined();
+    // Park the leaver on the walk-off edge so it despawns on the very next step.
+    a.pos = { x: world.edge.x, y: world.edge.y };
+    const without = r.filter((x) => x.taskId !== a.taskId);
+    stepTownSim(sim, without, 16, world, mulberry32(32));
+
+    expect(sim.chars.has(a.taskId)).toBe(false);
+    const survivor = sim.chars.get(b.taskId)!;
+    expect(survivor.chatMs).toBe(0);
+    expect(survivor.chatWith).toBeNull();
+  });
+
   it("still gets everyone home afterwards — a chat delays, it does not strand", () => {
     const world = world2();
     const sim = createSim();

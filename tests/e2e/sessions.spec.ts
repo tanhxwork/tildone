@@ -138,14 +138,24 @@ describe("hosted sessions — shell escape hatch", () => {
     // window.focus() hands focus back to the document so el.focus() never
     // sticks). So assert the two halves that do not depend on who is frontmost:
     //
-    //   1. the rule that performs the reveal exists and targets the row's
-    //      focus-within (read out of the CSSOM, always true or always false),
+    //   1. the rule that performs the reveal exists, targets the row's
+    //      focus-within, AND is not overridden later in the cascade,
     //   2. and, when the document does happen to have focus, the live
     //      focus→computed-opacity path really produces it.
     //
-    // Together those cover the same wiring as before without depending on the
-    // machine's window manager (TIL-170).
-    const revealRule = await browser.execute(() => {
+    // Half 1 has to include the override check, not just "a rule with opacity:1
+    // exists": a later `.sess-close { opacity: 0 !important }` leaves the rest
+    // state at 0 and the reveal rule intact, so a bare existence check passes
+    // over a completely broken reveal (Codex found this hole in the first cut
+    // of this fix). Together these cover the same wiring as before without
+    // depending on the machine's window manager (TIL-170).
+    const reveal = await browser.execute(() => {
+      const decls: {
+        selector: string;
+        opacity: string;
+        pointerEvents: string;
+        important: boolean;
+      }[] = [];
       for (const sheet of [...document.styleSheets]) {
         let rules: CSSRuleList;
         try {
@@ -156,15 +166,28 @@ describe("hosted sessions — shell escape hatch", () => {
         for (const rule of [...rules]) {
           const r = rule as CSSStyleRule;
           if (!r.selectorText || !r.style) continue;
-          if (!r.selectorText.includes(".sess-row:focus-within .sess-close")) continue;
-          return { opacity: r.style.opacity, pointerEvents: r.style.pointerEvents };
+          if (!r.selectorText.includes(".sess-close")) continue;
+          if (!r.style.opacity) continue;
+          decls.push({
+            selector: r.selectorText,
+            opacity: r.style.opacity,
+            pointerEvents: r.style.pointerEvents,
+            important: r.style.getPropertyPriority("opacity") === "important",
+          });
         }
       }
-      return null;
+      const idx = decls.findIndex((d) => d.selector.includes(".sess-row:focus-within .sess-close"));
+      return {
+        rule: idx === -1 ? null : decls[idx],
+        // Anything !important beats the reveal whatever its position, and
+        // anything later that is also !important certainly does.
+        overriddenBy: decls.filter((d, i) => i !== idx && d.important).map((d) => d.selector),
+      };
     });
-    expect(revealRule).not.toBeNull();
-    expect(revealRule!.opacity).toBe("1");
-    expect(revealRule!.pointerEvents).toBe("auto");
+    expect(reveal.rule).not.toBeNull();
+    expect(reveal.rule!.opacity).toBe("1");
+    expect(reveal.rule!.pointerEvents).toBe("auto");
+    expect(reveal.overriddenBy).toEqual([]);
 
     // The live half, best-effort: only meaningful while this window is the
     // active one, and skipped rather than failed when it is not.
