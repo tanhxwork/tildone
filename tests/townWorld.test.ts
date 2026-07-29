@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { TownModel, TownRoom } from "../src/selectors";
-import { buildWorld, CELL_H, CELL_W, isRoad, isWalkable } from "../src/town/world";
+import { buildWorld, CELL_H, CELL_W, isRoad, isWalkable, type TownWorld } from "../src/town/world";
 import { findPath } from "../src/town/pathfind";
 
 // v3 world: the roster (buildings + one central plaza) wraps into a roughly
@@ -15,6 +15,24 @@ function room(name: string, projectId: number | null = 1, openTaskCount = 1): To
 
 function model(...names: string[]): TownModel {
   return { rooms: names.map((n, i) => room(n, i + 1)) };
+}
+
+/** Tiles the commons furnishings block (planters, notice board, market, …). */
+function propTiles(world: TownWorld): Set<string> {
+  return new Set(world.props.map((p) => `${p.tile.x},${p.tile.y}`));
+}
+
+/** Any open plaza tile — a fixed corner is no longer safe to assume walkable now
+ *  that the commons is furnished, so tests that just need "somewhere in the
+ *  square" ask for one. */
+function openPlazaTile(world: TownWorld): { x: number; y: number } {
+  const p = world.plaza;
+  for (let dy = 0; dy < p.h; dy++) {
+    for (let dx = 0; dx < p.w; dx++) {
+      if (isWalkable(world, p.x + dx, p.y + dy)) return { x: p.x + dx, y: p.y + dy };
+    }
+  }
+  throw new Error("plaza has no walkable tile");
 }
 
 describe("buildWorld — extent & order", () => {
@@ -123,10 +141,12 @@ describe("buildWorld — roads & plaza", () => {
         const x = p.x + dx;
         const y = p.y + dy;
         const isCentre = x === c.x && y === c.y;
-        // Pavement is painted under the whole plaza (incl. beneath the fountain);
-        // every tile is walkable except the centre, which the fountain blocks.
+        const isProp = propTiles(world).has(`${x},${y}`);
+        // Pavement is painted under the whole plaza (incl. beneath the fountain
+        // and the furnishings); a tile is walkable unless the fountain or one of
+        // the blocked props (planter, notice board, market stall, …) sits on it.
         expect(isRoad(world, x, y)).toBe(true);
-        expect(isWalkable(world, x, y)).toBe(!isCentre);
+        expect(isWalkable(world, x, y)).toBe(!isCentre && !isProp);
       }
     }
     // No building sits on the plaza.
@@ -157,7 +177,7 @@ describe("buildWorld — roads & plaza", () => {
     }
     // Blocking the lamps must not island anything: every door still reaches the
     // plaza, and the walk-off edge is still reachable.
-    const target = { x: world.plaza.x, y: world.plaza.y };
+    const target = openPlazaTile(world);
     for (const b of world.buildings) {
       expect(findPath(world, b.door, target).length).toBeGreaterThan(0);
     }
@@ -167,7 +187,7 @@ describe("buildWorld — roads & plaza", () => {
   it("connects every building's door to the plaza by road", () => {
     const world = buildWorld(model("A", "B", "C", "D"));
     // Target a walkable plaza corner (the geometric centre is the blocked fountain).
-    const target = { x: world.plaza.x, y: world.plaza.y };
+    const target = openPlazaTile(world);
     expect(isWalkable(world, target.x, target.y)).toBe(true);
     for (const b of world.buildings) {
       const path = findPath(world, b.door, target);
@@ -176,18 +196,66 @@ describe("buildWorld — roads & plaza", () => {
   });
 });
 
-describe("buildWorld — leisure spots (in the plaza)", () => {
-  it("clusters distinct spots of all four kinds on walkable plaza tiles", () => {
+describe("buildWorld — the furnished commons", () => {
+  it("seats the town: at least one seat per five open plaza tiles", () => {
     const world = buildWorld(model("A", "B", "C"));
-    expect(world.spots.length).toBe(4);
+    const p = world.plaza;
+    const inPlaza = (t: { x: number; y: number }) =>
+      t.x >= p.x && t.x < p.x + p.w && t.y >= p.y && t.y < p.y + p.h;
+
+    let open = 0;
+    for (let dy = 0; dy < p.h; dy++) {
+      for (let dx = 0; dx < p.w; dx++) if (isWalkable(world, p.x + dx, p.y + dy)) open++;
+    }
+    const seats = world.spots.filter((s) => s.kind === "bench" && inPlaza(s.tile));
+    // Whyte's ratio, in tiles. A one-bench plaza is the failure this guards.
+    expect(seats.length).toBeGreaterThanOrEqual(Math.ceil(open / 5));
+  });
+
+  it("puts every spot on a distinct walkable tile", () => {
+    const world = buildWorld(model("A", "B", "C"));
     const keys = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
     expect(keys.size).toBe(world.spots.length); // no two share a tile
-    expect(new Set(world.spots.map((s) => s.kind)).size).toBe(4);
     for (const s of world.spots) {
       expect(isWalkable(world, s.tile.x, s.tile.y)).toBe(true);
-      const p = world.plaza;
-      const inside = s.tile.x >= p.x && s.tile.x < p.x + p.w && s.tile.y >= p.y && s.tile.y < p.y + p.h;
-      expect(inside).toBe(true);
     }
+  });
+
+  it("keeps water, fire and planting off the pavement", () => {
+    const world = buildWorld(model("A", "B", "C"));
+    const p = world.plaza;
+    const kinds = new Set(world.spots.map((s) => s.kind));
+    expect(kinds.has("pond")).toBe(true);
+    expect(kinds.has("campfire")).toBe(true);
+    expect(kinds.has("garden")).toBe(true);
+    for (const s of world.spots) {
+      if (s.kind === "bench") continue;
+      const inPlaza =
+        s.tile.x >= p.x && s.tile.x < p.x + p.w && s.tile.y >= p.y && s.tile.y < p.y + p.h;
+      expect(inPlaza).toBe(false); // on the green beside the commons, not on it
+      expect(isRoad(world, s.tile.x, s.tile.y)).toBe(false);
+    }
+  });
+
+  it("furnishes the square with blocked props that never island it", () => {
+    const world = buildWorld(model("A", "B", "C", "D"));
+    expect(world.props.length).toBeGreaterThan(0);
+    const kinds = new Set(world.props.map((p) => p.kind));
+    expect(kinds.has("planter")).toBe(true);
+    expect(kinds.has("noticeboard")).toBe(true);
+    for (const p of world.props) {
+      expect(isWalkable(world, p.tile.x, p.tile.y)).toBe(false);
+    }
+    // Every seat is still reachable from every door with the props in place.
+    const seat = world.spots.find((s) => s.kind === "bench")!;
+    for (const b of world.buildings) {
+      expect(findPath(world, b.door, seat.tile).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("never puts a street lamp on a seat", () => {
+    const world = buildWorld(model("A", "B", "C", "D", "E"));
+    const seats = new Set(world.spots.map((s) => `${s.tile.x},${s.tile.y}`));
+    for (const l of world.lamps) expect(seats.has(`${l.x},${l.y}`)).toBe(false);
   });
 });

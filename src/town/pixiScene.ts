@@ -310,6 +310,17 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       fountainSprite = f;
     }
 
+    // Blocked commons furnishings — planters, notice board, market stall, coffee
+    // cart, cafe table. Bottom-anchored like the other props so they sit on their
+    // tile and overlap the one above, which is what gives the square depth.
+    for (const p of w.props) {
+      const sprite = new Sprite(tex.props[p.kind]);
+      sprite.anchor.set(0.5, 0.9);
+      sprite.scale.set(scale);
+      sprite.position.set(p.tile.x * tilePx + tilePx / 2, p.tile.y * tilePx + tilePx);
+      buildings.addChild(sprite);
+    }
+
     // Shared leisure props in the plaza (below the character layer). The
     // campfire + pond carry multiple frames and are cycled (see syncChars tail).
     for (const s of w.spots) {

@@ -88,6 +88,21 @@ export interface LeisureSpot {
 
 const SPOT_KINDS: SpotKind[] = ["bench", "pond", "campfire", "garden"];
 
+/** A furnishing that is *not* a leisure spot: blocked, so characters path around
+ *  it rather than stand on it. These exist so a space reads as somewhere people
+ *  use — an empty rectangle of pavement reads as a car park. */
+export type PropKind =
+  | "planter"
+  | "noticeboard"
+  | "market"
+  | "coffeecart"
+  | "cafetable";
+
+export interface TownProp {
+  tile: Tile;
+  kind: PropKind;
+}
+
 /** A rectangle of tiles (used for the plaza). */
 export interface Rect {
   x: number;
@@ -116,8 +131,14 @@ export interface TownWorld {
   /** A walkable tile at the bottom-centre edge — the despawn / walk-off target. */
   edge: Tile;
   /** Shared leisure spots, clustered in the plaza. Any idle character walks to
-   *  whichever is free (see stepTownSim). */
+   *  whichever is free (see stepTownSim). Spots are exclusive — one character
+   *  each — so this array's length *is* the town's simultaneous leisure
+   *  capacity, and it is budgeted against the plaza's open area rather than
+   *  fixed (see furnishPlaza). */
   spots: LeisureSpot[];
+  /** Blocked furnishings (planters, notice board, market stall, …) the renderer
+   *  draws and the pathfinder routes around. */
+  props: TownProp[];
   /** Street-lamp tiles lining the roads. Blocked (so characters path around
    *  them, never through) and rendered + lit at night by the Pixi layer. */
   lamps: Tile[];
@@ -173,6 +194,8 @@ export function buildWorld(
   const buildings: BuildingPlacement[] = [];
   let roomPtr = 0;
   let plaza: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  let plazaCellX = 0;
+  let plazaCellY = 0;
 
   for (let cell = 0; cell < total; cell++) {
     const col = cell % perRow;
@@ -183,6 +206,8 @@ export function buildWorld(
     if (cell === plazaCell) {
       // The plaza is the cell's building-region: an open walkable square (no
       // footprint blocked here). Its floor is painted as pavement for contrast.
+      plazaCellX = cellX;
+      plazaCellY = cellY;
       plaza = { x: cellX + 1, y: cellY + 1, w: CELL_W - 2, h: ROAD_ROW - 1 };
       for (let dy = 0; dy < plaza.h; dy++) {
         for (let dx = 0; dx < plaza.w; dx++) road[idx(plaza.x + dx, plaza.y + dy, cols)] = true;
@@ -203,18 +228,11 @@ export function buildWorld(
     blocked[idx(plazaCenter.x, plazaCenter.y, cols)] = true;
   }
 
-  // Leisure spots cluster at the plaza corners (one of each kind). Guard tiny
-  // plazas so a spot never lands outside it.
+  // Furnish the commons, then put water/fire/planting on the green beside it.
   const spots: LeisureSpot[] = [];
-  if (plaza.w >= 3 && plaza.h >= 3) {
-    const corners: Tile[] = [
-      { x: plaza.x + 1, y: plaza.y + 1 },
-      { x: plaza.x + plaza.w - 2, y: plaza.y + 1 },
-      { x: plaza.x + 1, y: plaza.y + plaza.h - 2 },
-      { x: plaza.x + plaza.w - 2, y: plaza.y + plaza.h - 2 },
-    ];
-    corners.forEach((tile, i) => spots.push({ id: i, tile, kind: SPOT_KINDS[i % SPOT_KINDS.length] }));
-  }
+  const props: TownProp[] = [];
+  furnishPlaza(plaza, cols, blocked, spots, props);
+  furnishCommonsGreen(plazaCellX, plazaCellY, cols, rows, blocked, road, spots);
 
   // Street lamps: one every few columns on the green immediately south of a
   // horizontal road. Blocked so pathfinding routes around them (a departure
@@ -224,9 +242,13 @@ export function buildWorld(
   const lamps: Tile[] = [];
   const edgeX = Math.floor(cols / 2);
   const LAMP_GAP = 5;
+  // A lamp must never land on a leisure spot — a spot is walkable, so blocking it
+  // would strand its claimant and quietly cost the town a seat.
+  const spotTiles = new Set(spots.map((s) => `${s.tile.x},${s.tile.y}`));
   for (let y = 1; y < rows; y++) {
     for (let x = 2; x < cols; x += LAMP_GAP) {
       if (x === edgeX && y === rows - 1) continue; // never block the walk-off edge
+      if (spotTiles.has(`${x},${y}`)) continue;
       const here = idx(x, y, cols);
       if (road[here] || blocked[here] || !road[idx(x, y - 1, cols)]) continue;
       blocked[here] = true;
@@ -244,8 +266,126 @@ export function buildWorld(
     plazaCenter,
     edge: { x: edgeX, y: rows - 1 },
     spots,
+    props,
     lamps,
   };
+}
+
+/**
+ * Furnish the commons.
+ *
+ * An empty rectangle of pavement reads as a car park, not a square. Whyte's
+ * study of why plazas fail found the strongest predictor of a public space
+ * being used is sitting space — roughly one linear foot of seat per thirty
+ * square feet of open area — so seating here is *budgeted* against the plaza's
+ * area rather than decorative, and it is deliberately varied: a bench run along
+ * the north edge (sitting up front), pairs flanking the fountain (off to the
+ * side, facing the water), and a cafe table (in a group). The blocked props are
+ * "triangulation" objects — a notice board, a market stall, a coffee cart give
+ * strangers a reason to stand in the same place, which is what makes a group
+ * form at all.
+ *
+ * Falls back to the old one-of-each-kind corner layout for a plaza too small to
+ * lay this out in.
+ */
+function furnishPlaza(
+  plaza: Rect,
+  cols: number,
+  blocked: boolean[],
+  spots: LeisureSpot[],
+  props: TownProp[],
+) {
+  const { x, y, w, h } = plaza;
+  const free = (dx: number, dy: number) => !blocked[idx(x + dx, y + dy, cols)];
+  const seat = (dx: number, dy: number) => {
+    if (!free(dx, dy)) return;
+    spots.push({ id: spots.length, tile: { x: x + dx, y: y + dy }, kind: "bench" });
+  };
+  const prop = (dx: number, dy: number, kind: PropKind) => {
+    if (!free(dx, dy)) return;
+    blocked[idx(x + dx, y + dy, cols)] = true;
+    props.push({ tile: { x: x + dx, y: y + dy }, kind });
+  };
+
+  if (w < 9 || h < 6) {
+    if (w >= 3 && h >= 3) {
+      const corners: [number, number][] = [
+        [1, 1],
+        [w - 2, 1],
+        [1, h - 2],
+        [w - 2, h - 2],
+      ];
+      corners.forEach(([dx, dy], i) => {
+        if (!free(dx, dy)) return;
+        spots.push({
+          id: spots.length,
+          tile: { x: x + dx, y: y + dy },
+          kind: SPOT_KINDS[i % SPOT_KINDS.length],
+        });
+      });
+    }
+    return;
+  }
+
+  // Planters at the corners so the square has a defined edge instead of simply
+  // stopping where the pavement runs out (Whyte: the street/plaza transition is
+  // what decides whether a space is entered at all).
+  prop(0, 0, "planter");
+  prop(w - 1, 0, "planter");
+  prop(0, h - 1, "planter");
+  prop(w - 1, h - 1, "planter");
+
+  // North bench run, split by a gap so it reads as two groups rather than a wall.
+  for (const dx of [1, 2, 3, w - 4, w - 3, w - 2]) seat(dx, 0);
+
+  // Pairs flanking the fountain — the "off to the side, facing the water" choice.
+  const midY = Math.floor(h / 2);
+  for (const dy of [midY, midY + 1]) {
+    seat(2, dy);
+    seat(w - 3, dy);
+  }
+
+  // Triangulation objects on the east and west edges.
+  prop(0, 2, "noticeboard");
+  prop(w - 1, 2, "coffeecart");
+
+  // South edge: a market stall, and a cafe table with a chair on each side.
+  prop(1, h - 1, "market");
+  prop(2, h - 1, "market");
+  seat(w - 6, h - 1);
+  prop(w - 5, h - 1, "cafetable");
+  seat(w - 4, h - 1);
+}
+
+/**
+ * Water, fire and a vegetable plot belong on the green at the commons' edge, not
+ * on the pavement — a pond in the middle of a paved square was one of the things
+ * that made the town read as assembled rather than built. They stay leisure
+ * spots (somewhere to go), just somewhere that makes sense.
+ */
+function furnishCommonsGreen(
+  cellX: number,
+  cellY: number,
+  cols: number,
+  rows: number,
+  blocked: boolean[],
+  road: boolean[],
+  spots: LeisureSpot[],
+) {
+  const y = cellY + ROAD_ROW + 1; // the green strip immediately south of the street
+  if (y >= rows) return;
+  const plan: [number, SpotKind][] = [
+    [2, "pond"],
+    [5, "campfire"],
+    [8, "garden"],
+  ];
+  for (const [dx, kind] of plan) {
+    const x = cellX + dx;
+    if (x >= cols) continue;
+    const here = idx(x, y, cols);
+    if (blocked[here] || road[here]) continue;
+    spots.push({ id: spots.length, tile: { x, y }, kind });
+  }
 }
 
 /** Place one building in its cell: bottom-aligned so its door lands on the road,

@@ -16,7 +16,7 @@
 // art is contained: repoint the grid coordinates below.
 
 import { Rectangle, Texture, type TextureSource } from "pixi.js";
-import type { SpotKind } from "./world";
+import type { PropKind, SpotKind } from "./world";
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
 import grass2Url from "./assets/world/grass2.png";
@@ -84,6 +84,9 @@ export interface FacadeTiles {
   windowGlow: Texture;
 }
 
+/** Self-authored (CC0) blocked furnishings for the commons — see drawProp. */
+export type PropTiles = Record<PropKind, Texture>;
+
 export interface TownTextures {
   world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
@@ -93,6 +96,8 @@ export interface TownTextures {
   spots: Record<SpotKind, Texture[]>;
   /** Kenney interior furnishings for the house cutaways. */
   interior: InteriorTiles;
+  /** Self-authored blocked furnishings for the commons. */
+  props: PropTiles;
   /** Self-authored roads/plaza pavement. */
   pavement: PavementTiles;
   /** Self-authored door + lit-window glow. */
@@ -188,6 +193,95 @@ function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind, frame = 0) {
     ctx.fillRect(5, 6, 1, 3);
     ctx.fillRect(8, 5, 1, 4);
     ctx.fillRect(11, 7, 1, 2);
+  }
+}
+
+/** Draw one 16×16 commons furnishing. Self-authored → CC0, in the same idiom as
+ *  the leisure props: a soft ground shadow, then a small silhouette that reads at
+ *  16px. These are the blocked props that make the square look used — somewhere
+ *  to stand at, queue at, or read — rather than an empty paved rectangle. */
+function drawProp(c: CanvasRenderingContext2D, kind: PropKind) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "rgba(0,0,0,0.15)";
+  c.beginPath();
+  c.ellipse(8, 14, 5, 2, 0, 0, Math.PI * 2);
+  c.fill();
+  if (kind === "planter") {
+    c.fillStyle = "#3f7a3a"; // shrub
+    c.beginPath();
+    c.ellipse(8, 6, 5, 4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#4f9d4f"; // lit side
+    c.beginPath();
+    c.ellipse(6.5, 5, 3, 2.2, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#9a948a"; // stone tub
+    c.fillRect(4, 10, 8, 4);
+    c.fillStyle = "#b3ada2";
+    c.fillRect(4, 10, 8, 1);
+  } else if (kind === "noticeboard") {
+    c.fillStyle = "#5e3d1c"; // posts
+    c.fillRect(4, 9, 1, 5);
+    c.fillRect(11, 9, 1, 5);
+    c.fillStyle = "#7d5a3a"; // frame
+    c.fillRect(2, 2, 12, 8);
+    c.fillStyle = "#d9cdb4"; // cork
+    c.fillRect(3, 3, 10, 6);
+    c.fillStyle = "#f5f2ea"; // pinned notices
+    c.fillRect(4, 4, 3, 4);
+    c.fillRect(8, 4, 4, 2);
+    c.fillStyle = "#cbb894";
+    c.fillRect(8, 7, 4, 1);
+  } else if (kind === "market") {
+    c.fillStyle = "#8a5a2b"; // trestle
+    c.fillRect(2, 9, 12, 2);
+    c.fillRect(3, 11, 1, 3);
+    c.fillRect(12, 11, 1, 3);
+    c.fillStyle = "#c9552f"; // awning, striped
+    c.fillRect(1, 3, 14, 4);
+    c.fillStyle = "#f0e6d2";
+    for (const sx of [3, 7, 11]) c.fillRect(sx, 3, 2, 4);
+    c.fillStyle = "#6b4a24"; // posts
+    c.fillRect(2, 7, 1, 2);
+    c.fillRect(13, 7, 1, 2);
+    c.fillStyle = "#4f9d4f"; // produce on the trestle
+    c.fillRect(4, 7, 2, 2);
+    c.fillStyle = "#e8a33b";
+    c.fillRect(8, 7, 2, 2);
+  } else if (kind === "coffeecart") {
+    c.fillStyle = "#7d5a3a"; // cart body
+    c.fillRect(3, 7, 10, 6);
+    c.fillStyle = "#9a6f45";
+    c.fillRect(3, 7, 10, 1);
+    c.fillStyle = "#3b3a37"; // wheel
+    c.beginPath();
+    c.arc(6, 13, 2, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#8f8980"; // urn
+    c.fillRect(6, 2, 5, 5);
+    c.fillStyle = "#b3ada2";
+    c.fillRect(6, 2, 5, 1);
+    c.fillStyle = "#2b2620"; // tap
+    c.fillRect(11, 5, 1, 1);
+    c.fillStyle = "#f5f2ea"; // steam
+    c.fillRect(8, 0, 1, 2);
+  } else {
+    // cafe table — a round bistro top with a small vase
+    c.fillStyle = "#5e3d1c"; // pedestal + foot
+    c.fillRect(7, 9, 2, 4);
+    c.fillRect(5, 13, 6, 1);
+    c.fillStyle = "#d9cdb4"; // table top
+    c.beginPath();
+    c.ellipse(8, 8, 6, 3, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#c2b699"; // rim shadow
+    c.beginPath();
+    c.ellipse(8, 9, 6, 2.4, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#3f7fb0"; // vase
+    c.fillRect(7, 4, 2, 4);
+    c.fillStyle = "#e05a7a"; // bloom
+    c.fillRect(7, 2, 2, 2);
   }
 }
 
@@ -458,6 +552,13 @@ export async function loadTownTextures(): Promise<TownTextures> {
       rug: sub(indoors, 5, 9), // bordered rug
       artA: sub(indoors, 20, 12), // framed landscape (cream)
       artB: sub(indoors, 19, 12), // framed landscape (green)
+    },
+    props: {
+      planter: canvasTexture((c) => drawProp(c, "planter")),
+      noticeboard: canvasTexture((c) => drawProp(c, "noticeboard")),
+      market: canvasTexture((c) => drawProp(c, "market")),
+      coffeecart: canvasTexture((c) => drawProp(c, "coffeecart")),
+      cafetable: canvasTexture((c) => drawProp(c, "cafetable")),
     },
     pavement: {
       road: canvasTexture(drawRoad),
