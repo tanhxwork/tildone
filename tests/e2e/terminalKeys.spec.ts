@@ -27,8 +27,8 @@ async function emitted(): Promise<string[]> {
 
 // The bits of the xterm instance the e2e seam exposes on window.__tildoneTerm.
 type TermSeam = {
-  write(data: string): void;
-  select(column: number, row: number, length: number): void;
+  write(data: string, callback?: () => void): void;
+  selectLines(start: number, end: number): void;
   getSelection(): string;
   clearSelection(): void;
   buffer: {
@@ -36,26 +36,47 @@ type TermSeam = {
   };
 };
 
-// A line the test owns, so the copy assertion never depends on shell output.
-const MARKER = "TILDONE-COPY-MARKER-195";
+// Two lines the test owns, so the copy assertion never depends on shell output.
+// Two rather than one on purpose: a one-line selection cannot tell a correct
+// copy apart from one that keeps only the first row of a multi-row selection.
+const MARKER_A = "TILDONE-COPY-MARKER-195-A";
+const MARKER_B = "TILDONE-COPY-MARKER-195-B";
+const MARKER = `${MARKER_A}\n${MARKER_B}`;
+const LATE = "late output from the shell";
 
 // Server-output path: term.write never fires onData, so this is invisible to
 // `emitted()` — it changes the screen without touching the pty pipe, exactly
 // like the shell's own output does.
+//
+// The callback is awaited because xterm parses writes *asynchronously* (the
+// write buffer schedules parsing on a timer). Returning as soon as write() has
+// been called leaves the bytes queued, so a chord fired immediately afterwards
+// would run against the screen as it was *before* the write — which would make
+// the late-output case below silently untested.
 async function writeToTerm(data: string): Promise<void> {
-  await browser.execute((d) => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.write(d), data);
+  await browser.execute((d) => {
+    const w = window as unknown as { __tildoneTerm: TermSeam; __wrote: boolean };
+    w.__wrote = false;
+    w.__tildoneTerm.write(d, () => {
+      w.__wrote = true;
+    });
+  }, data);
+  await browser.waitUntil(
+    async () => browser.execute(() => (window as unknown as { __wrote: boolean }).__wrote),
+    { timeout: 4000, timeoutMsg: "xterm never finished parsing the write" },
+  );
 }
 
-// Absolute buffer row (scrollback included) holding MARKER, or -1. Absolute is
-// the coordinate space term.select() takes, so the two indexings agree, and it
-// is stable under later output: appended lines land below, never on this row.
-async function markerRow(): Promise<number> {
+// Absolute buffer row (scrollback included) whose text is exactly `line`, or -1.
+// Absolute is the coordinate space selectLines() takes, so the two indexings
+// agree, and it is stable under later output: appended lines land below.
+async function rowOf(line: string): Promise<number> {
   return browser.execute((m) => {
     const b = (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.buffer.active;
     for (let y = b.length - 1; y >= 0; y--)
       if ((b.getLine(y)?.translateToString(true) ?? "").trim() === m) return y;
     return -1;
-  }, MARKER);
+  }, line);
 }
 
 // Dispatch a ⌘-chord straight at xterm's textarea. Synthetic dispatch (not
@@ -173,24 +194,24 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
 
     // ⌘C copies the current selection verbatim to the clipboard.
     //
-    // The selection is one line we wrote ourselves, not `selectAll()`. The old
+    // The selection is two lines we wrote ourselves, not `selectAll()`. The old
     // shape — selectAll → snapshot → ⌘C → compare — made this assertion a diff
     // of the entire screen buffer, developer's zsh startup banner included, so
     // any late shell repaint between the snapshot and the chord failed it on
-    // content the spec has no business depending on (TIL-195). Selecting one
-    // row out of a *larger* buffer is also the stronger assertion: it tells
+    // content the spec has no business depending on (TIL-195). Selecting a known
+    // region out of a *larger* buffer is also the stronger assertion: it tells
     // "copies the selection" apart from "copies everything", which a
-    // whole-buffer selection could not.
-    await writeToTerm(`\r\n${MARKER}\r\n`);
-    await browser.waitUntil(async () => (await markerRow()) >= 0, {
-      timeout: 4000,
-      timeoutMsg: "marker line never reached the screen buffer",
-    });
-    const row = await markerRow();
+    // whole-buffer selection could not — and two rows keep the multi-row
+    // fidelity that a single-row marker would have given up.
+    await writeToTerm(`\r\n${MARKER_A}\r\n${MARKER_B}\r\n`);
+    const rowA = await rowOf(MARKER_A);
+    const rowB = await rowOf(MARKER_B);
+    expect(rowA).toBeGreaterThanOrEqual(0);
+    expect(rowB).toBe(rowA + 1);
     await browser.execute(
-      (r, len) => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.select(0, r, len),
-      row,
-      MARKER.length,
+      (a, b) => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.selectLines(a, b),
+      rowA,
+      rowB,
     );
     expect(
       await browser.execute(() => (window as unknown as { __tildoneTerm: TermSeam }).__tildoneTerm.getSelection()),
@@ -198,9 +219,12 @@ describe("terminal — ⌘ line-editing & copy/paste", () => {
 
     // Late shell output — the tail of an async startup banner, say — must not
     // change what ⌘C copies. This is the exact input that broke the old
-    // full-buffer assertion; the selection is anchored to the marker row, so it
-    // rides through. Keeping it here turns yesterday's flake into a covered case.
-    await writeToTerm("\rlate output from the shell\r\n");
+    // full-buffer assertion; the selection is anchored to the marker rows, so it
+    // rides through. Keeping it here turns yesterday's flake into a covered case
+    // — but only if the repaint has actually reached the screen before the
+    // chord, so that is asserted rather than assumed.
+    await writeToTerm(`\r${LATE}\r\n`);
+    expect(await rowOf(LATE)).toBeGreaterThanOrEqual(0);
 
     expect(await metaChord("c")).toBe(false);
     await browser.waitUntil(
