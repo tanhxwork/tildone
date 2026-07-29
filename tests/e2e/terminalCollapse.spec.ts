@@ -66,23 +66,29 @@ describe("terminal divider — show/hide handle", () => {
     // old 34px docked-rail footprint. (This assertion had gone stale against
     // that redesign and was failing on main; TIL-166.)
     expect(await paneInset()).toBe("0px");
-    // The pane actually slides off the right edge (not just reclassed): once
-    // the 340ms transition settles, its left edge has cleared the viewport.
-    // A single post-settle check, not a polled waitUntil, avoids the WebDriver
-    // script-timeout flakiness that polling hit under full-suite load.
-    // Wait for the 340ms transition to settle, then the left edge has cleared
-    // the viewport. A bounded waitUntil, not a fixed pause: machine load that
-    // stretches the transition (a parallel build, a Codex run) must not flake
-    // this — it polls a stable end-state, so the script-timeout risk that ruled
-    // out polling a live-updating value doesn't apply here.
-    await browser.waitUntil(
-      async () =>
-        browser.execute(() => {
-          const el = document.querySelector(".session-pane");
-          return !!el && el.getBoundingClientRect().left >= window.innerWidth - 1;
-        }),
-      { timeout: 5000, timeoutMsg: "collapsed pane did not slide off the right edge" },
-    );
+    // The pane actually slides off the right edge (not just reclassed): its
+    // left edge clears the viewport.
+    //
+    // Read the TARGET, not the animation. Waiting for the 340ms transition to
+    // settle looks reasonable and is not: a webview that is not being
+    // composited — the app window occluded, or simply never brought frontmost,
+    // which is the normal state when this spec runs on its own — does not
+    // advance CSS transitions at all, so the poll burns its whole timeout and
+    // reports a layout bug that is not there. Killing the transition inline
+    // makes the computed geometry the end state immediately, whoever is
+    // frontmost. Same fix as the sessions-spec reveal read (TIL-170).
+    const offRight = await browser.execute(() => {
+      const el = document.querySelector(".session-pane") as HTMLElement | null;
+      if (!el) return null;
+      const prev = el.style.transition;
+      el.style.transition = "none";
+      void el.offsetWidth; // force the style flush before measuring
+      const left = el.getBoundingClientRect().left;
+      el.style.transition = prev;
+      return { left, viewport: window.innerWidth };
+    });
+    expect(offRight).not.toBeNull();
+    expect(offRight!.left).toBeGreaterThanOrEqual(offRight!.viewport - 1);
     // Focus must not be stranded in the hidden, aria-hidden pane, or board
     // shortcuts stay suppressed and focus is trapped in aria-hidden content.
     expect(
