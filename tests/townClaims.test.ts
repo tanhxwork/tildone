@@ -161,6 +161,95 @@ describe("overflow tiles are shared out, not handed out twice", () => {
   });
 });
 
+describe("the fix's own defects, found by re-verifying it", () => {
+  it("gives the kettle back when reduced motion snaps everyone home", () => {
+    // The ledger is reconciled once per step, before the reduced-motion branch —
+    // which then cancels every trip and returns without reconciling again. One
+    // frame of a claim nobody holds, at the API boundary, which is exactly the
+    // invariant the first fix said it had made unrepresentable.
+    const world = townOf(12);
+    const sim = createSim();
+    const rng = mulberry32(3);
+    const r = [roster(1, "working", true)];
+    const c = () => sim.chars.get(1)!;
+    expect(runUntil(sim, r, world, rng, () => !!c().chore)).toBe(true);
+
+    stepTownSim(sim, r, 100, world, rng, { reducedMotion: true });
+    expect(c().chore).toBeNull();
+    expect([...sim.claims.keys()]).toEqual([]);
+  });
+
+  it("drops the route to a waiting tile it has been moved off", () => {
+    // Overflow tiles are handed out from one pool in task-id order, so a quiet
+    // character joining later can take the tile a worker was already walking to
+    // and push that worker elsewhere. Reassigning `restTile` without clearing
+    // the path left the worker still heading for a tile now promised to someone
+    // else — the same stale-route defect as the sofa, one layer down.
+    const world = townOf();
+    const sim = createSim();
+    const rng = mulberry32(17);
+    const workers = [100, 101, 102].map((id) => roster(id, "working", true));
+    stepTownSim(sim, workers, 16, world, rng);
+    const late = sim.chars.get(102)!;
+    expect(late.restTile).not.toBeNull();
+
+    stepTownSim(sim, [...workers, roster(1, "quiet", false), roster(2, "quiet", false)], 16, world, rng);
+    for (const ch of sim.chars.values()) {
+      const end = ch.path[ch.path.length - 1];
+      if (!end || !ch.restTile) continue;
+      // Whatever it is walking to, it must be the tile it currently holds.
+      expect(end).toEqual(ch.restTile);
+    }
+  });
+
+  it("does not re-plan an overflow rester's route every single frame", () => {
+    // A resting character with no free sofa has `restSpot === null`, which the
+    // "did my rest kind change?" check reads as "it changed" — so it cleared the
+    // path and re-ran A* on every frame of the walk. It still arrived, so no
+    // behavioural test caught it; the cost was a pathfind per character per
+    // frame. Path identity is the direct expression of the defect: an untouched
+    // walk keeps the same array.
+    const world = townOf();
+    const sim = createSim();
+    const rng = mulberry32(19);
+    const r = [1, 2, 3, 4].map((id) => roster(id, "quiet", false));
+    let overflow: CharAgent | undefined;
+    for (let i = 0; i < 60 && !overflow; i++) {
+      stepTownSim(sim, r, 16, world, rng);
+      overflow = [...sim.chars.values()].find((c) => c.restSpot === null && c.path.length > 1);
+    }
+    expect(overflow).toBeDefined();
+    const before = overflow!.path;
+    stepTownSim(sim, r, 16, world, rng);
+    expect(overflow!.path).toBe(before); // same array — not cleared and rebuilt
+  });
+
+  it("spreads waiting characters evenly when there are more of them than tiles", () => {
+    // The world is finite, so past some population two characters must share a
+    // waiting tile — that part is physical, not a bug. Piling every extra onto
+    // the *last* tile is the bug: it turns an unavoidable pair into a heap.
+    // One building means the smallest world the town ever builds (two cells),
+    // which is what makes the tiles run out at a testable population — with a
+    // second building the search finds distinct tiles for 700 characters.
+    const world = buildWorld({ rooms: [room("Inbox", 12)] });
+    const sim = createSim();
+    const rng = mulberry32(23);
+    const r = Array.from({ length: 500 }, (_, i) => roster(i + 1, "working", true));
+    stepTownSim(sim, r, 16, world, rng);
+    const counts = new Map<string, number>();
+    for (const c of sim.chars.values()) {
+      if (!c.restTile) continue;
+      const k = `${c.restTile.x},${c.restTile.y}`;
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    const n = [...counts.values()];
+    // The tiles genuinely ran out — otherwise this asserts nothing.
+    expect(Math.max(...n)).toBeGreaterThanOrEqual(2);
+    expect(counts.size).toBeGreaterThan(1);
+    expect(Math.max(...n) - Math.min(...n)).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("a working agent never looks asleep", () => {
   it("takes trips to the kettle, not to bed", () => {
     // The trip picker admitted every affordance whose verb was not "working",

@@ -568,12 +568,18 @@ function assignAnchors(
         (b?.restSpots ?? []).some(
           (r) => r.tile.x === c.restSpot!.x && r.tile.y === c.restSpot!.y && r.kind === want,
         );
-      if (!stillRight) {
+      if (c.restSpot && !stillRight) {
         releaseClaims(sim, c);
         // …and drop the route to it. Keeping the path meant a character that
         // gave up the sofa at nightfall finished walking to the sofa anyway —
         // by then unclaimed, so another quiet agent could be settling on it —
         // before turning round for the bed (Codex finding on 67114c2).
+        //
+        // Guarded on actually HAVING a spot: an overflow rester has none, and
+        // reading that as "your rest kind changed" cleared its path and re-ran
+        // A* on every frame of its walk. It still arrived, so nothing
+        // behavioural caught it — the cost was a pathfind per character per
+        // frame (Codex re-verify of edcd04d).
         c.path = [];
       }
       const list = restByBuilding.get(c.buildingIndex) ?? [];
@@ -659,7 +665,19 @@ function assignOverflow(
   if (!overflow.length) return;
   const tiles = nearbyRestTiles(world, buildingIndex, overflow.length);
   overflow.forEach((id, i) => {
-    sim.chars.get(id)!.restTile = tiles[Math.min(i, tiles.length - 1)];
+    const c = sim.chars.get(id)!;
+    // Past some population the world simply runs out of walkable tiles near a
+    // door and characters must share one — that part is physical, not a defect.
+    // Cycling rather than clamping to the last tile is what keeps an unavoidable
+    // pair from becoming a heap on one tile (Codex re-verify of edcd04d).
+    const tile = tiles[i % tiles.length];
+    // The pool is handed out in task-id order across BOTH kinds of overflow, so
+    // a character joining later can take the tile someone was already walking
+    // to. Moving that someone without dropping its route left it heading for a
+    // tile now promised to another character — the sofa's stale-route defect one
+    // layer down.
+    if (c.restTile && (c.restTile.x !== tile.x || c.restTile.y !== tile.y)) c.path = [];
+    c.restTile = tile;
   });
 }
 
@@ -852,6 +870,12 @@ export function stepTownSim(
       }
       snapToRest(c, world);
     }
+    // snapToRest cancels every trip in flight, so the ledger reconciled at the
+    // top of this step is already out of date. Reconciling once per step and
+    // then returning early through a branch that drops holdings is how the
+    // "a claim nobody holds is unrepresentable" invariant became false again at
+    // the API boundary (Codex re-verify of edcd04d).
+    reconcileClaims(sim);
     return sim;
   }
 

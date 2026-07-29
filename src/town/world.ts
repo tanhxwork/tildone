@@ -1109,6 +1109,32 @@ const CLUTTER_ROOMS: { kind: ClutterKind; rooms: RoomKind[] }[] = [
  *  0.40–0.45 band the invariant test pins, so rounding cannot fall outside it. */
 const DENSITY_TARGET = 0.425;
 
+/** Most personal things a house gets, however big it is.
+ *
+ *  The research asks for 3–5 clutter items *and* for constant density, and the
+ *  first build read those as contradictory — a large house's deficit is nine
+ *  items, so the ceiling was declared unholdable and clutter filled all of it.
+ *  That was rationalising: density is about the house's *total* furniture, so
+ *  the deficit is properly met by fitting the house out more thoroughly, and
+ *  clutter stays what it is for — the handful of things that say who lives
+ *  here. Nine mugs and laundry baskets is not more personality, it is a mess. */
+const CLUTTER_MAX = 5;
+
+/** Extra fitted furniture, in the order it is added, for houses whose density
+ *  deficit is bigger than the clutter budget. Deliberately the furnishings a
+ *  bigger home would actually have more of — another bookshelf, more greenery,
+ *  a second seat, a rug — rather than more of the personal clutter. */
+const EXTRA_FITTED: { kind: FurnitureKind; rooms: RoomKind[] }[] = [
+  { kind: "bookshelf", rooms: ["lounge", "workroom"] },
+  { kind: "plant", rooms: ["lounge", "bedroom", "kitchen"] },
+  { kind: "rug", rooms: ["lounge", "bedroom"] },
+  { kind: "chair", rooms: ["kitchen", "lounge"] },
+  { kind: "plant", rooms: ["workroom", "hall"] },
+  { kind: "bookshelf", rooms: ["bedroom"] },
+  { kind: "rug", rooms: ["workroom"] },
+  { kind: "chair", rooms: ["bedroom", "workroom"] },
+];
+
 /**
  * Fill the house up to the density target with this project's own things.
  *
@@ -1192,39 +1218,58 @@ function scatterClutter(
       return !inRect(interior, n) || occupied.has(`${n.x},${n.y}`) || !isFree(n);
     });
 
-  // Cycle the kind list until the house is full. `misses` stops an unfillable
-  // house — every remaining candidate refused by the anchor or the invariant —
-  // from looping forever: one full pass with nothing placed means it is done.
-  let attempt = 0;
-  let misses = 0;
-  while (furniture.length < target && misses < kinds.length) {
-    const spec = kinds[attempt % kinds.length];
-    attempt++;
-    let placed = false;
-    for (const roomKind of spec.rooms) {
-      for (const t of candidatesIn(roomKind)) {
-        const key = `${t.x},${t.y}`;
-        if (occupied.has(key) || mustReach.has(key) || !isFree(t)) continue;
-        if (roomOf(t) !== roomKind) continue; // rects overlap nowhere, but be exact
-        if (!anchored(t)) continue;
-        const item = put(t.x - interior.x, t.y - interior.y, spec.kind);
-        if (!item) continue;
-        if (!invariantHolds()) {
-          // Undo: this tile was what sealed a room in.
-          blocked[idx(t.x, t.y, cols)] = false;
-          furniture.pop();
-          continue;
+  /**
+   * Place from `specs` until the house holds `upTo` items in total.
+   *
+   * `misses` stops an unfillable house — every remaining candidate refused by
+   * the anchor rule or the invariant — from looping forever: one full pass of
+   * the spec list with nothing placed means it is done.
+   */
+  const fill = (
+    specs: { kind: FurnitureKind; rooms: RoomKind[] }[],
+    upTo: number,
+    collect: Furniture[],
+  ) => {
+    if (!specs.length) return;
+    let attempt = 0;
+    let misses = 0;
+    while (furniture.length < upTo && misses < specs.length) {
+      const spec = specs[attempt % specs.length];
+      attempt++;
+      let placed = false;
+      for (const roomKind of spec.rooms) {
+        for (const t of candidatesIn(roomKind)) {
+          const key = `${t.x},${t.y}`;
+          if (occupied.has(key) || mustReach.has(key) || !isFree(t)) continue;
+          if (roomOf(t) !== roomKind) continue; // rects overlap nowhere, but be exact
+          if (!anchored(t)) continue;
+          const item = put(t.x - interior.x, t.y - interior.y, spec.kind);
+          if (!item) continue;
+          if (!invariantHolds()) {
+            // Undo: this tile was what sealed a room in.
+            blocked[idx(t.x, t.y, cols)] = false;
+            furniture.pop();
+            continue;
+          }
+          item.room = roomOf(item.tile);
+          occupied.add(key);
+          collect.push(item);
+          placed = true;
+          break;
         }
-        item.room = roomOf(item.tile);
-        occupied.add(key);
-        clutter.push(item);
-        placed = true;
-        break;
+        if (placed) break;
       }
-      if (placed) break;
+      misses = placed ? 0 : misses + 1;
     }
-    misses = placed ? 0 : misses + 1;
-  }
+  };
+
+  // Fit the house out first, and only then add the personal things. A big
+  // house's deficit is met with another bookshelf and more greenery — the
+  // furnishings a bigger home would actually have more of — so clutter stays the
+  // 3–5 items the research asks for instead of swelling to fill the gap.
+  const fitted: Furniture[] = [];
+  fill(EXTRA_FITTED, Math.max(furniture.length, target - CLUTTER_MAX), fitted);
+  fill(kinds, target, clutter);
   return clutter;
 }
 

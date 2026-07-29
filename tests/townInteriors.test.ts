@@ -177,16 +177,17 @@ describe("house clutter — whose house this is", () => {
     expect(two.clutter.map((c) => c.kind)).toEqual(one.clutter.map((c) => c.kind));
   });
 
-  it.each(["small", "medium", "large"])("%s: has at least three personal things", (tier) => {
-    // The research asks for 3–5 clutter items per house. The floor is what
-    // matters and is held at every tier; the ceiling is not, because the density
-    // rule from the same research (0.40–0.45 items per interior tile) demands ~9
-    // in a large house, and of the two rules density is the measurable one that
-    // stays true when the geometry changes. Deliberate: the alternative is a
-    // large house that meets the clutter budget by standing half empty, which is
-    // the exact defect the density rule exists to prevent.
+  it.each(["small", "medium", "large"])("%s: has three to five personal things", (tier) => {
+    // The research asks for 3–5 clutter items per house *and* for 0.40–0.45
+    // items per interior tile. Those only looked like they conflicted: density
+    // is about the house's total furniture, so a large house's deficit is met by
+    // fitting it out more thoroughly — a second bookshelf, another rug, more
+    // greenery — and clutter stays the handful of personal things it is supposed
+    // to be. Filling the entire deficit with clutter, and then calling the
+    // ceiling unholdable, was the wrong reading.
     const b = buildWorld(TIERS).buildings.find((x) => x.tier === tier)!;
     expect(b.clutter.length).toBeGreaterThanOrEqual(3);
+    expect(b.clutter.length).toBeLessThanOrEqual(5);
   });
 
   it("counts clutter as furniture, and keeps it inside the house", () => {
