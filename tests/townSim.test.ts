@@ -61,7 +61,7 @@ describe("stepTownSim", () => {
   it("walks a working character inside to sit at its desk seat", () => {
     const world = world2();
     const sim = createSim();
-    run(sim, [roster(1, "working", true)], world, 60, mulberry32(2));
+    run(sim, [roster(1, "working", true)], world, 400, mulberry32(2));
     const c = sim.chars.get(1)!;
     // It has left the door and is sitting on its building's first seat, facing
     // up into the monitor.
@@ -76,7 +76,7 @@ describe("stepTownSim", () => {
     const door = world.buildings[0].door;
     const sim = createSim();
     const rng = mulberry32(3);
-    run(sim, [roster(1, "quiet", true)], world, 200, rng);
+    run(sim, [roster(1, "quiet", true)], world, 500, rng);
     const c = sim.chars.get(1)!;
     const here = { x: Math.round(c.pos.x), y: Math.round(c.pos.y) };
     // It has left its door tile — wandering is visible motion away from home.
@@ -88,7 +88,7 @@ describe("stepTownSim", () => {
     const seat = world.buildings[0].seats[0];
     const sim = createSim();
     const rng = mulberry32(4);
-    run(sim, [roster(1, "quiet", true)], world, 200, rng); // wander away first
+    run(sim, [roster(1, "quiet", true)], world, 500, rng); // wander away first
     const away = sim.chars.get(1)!;
     expect({ x: Math.round(away.pos.x), y: Math.round(away.pos.y) }).not.toEqual(seat);
     run(sim, [roster(1, "working", true)], world, 400, rng); // now resume work
@@ -132,7 +132,7 @@ describe("stepTownSim", () => {
     const door = world.buildings[0].door;
     const sim = createSim();
     const rng = mulberry32(7);
-    run(sim, [roster(1, "quiet", true)], world, 200, rng); // get it wandering/moving
+    run(sim, [roster(1, "quiet", true)], world, 500, rng); // get it wandering/moving
     stepTownSim(sim, [roster(1, "quiet", true)], 16, world, rng, { reducedMotion: true });
     const c = sim.chars.get(1)!;
     expect({ x: Math.round(c.pos.x), y: Math.round(c.pos.y) }).toEqual(door);
@@ -165,7 +165,7 @@ describe("stepTownSim — desk seating (work-sim)", () => {
     const seats = world.buildings[0].seats;
     const sim = createSim();
     const rng = mulberry32(21);
-    run(sim, [roster(1, "working", true, 0), roster(2, "working", true, 0)], world, 120, rng);
+    run(sim, [roster(1, "working", true, 0), roster(2, "working", true, 0)], world, 400, rng);
     const a = sim.chars.get(1)!;
     const b = sim.chars.get(2)!;
     const seatKeys = new Set(seats.map((s) => `${s.x},${s.y}`));
@@ -185,7 +185,7 @@ describe("stepTownSim — desk seating (work-sim)", () => {
     const seat = world.buildings[0].seats[0];
     const sim = createSim();
     const rng = mulberry32(22);
-    run(sim, [roster(1, "working", true)], world, 120, rng); // sit down
+    run(sim, [roster(1, "working", true)], world, 400, rng); // sit down
     expect(sim.chars.get(1)!.seated).toBe(true);
     // Goes idle (quiet+live) → must leave the seat and end up outside the house.
     run(sim, [roster(1, "quiet", true)], world, 400, rng);
@@ -307,11 +307,11 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
     const rng = mulberry32(31);
     // Higher-id worker (5) settles first — under the old id-sorted assignment a
     // later lower-id joiner would steal seat 0 and shuffle 5 to seat 1.
-    run(sim, [roster(5, "working", true, 0)], world, 120, rng);
+    run(sim, [roster(5, "working", true, 0)], world, 400, rng);
     const held = sim.chars.get(5)!.seat;
     expect(held).not.toBeNull();
     // Lower-id worker (2) joins the same building.
-    run(sim, [roster(5, "working", true, 0), roster(2, "working", true, 0)], world, 120, rng);
+    run(sim, [roster(5, "working", true, 0), roster(2, "working", true, 0)], world, 400, rng);
     // 5 keeps the exact seat it already held (sticky, no reshuffle).
     expect(sim.chars.get(5)!.seat).toEqual(held!);
     // 2 took the other desk — the two are not on the same seat.
@@ -325,7 +325,7 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
     // Ids 3 and 6 both hit `id % frontage.length === 0` — the old overflow
     // aliasing stacked them both on the door tile. They must now be distinct.
     const r = [1, 2, 3, 6].map((id) => roster(id, "working", true, 0));
-    run(sim, r, world, 200, rng);
+    run(sim, r, world, 500, rng);
     const positions = [...sim.chars.values()].map((c) => `${Math.round(c.pos.x)},${Math.round(c.pos.y)}`);
     expect(new Set(positions).size).toBe(positions.length); // all distinct — no pile-up
     const seated = [...sim.chars.values()].filter((c) => c.seated);
@@ -336,7 +336,7 @@ describe("stepTownSim — v3 sticky seats, overflow & plaza gathering", () => {
     const world = world2(); // 2 desks
     const sim = createSim();
     const rng = mulberry32(34);
-    run(sim, [1, 2, 3].map((id) => roster(id, "working", true, 0)), world, 200, rng);
+    run(sim, [1, 2, 3].map((id) => roster(id, "working", true, 0)), world, 500, rng);
     expect(sim.chars.get(3)!.seat).toBeNull(); // id 3 is the overflow
     // Id 1 leaves the roster → its desk frees; id 3 should claim it and sit
     // (id 1 itself is meanwhile walking off toward the edge).

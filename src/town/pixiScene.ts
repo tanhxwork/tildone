@@ -139,6 +139,15 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   }
 
+  /** Scale a packed RGB tint toward black — used to shade the lower roof rows so
+   *  a multi-row roof reads as a slope rather than a flat rectangle. */
+  function darken(rgb: number, k: number): number {
+    const r = Math.round(((rgb >> 16) & 0xff) * k);
+    const g = Math.round(((rgb >> 8) & 0xff) * k);
+    const b = Math.round((rgb & 0xff) * k);
+    return (r << 16) | (g << 8) | b;
+  }
+
   function roofTint(place: TownWorld["buildings"][number]): number {
     return place.room.color && /^#[0-9a-f]{6}$/i.test(place.room.color)
       ? parseInt(place.room.color.slice(1), 16)
@@ -147,44 +156,77 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
 
   function drawBuilding(place: TownWorld["buildings"][number]) {
     const g = new Container();
-    const { tx, ty, tw, th } = place;
+    const { tx, ty, tw, th, interior, frontWallY } = place;
     const tint = roofTint(place);
     const int = tex.interior;
-    // An enclosed open-front office: roof row on top, a facade of walls with
-    // windows, a desk counter (one monitor per workstation) behind the wood-floor
-    // aisle where workers sit, and a front wall with a single door onto the road.
-    const wallTop = ty + 1;
-    const deskRow = place.desks[0]?.y ?? ty + 2;
-    const frontRow = ty + th - 1;
-
-    // Walls fill everything between roof and the front wall; seats get wood floor.
-    for (let ry = wallTop; ry <= frontRow; ry++) {
-      for (let rx = 0; rx < tw; rx++) g.addChild(tile(int.wall, tx + rx, ry));
+    // A house: a wall ring around an open floor, entered through one door in the
+    // facade (the bottom row, which stays visible when the roof lifts). Draw
+    // order matters and is the thing the old renderer got wrong — floor first
+    // across the *whole* interior, then walls as a frame, then furniture. Painting
+    // wall texture everywhere and floor only under the seats is what made a house
+    // read as a solid block with a one-tile corridor in it.
+    for (let y = interior.y; y < interior.y + interior.h; y++) {
+      for (let x = interior.x; x < interior.x + interior.w; x++) {
+        g.addChild(tile(int.floor, x, y));
+      }
     }
-    for (const s of place.seats) g.addChild(tile(int.floor, s.x, s.y));
+    for (let dy = 0; dy < th; dy++) {
+      for (let dx = 0; dx < tw; dx++) {
+        const onRing = dx === 0 || dx === tw - 1 || dy === 0 || dy === th - 1;
+        if (onRing) g.addChild(tile(int.wall, tx + dx, ty + dy));
+      }
+    }
+    for (const p of place.partitions) g.addChild(tile(int.wall, p.x, p.y));
 
-    // Project-tinted roof.
-    for (let rx = 0; rx < tw; rx++) {
-      const roof = rx === 0 ? tex.world.roofL : rx === tw - 1 ? tex.world.roofR : tex.world.roofM;
-      g.addChild(tile(roof, tx + rx, ty, tint));
+    // Framed art on the back wall — the Sims' "room score" insight in miniature:
+    // bare walls read as unfinished, and these were already sliced but never drawn.
+    if (tw >= 6) {
+      g.addChild(tile(int.artA, tx + 2, ty));
+      g.addChild(tile(int.artB, tx + tw - 3, ty));
     }
 
-    // Facade: potted plants at the corners, windows between them.
-    const winCols = [tx + 1, tx + tw - 2];
-    g.addChild(tile(int.plant, tx, wallTop));
-    g.addChild(tile(int.plant, tx + tw - 1, wallTop));
-    for (const wx of winCols) g.addChild(tile(tex.facade.window, wx, wallTop));
+    // Furniture. Everything but the rug is bottom-anchored so it overlaps the
+    // tile above and the room gains a little depth.
+    for (const f of place.furniture) {
+      if (f.kind === "rug") {
+        g.addChild(tile(tex.furniture.rug, f.tile.x, f.tile.y));
+        continue;
+      }
+      if (f.kind === "desk") continue; // drawn below, with its monitor
+      const s = new Sprite(tex.furniture[f.kind]);
+      s.anchor.set(0.5, 0.9);
+      s.scale.set(scale);
+      s.position.set(f.tile.x * tilePx + tilePx / 2, f.tile.y * tilePx + tilePx);
+      g.addChild(s);
+    }
 
-    // A long desk counter with a monitor lifted onto each desk surface.
+    // The desk counter, with a monitor lifted onto each workstation.
     place.desks.forEach((d, i) => {
-      g.addChild(tile(i % 2 === 0 ? int.deskL : int.deskR, d.x, deskRow));
-      const comp = tile(int.computer, d.x, deskRow);
+      g.addChild(tile(i % 2 === 0 ? int.deskL : int.deskR, d.x, d.y));
+      const comp = tile(int.computer, d.x, d.y);
       comp.y -= 5 * scale;
       g.addChild(comp);
     });
 
-    // The single door in the front wall (over the wall tile already laid down).
-    g.addChild(tile(tex.facade.door, place.door.x, frontRow));
+    // Facade: the door, with a window either side of it.
+    const winCols = [tx + 1, tx + tw - 2];
+    for (const wx of winCols) g.addChild(tile(tex.facade.window, wx, frontWallY));
+    g.addChild(tile(tex.facade.door, place.door.x, frontWallY));
+
+    // The roof, as a liftable lid over everything above the facade. A house you
+    // can never see into is just a box; fading the roof out while anyone is home
+    // is what turns the floor plan into something the viewer actually sees — and
+    // leaves the closed house reading as a house the rest of the time.
+    const roof = new Container();
+    for (let ry = ty; ry < frontWallY; ry++) {
+      const shade = ry === ty ? tint : darken(tint, 0.86);
+      for (let rx = 0; rx < tw; rx++) {
+        const t = rx === 0 ? tex.world.roofL : rx === tw - 1 ? tex.world.roofR : tex.world.roofM;
+        roof.addChild(tile(t, tx + rx, ry, shade));
+      }
+    }
+    roof.alpha = place.room.characters.length > 0 ? 0.12 : 1;
+    g.addChild(roof);
 
     // Nameplate: a project-tinted dot + the project name on a dark rounded plate,
     // floated just above the roof. The plate is what makes the label readable —
@@ -225,7 +267,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       sprite.alpha = 0;
       sprite.blendMode = "add";
       glowLayer.addChild(sprite);
-      return { wx, wy: wallTop, sprite };
+      return { wx, wy: frontWallY, sprite };
     });
   }
 
@@ -259,8 +301,11 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
         const r = hash(x, y);
         const g = r < 0.06 ? tex.world.grass[2] : r < 0.18 ? tex.world.grass[1] : tex.world.grass[0];
         ground.addChild(tile(g, x, y));
+        const i = y * w.cols + x;
         if (inPlaza(x, y)) ground.addChild(tile(tex.pavement.plaza, x, y));
-        else if (w.road[y * w.cols + x]) ground.addChild(tile(tex.pavement.road, x, y));
+        else if (w.road[i]) ground.addChild(tile(tex.pavement.road, x, y));
+        else if (w.path[i]) ground.addChild(tile(tex.pavement.path, x, y));
+        else if (w.yard[i]) ground.addChild(tile(tex.pavement.yard, x, y));
       }
     }
 
@@ -269,21 +314,64 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       for (const g of winGlows) glows.push({ buildingIndex: i, ...g });
     });
 
-    // Scatter decorations on free green tiles (never on roads/plaza/footprints).
+    // Fences ringing each lot.
+    const isFence = new Set(w.fences.map((f) => `${f.x},${f.y}`));
+    for (const f of w.fences) {
+      const s = new Sprite(tex.fence);
+      s.anchor.set(0.5, 0.9);
+      s.scale.set(scale);
+      s.position.set(f.x * tilePx + tilePx / 2, f.y * tilePx + tilePx);
+      buildings.addChild(s);
+    }
+
+    // Scatter decorations on free wild green. Two rules the old uniform per-tile
+    // roll broke: vegetation *clumps* (a coarse grove mask decides whether a
+    // patch is woodland at all, so trees arrive in groves rather than as evenly
+    // spread confetti — uniform noise is the visual signature of "generated"),
+    // and built space is *cleared* — nothing grows on a lot, on a path, or right
+    // up against a street, because managed ground is what reads as inhabited.
+    const built = (x: number, y: number) =>
+      isBuilding.has(`${x},${y}`) || isFence.has(`${x},${y}`);
+    const grove = (x: number, y: number) =>
+      hash(Math.floor(x / 6) * 31 + 7, Math.floor(y / 6) * 17 + 3) < 0.34;
     for (let y = 0; y < w.rows; y++) {
       for (let x = 0; x < w.cols; x++) {
         const key = `${x},${y}`;
-        if (isBuilding.has(key) || isSpot.has(key) || isLamp.has(key) || w.road[y * w.cols + x])
-          continue;
+        const i = y * w.cols + x;
+        if (isBuilding.has(key) || isSpot.has(key) || isLamp.has(key)) continue;
+        if (isFence.has(key) || w.road[i] || w.path[i] || w.yard[i]) continue;
+        // Cleared ring: never crowd a street, a lot fence or a wall.
+        let crowds = false;
+        for (let dy = -1; dy <= 1 && !crowds; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w.cols || ny >= w.rows) continue;
+            if (built(nx, ny) || w.road[ny * w.cols + nx]) {
+              crowds = true;
+              break;
+            }
+          }
+        }
+        if (crowds) continue;
         const r = hash(x * 7 + 1, y * 13 + 5);
         let dec: Texture | null = null;
         let tall = false;
-        if (r < 0.06) {
+        if (grove(x, y)) {
+          if (r < 0.42) {
+            dec = tex.world.trees[x % tex.world.trees.length];
+            tall = true;
+          } else if (r < 0.62) {
+            dec = tex.world.bush;
+          } else if (r < 0.68) {
+            dec = tex.world.mushrooms;
+          }
+        } else if (r < 0.03) {
           dec = tex.world.trees[x % tex.world.trees.length];
           tall = true;
-        } else if (r < 0.11) {
+        } else if (r < 0.06) {
           dec = tex.world.bush;
-        } else if (r < 0.135) {
+        } else if (r < 0.075) {
           dec = tex.world.mushrooms;
         }
         if (!dec) continue;

@@ -84,20 +84,80 @@ describe("buildWorld — activity-scaled buildings", () => {
 });
 
 describe("buildWorld — enclosed single-door office", () => {
-  it("blocks the whole footprint except the interior seats and one doorway", () => {
+  it("rings the house in wall with exactly one doorway", () => {
     const world = buildWorld(model("A"));
     const b = world.buildings[0];
-    const seatKeys = new Set(b.seats.map((s) => `${s.x},${s.y}`));
-    const doorwayKey = `${b.door.x},${b.door.y - 1}`; // gap in the front wall
+    const doorwayKey = `${b.door.x},${b.door.y - 1}`; // the gap in the facade
+    let gaps = 0;
     for (let dy = 0; dy < b.th; dy++) {
       for (let dx = 0; dx < b.tw; dx++) {
         const x = b.tx + dx;
         const y = b.ty + dy;
-        const key = `${x},${y}`;
-        const walkable = seatKeys.has(key) || key === doorwayKey;
-        expect(isWalkable(world, x, y)).toBe(walkable);
+        const onRing = dx === 0 || dx === b.tw - 1 || dy === 0 || dy === b.th - 1;
+        if (!onRing) continue;
+        if (isWalkable(world, x, y)) {
+          gaps++;
+          expect(`${x},${y}`).toBe(doorwayKey);
+        }
       }
     }
+    expect(gaps).toBe(1);
+  });
+
+  it("leaves most of the house as open floor, not solid furniture", () => {
+    // The failure this guards is the old geometry: a footprint that was 85% wall
+    // with a single one-tile-tall aisle in it (15% walkable). A room needs more
+    // floor than furniture or it reads as a corridor. The interior ratio is the
+    // meaningful one — a small building is dominated by its own wall ring, so the
+    // footprint figure is held to a looser floor.
+    for (const openTasks of [1, 4, 9]) {
+      const world = buildWorld({ rooms: [room("A", 1, openTasks)] });
+      const b = world.buildings[0];
+      let footprint = 0;
+      for (let dy = 0; dy < b.th; dy++) {
+        for (let dx = 0; dx < b.tw; dx++) {
+          if (isWalkable(world, b.tx + dx, b.ty + dy)) footprint++;
+        }
+      }
+      let inside = 0;
+      for (let dy = 0; dy < b.interior.h; dy++) {
+        for (let dx = 0; dx < b.interior.w; dx++) {
+          if (isWalkable(world, b.interior.x + dx, b.interior.y + dy)) inside++;
+        }
+      }
+      expect(inside / (b.interior.w * b.interior.h)).toBeGreaterThanOrEqual(0.6);
+      expect(footprint / (b.tw * b.th)).toBeGreaterThanOrEqual(0.33);
+    }
+  });
+
+  it("lays out named rooms, not one aisle", () => {
+    const world = buildWorld({ rooms: [room("A", 1, 9)] }); // large tier
+    const b = world.buildings[0];
+    const kinds = new Set(b.furniture.map((f) => f.kind));
+    for (const k of ["desk", "counter", "table", "sofa", "bed", "bookshelf"]) {
+      expect(kinds.has(k as (typeof b.furniture)[number]["kind"])).toBe(true);
+    }
+    expect(b.partitions.length).toBeGreaterThan(0); // the house is divided
+    // The hall is clear: the door reaches a desk seat without passing furniture
+    // it would have to walk through.
+    expect(findPath(world, b.door, b.seats[0]).length).toBeGreaterThan(0);
+  });
+
+  it("fences each lot, mows the yard and lays a path to an open gate", () => {
+    const world = buildWorld(model("A", "B"));
+    for (const b of world.buildings) {
+      expect(isWalkable(world, b.door.x, b.door.y)).toBe(true); // the yard apron
+      expect(isWalkable(world, b.gate.x, b.gate.y)).toBe(true); // the gate is open
+      expect(world.path[b.door.y * world.cols + b.door.x]).toBe(true);
+      // The door still reaches the street through its own gate.
+      expect(findPath(world, b.door, world.edge).length).toBeGreaterThan(0);
+    }
+    expect(world.fences.length).toBeGreaterThan(0);
+    for (const f of world.fences) {
+      expect(isWalkable(world, f.x, f.y)).toBe(false);
+      expect(isRoad(world, f.x, f.y)).toBe(false); // never built over the street
+    }
+    expect(world.yard.some(Boolean)).toBe(true);
   });
 
   it("gives each desk a seat below it (seat walkable, desk blocking)", () => {

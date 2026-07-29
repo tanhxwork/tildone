@@ -16,7 +16,11 @@
 // art is contained: repoint the grid coordinates below.
 
 import { Rectangle, Texture, type TextureSource } from "pixi.js";
-import type { PropKind, SpotKind } from "./world";
+import type { FurnitureKind, PropKind, SpotKind } from "./world";
+
+/** The furniture kinds drawn procedurally here. `desk`, `rug` and `plant` come
+ *  from the Kenney interior sheet instead. */
+type HomeFurnitureKind = Exclude<FurnitureKind, "desk" | "rug" | "plant">;
 import grass0Url from "./assets/world/grass0.png";
 import grass1Url from "./assets/world/grass1.png";
 import grass2Url from "./assets/world/grass2.png";
@@ -74,6 +78,10 @@ export interface InteriorTiles {
 export interface PavementTiles {
   road: Texture;
   plaza: Texture;
+  /** Mown lot grass inside a fence. */
+  yard: Texture;
+  /** Worn path from a front door to its gate. */
+  path: Texture;
 }
 export interface FacadeTiles {
   /** The doorway in a building's front wall. */
@@ -98,6 +106,11 @@ export interface TownTextures {
   interior: InteriorTiles;
   /** Self-authored blocked furnishings for the commons. */
   props: PropTiles;
+  /** One texture per interior furniture kind (Kenney desk/rug/plant, the rest
+   *  self-authored — see drawFurniture). */
+  furniture: Record<FurnitureKind, Texture>;
+  /** Picket fence ringing a lot. */
+  fence: Texture;
   /** Self-authored roads/plaza pavement. */
   pavement: PavementTiles;
   /** Self-authored door + lit-window glow. */
@@ -285,6 +298,122 @@ function drawProp(c: CanvasRenderingContext2D, kind: PropKind) {
   }
 }
 
+/** Draw one 16×16 piece of home furniture, top-down. Self-authored → CC0: the
+ *  Kenney roguelike pack is rustic and ships no coherent modern set, and the
+ *  house plans need a consistent one (a bed that matches the sofa that matches
+ *  the counter). Everything is drawn flat-on from above with a single light
+ *  direction so a room reads at a glance. */
+function drawFurniture(c: CanvasRenderingContext2D, kind: HomeFurnitureKind) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  const wood = "#8a5a2b";
+  const woodDark = "#5e3d1c";
+  const linen = "#e6dcc6";
+  if (kind === "counter") {
+    c.fillStyle = woodDark; // carcass
+    c.fillRect(0, 3, FRAME, 12);
+    c.fillStyle = "#b3ada2"; // worktop
+    c.fillRect(0, 2, FRAME, 5);
+    c.fillStyle = "#c9c3b8"; // top highlight
+    c.fillRect(0, 2, FRAME, 1);
+    c.fillStyle = "#6f4a24"; // door seams
+    c.fillRect(5, 8, 1, 6);
+    c.fillRect(11, 8, 1, 6);
+    c.fillStyle = "#d8d2c6"; // handles
+    c.fillRect(3, 10, 2, 1);
+    c.fillRect(8, 10, 2, 1);
+  } else if (kind === "sink") {
+    c.fillStyle = woodDark;
+    c.fillRect(0, 3, FRAME, 12);
+    c.fillStyle = "#b3ada2";
+    c.fillRect(0, 2, FRAME, 5);
+    c.fillStyle = "#8f9aa3"; // basin
+    c.fillRect(3, 5, 10, 7);
+    c.fillStyle = "#c3ced6";
+    c.fillRect(4, 6, 8, 5);
+    c.fillStyle = "#6f7a82"; // tap
+    c.fillRect(7, 3, 2, 3);
+    c.fillRect(9, 3, 2, 1);
+  } else if (kind === "table") {
+    c.fillStyle = woodDark; // legs
+    c.fillRect(2, 12, 2, 3);
+    c.fillRect(12, 12, 2, 3);
+    c.fillStyle = wood; // top
+    c.fillRect(1, 3, 14, 10);
+    c.fillStyle = "#9c6a35"; // grain highlight
+    c.fillRect(2, 4, 12, 3);
+    c.fillStyle = linen; // a set place
+    c.fillRect(4, 8, 3, 3);
+    c.fillRect(9, 8, 3, 3);
+  } else if (kind === "chair") {
+    c.fillStyle = woodDark; // back rail (chair faces the table above)
+    c.fillRect(4, 10, 8, 2);
+    c.fillStyle = wood; // seat
+    c.fillRect(4, 5, 8, 6);
+    c.fillStyle = "#9c6a35";
+    c.fillRect(5, 6, 6, 3);
+    c.fillStyle = woodDark; // legs
+    c.fillRect(4, 12, 1, 2);
+    c.fillRect(11, 12, 1, 2);
+  } else if (kind === "sofa") {
+    c.fillStyle = "#3f6f7a"; // back
+    c.fillRect(0, 2, FRAME, 5);
+    c.fillStyle = "#4d838f"; // seat cushions
+    c.fillRect(0, 6, FRAME, 8);
+    c.fillStyle = "#5c98a5"; // cushion highlight
+    c.fillRect(1, 7, 6, 5);
+    c.fillRect(9, 7, 6, 5);
+    c.fillStyle = "#345c66"; // seam + skirt
+    c.fillRect(7, 6, 2, 8);
+    c.fillRect(0, 14, FRAME, 1);
+  } else if (kind === "bookshelf") {
+    c.fillStyle = woodDark; // case
+    c.fillRect(1, 1, 14, 14);
+    c.fillStyle = "#4a3218"; // interior
+    c.fillRect(2, 2, 12, 12);
+    const books: [number, number, string][] = [
+      [3, 3, "#b03a2e"],
+      [5, 3, "#2e6b8f"],
+      [7, 3, "#c9902e"],
+      [10, 3, "#4f8f4f"],
+      [3, 9, "#7a4f9c"],
+      [6, 9, "#b03a2e"],
+      [9, 9, "#2e6b8f"],
+    ];
+    for (const [bx, by, col] of books) {
+      c.fillStyle = col;
+      c.fillRect(bx, by, 2, 4);
+    }
+    c.fillStyle = wood; // shelf edges
+    c.fillRect(2, 7, 12, 1);
+    c.fillRect(2, 13, 12, 1);
+  } else if (kind === "bed") {
+    c.fillStyle = woodDark; // frame
+    c.fillRect(1, 1, 14, 14);
+    c.fillStyle = linen; // mattress
+    c.fillRect(2, 2, 12, 12);
+    c.fillStyle = "#c8bda3"; // pillow shadow
+    c.fillRect(2, 2, 12, 5);
+    c.fillStyle = "#f7f2e6"; // pillow
+    c.fillRect(3, 3, 10, 3);
+    c.fillStyle = "#7a9ec4"; // turned-down blanket
+    c.fillRect(2, 8, 12, 6);
+    c.fillStyle = "#93b3d4";
+    c.fillRect(2, 8, 12, 1);
+  } else {
+    // nightstand — a small cabinet with a lamp
+    c.fillStyle = woodDark;
+    c.fillRect(3, 6, 10, 9);
+    c.fillStyle = wood;
+    c.fillRect(3, 5, 10, 3);
+    c.fillStyle = "#d8d2c6"; // drawer handle
+    c.fillRect(7, 10, 2, 1);
+    c.fillStyle = "#6f5a3a"; // lamp stem
+    c.fillRect(7, 2, 2, 4);
+    c.fillStyle = "#ffe6a0"; // shade
+    c.fillRect(5, 0, 6, 3);
+  }
+}
+
 /** Desktop computer — a monitor with a glowing screen + keyboard. Self-authored
  *  (the roguelike packs ship no computer) so it stays CC0; sits on the desk. */
 function drawComputer(x: CanvasRenderingContext2D) {
@@ -301,6 +430,54 @@ function drawComputer(x: CanvasRenderingContext2D) {
   x.fillStyle = "#4a3f33"; // stand
   x.fillRect(7, 9, 2, 2);
   x.fillRect(5, 11, 6, 1);
+}
+
+/** Mown lot grass — lighter than the wild green, with faint mower stripes. The
+ *  contrast is the whole point: managed ground is what reads as "someone lives
+ *  here" rather than "a house was dropped on a field". */
+function drawYard(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#87b356";
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#7fa950";
+  for (let y = 0; y < FRAME; y += 4) c.fillRect(0, y, FRAME, 2);
+  c.fillStyle = "#93bd61";
+  c.fillRect(0, 0, FRAME, 1);
+}
+
+/** A worn path — trodden earth with scattered grit. */
+function drawPath(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#c2a878";
+  c.fillRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#b39a6b";
+  for (const [x, y] of [
+    [3, 2],
+    [10, 5],
+    [6, 9],
+    [12, 12],
+    [2, 13],
+  ]) {
+    c.fillRect(x, y, 2, 2);
+  }
+  c.fillStyle = "#a88f61";
+  c.fillRect(0, 0, 1, FRAME);
+  c.fillRect(15, 0, 1, FRAME);
+}
+
+/** A picket fence post-and-rail segment, bottom-anchored like the other props. */
+function drawFence(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "rgba(0,0,0,0.14)";
+  c.fillRect(1, 14, 14, 2);
+  c.fillStyle = "#d7c9ad"; // pickets
+  for (const px of [1, 6, 11]) {
+    c.fillRect(px, 4, 3, 11);
+    c.fillRect(px, 3, 3, 1);
+  }
+  c.fillStyle = "#bfae8c"; // rails
+  c.fillRect(0, 7, FRAME, 2);
+  c.fillRect(0, 12, FRAME, 1);
 }
 
 /** Road / pavement tile — warm grey with a few darker pebbles (deterministic). */
@@ -560,9 +737,25 @@ export async function loadTownTextures(): Promise<TownTextures> {
       coffeecart: canvasTexture((c) => drawProp(c, "coffeecart")),
       cafetable: canvasTexture((c) => drawProp(c, "cafetable")),
     },
+    furniture: {
+      desk: sub(indoors, 0, 0), // Kenney table half, tiled into a desk counter
+      rug: sub(indoors, 5, 9),
+      plant: sub(indoors, 16, 0),
+      counter: canvasTexture((c) => drawFurniture(c, "counter")),
+      sink: canvasTexture((c) => drawFurniture(c, "sink")),
+      table: canvasTexture((c) => drawFurniture(c, "table")),
+      chair: canvasTexture((c) => drawFurniture(c, "chair")),
+      sofa: canvasTexture((c) => drawFurniture(c, "sofa")),
+      bookshelf: canvasTexture((c) => drawFurniture(c, "bookshelf")),
+      bed: canvasTexture((c) => drawFurniture(c, "bed")),
+      nightstand: canvasTexture((c) => drawFurniture(c, "nightstand")),
+    },
+    fence: canvasTexture(drawFence),
     pavement: {
       road: canvasTexture(drawRoad),
       plaza: canvasTexture(drawPlaza),
+      yard: canvasTexture(drawYard),
+      path: canvasTexture(drawPath),
     },
     facade: {
       door: canvasTexture(drawDoor),
