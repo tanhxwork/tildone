@@ -38,7 +38,15 @@ EOF
 # Keep the frontend and the binary in lockstep: build dist/ first, then force
 # the relink that embeds it.
 export CARGO_TARGET_DIR="$root/src-tauri/target-e2e"
+mkdir -p "$CARGO_TARGET_DIR"
 touch src-tauri/src/lib.rs
+
+# Freeze the build's start instant in a file nothing else writes. The sidecar is
+# stamped from THIS at the end, not from lib.rs directly: lib.rs is a source
+# file, so an edit landing while cargo runs would move the very clock meant to
+# catch it, and the sidecar would come out equal to the edit rather than older
+# than it (Codex, TIL-196 round 2).
+touch -r src-tauri/src/lib.rs "$CARGO_TARGET_DIR/.e2e-build-start"
 
 echo "tildone e2e [$slug]: identifier com.tildone.e2e.$slug, target $CARGO_TARGET_DIR"
 VITE_E2E=1 ./node_modules/.bin/tauri build --debug --no-bundle --config "$overlay" "$@"
@@ -59,7 +67,8 @@ cp dist/index.html "$CARGO_TARGET_DIR/.e2e-index.html"
 # file edited while cargo was running is not in the binary — but it is older
 # than the copy, so an end-of-build timestamp would call that build current.
 #
-# lib.rs is the reference because the touch above set it to the build's start
-# instant, exactly: reformatting the clock through `date`/`touch -t` truncates
-# to whole seconds, and that alone made lib.rs read as newer than its own build.
-touch -r src-tauri/src/lib.rs "$CARGO_TARGET_DIR/.e2e-index.html"
+# The stamp is a copy of lib.rs's mtime taken before cargo started, so it is the
+# build's start instant to the nanosecond and cannot move afterwards.
+# Reformatting a clock through `date`/`touch -t` instead truncates to whole
+# seconds, which alone made lib.rs read as newer than its own build.
+touch -r "$CARGO_TARGET_DIR/.e2e-build-start" "$CARGO_TARGET_DIR/.e2e-index.html"
