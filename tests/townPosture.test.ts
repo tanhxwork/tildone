@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { createSim, stepTownSim, type RosterChar, type SimState } from "../src/town/sim";
+import {
+  createSim,
+  settleSim,
+  stepTownSim,
+  type RosterChar,
+  type SimState,
+} from "../src/town/sim";
 import { buildWorld, isWalkable, spotPosture, type TownWorld } from "../src/town/world";
 import type { TownModel, TownRoom } from "../src/selectors";
 import type { PresenceState } from "../src/utils/presence";
@@ -138,6 +144,54 @@ describe("posture — a working agent is sitting, not walking", () => {
       const c = sim.chars.get(1);
       if (!c) break;
       expect(c.posture).toBe("stand");
+    }
+  });
+
+  it("settles a worker caught mid-trip onto its own desk, not onto the kettle", () => {
+    // Settling cancels the trip — so the tile it settles ON must be the desk, not
+    // the counter it was walking to. It used to resolve "where am I at rest?"
+    // BEFORE cancelling the trip, so the answer was the trip's destination; then
+    // it called the character seated (it owns a seat), and the renderer drew a
+    // seated figure in a chair standing in the kitchen (Codex verify of 204c269).
+    const world = townOf();
+    const sim = createSim();
+    const r = [roster(1, "working", true)];
+    settle(sim, r, world, mulberry32(11));
+    const c = () => sim.chars.get(1)!;
+    let onATrip = false;
+    for (let i = 0; i < 4000 && !onATrip; i++) {
+      stepTownSim(sim, r, 16, world, mulberry32(11 + (i % 13)), {});
+      onATrip = c().chore !== null;
+    }
+    expect(onATrip).toBe(true); // the premise: it did get up to do something
+
+    settleSim(sim, world);
+    const settled = c();
+    expect(settled.chore).toBeNull();
+    expect(settled.pos).toEqual({ x: settled.seat!.x, y: settled.seat!.y });
+    expect(settled.seated).toBe(true);
+    expect(settled.posture).toBe("sit");
+  });
+
+  it("never calls a worker seated anywhere but on its seat", () => {
+    // The invariant behind the case above, swept: `seated` is a measurement, not
+    // a property of owning a desk. Covers the reduced-motion tableau too, which
+    // goes through the same snap.
+    const world = townOf();
+    const sim = createSim();
+    const r = [1, 2, 3].map((id) => ({ ...roster(id, "working", true), taskId: id }));
+    for (let i = 0; i < 3000; i++) {
+      const reduced = i % 500 === 499; // drop into the still tableau now and then
+      stepTownSim(sim, r, 16, world, mulberry32(41 + (i % 9)), { reducedMotion: reduced });
+      if (i % 700 === 699) settleSim(sim, world);
+      for (const c of sim.chars.values()) {
+        if (!c.seated) continue;
+        expect(c.seat).not.toBeNull();
+        expect({ pos: c.pos, seat: c.seat }).toEqual({
+          pos: { x: c.seat!.x, y: c.seat!.y },
+          seat: c.seat,
+        });
+      }
     }
   });
 

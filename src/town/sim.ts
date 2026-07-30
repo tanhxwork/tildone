@@ -408,13 +408,22 @@ export function createSim(): SimState {
  *  leisure claim. Shared by the reduced-motion tableau and settleSim so the two
  *  cannot drift apart. */
 function snapToRest(c: CharAgent, world: TownWorld): void {
+  // Cancel the trip FIRST. `indoorTarget` answers with the trip's destination
+  // while one is in flight, so resolving "at rest" before clearing it parked a
+  // worker at the kettle it happened to be walking to — and then, two lines
+  // later, called it seated, because it owns a desk seat. The renderer took that
+  // at its word and drew a seated figure with a chair back at the kitchen
+  // counter (Codex verify of 204c269).
+  c.chore = null;
   const rest = indoorTarget(world, c) ?? homeTile(world, c.buildingIndex);
   c.pos = { x: rest.x, y: rest.y };
   c.path = [];
   c.moving = false;
   c.facing = "up";
-  c.seated = c.intent === "work" && c.seat !== null;
-  c.chore = null;
+  // Seated means *on the seat*, measured, not inferred from owning one — the
+  // same rule the movement loop applies. A worker with no seat free is parked on
+  // an overflow tile outside and is standing there.
+  c.seated = c.intent === "work" && c.seat !== null && sameTile(rest, c.seat);
   c.spotId = null;
   c.spotVerb = null;
   c.spotKind = null;
