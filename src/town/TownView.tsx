@@ -90,7 +90,7 @@ const ACTIVITY_PHRASE: Record<Activity, string> = {
   coffee: "making coffee",
   washing: "washing up",
   eating: "eating",
-  resting: "on the sofa",
+  resting: "sitting",
   sleeping: "asleep",
   walking: "walking",
   chatting: "talking",
@@ -99,13 +99,20 @@ const ACTIVITY_PHRASE: Record<Activity, string> = {
   planning: "at the whiteboard",
   deploying: "watching a build",
   watching: "watching television",
-  music: "playing the guitar",
+  music: "playing music",
   cooking: "cooking",
   fishing: "fishing",
-  gardening: "gardening",
+  gardening: "watering the plants",
   shopping: "at the market",
-  playing: "on the swing",
+  // Deliberately unspecific now that each of these happens in more than one place
+  // (TIL-200): "on the swing" was true of the swing and wrong of the basketball
+  // hoop, and a phrase that names the wrong object is worse than one that names
+  // none — the tooltip's own place line already says where it is.
+  playing: "playing",
   painting: "painting",
+  gaming: "playing a game",
+  exercising: "exercising",
+  napping: "dozing",
 };
 
 function charsFromModel(model: ReturnType<typeof townModel>): TownChar[] {
@@ -304,9 +311,12 @@ export function TownView() {
             camTargetRef.current = null; // following wins over a building glide
             const c = simRef.current.chars.get(fid);
             if (c) {
+              // The tile it is *drawn* on — the sofa it is sat on, not the floor
+              // tile beside it that it technically occupies (see positionOverlay).
+              const at = c.onTile ?? c.pos;
               const target = {
-                x: c.pos.x * BASE_TILE + BASE_TILE / 2,
-                y: c.pos.y * BASE_TILE + BASE_TILE / 2,
+                x: at.x * BASE_TILE + BASE_TILE / 2,
+                y: at.y * BASE_TILE + BASE_TILE / 2,
               };
               camRef.current = followCam(camRef.current, target, worldPxRef.current, viewRef.current, FOLLOW_EASE);
             }
@@ -509,8 +519,13 @@ export function TownView() {
         node.style.display = "none";
         continue;
       }
-      const sx = (c.pos.x * BASE_TILE + BASE_TILE / 2 - cam.x) * cam.zoom;
-      const sy = (c.pos.y * BASE_TILE + BASE_TILE - cam.y) * cam.zoom;
+      // Where the *sprite* is, which is not always where the character stands: a
+      // sofa is blocked, so a resting character stands beside it and is drawn on
+      // it. Following `pos` here would leave the hover target — and the follow
+      // camera — pointing at the empty floor tile next to the person.
+      const drawn = c.onTile ?? c.pos;
+      const sx = (drawn.x * BASE_TILE + BASE_TILE / 2 - cam.x) * cam.zoom;
+      const sy = (drawn.y * BASE_TILE + BASE_TILE - cam.y) * cam.zoom;
       node.style.display = "block";
       node.style.left = `${sx - 18}px`;
       node.style.top = `${sy - 34}px`;
@@ -519,7 +534,7 @@ export function TownView() {
       // house". Written imperatively beside the transform because the place
       // changes as the character walks, and re-rendering React every frame to
       // move a tooltip would be absurd. Only touched when the place changes.
-      const tile = { x: Math.round(c.pos.x), y: Math.round(c.pos.y) };
+      const tile = { x: Math.round(drawn.x), y: Math.round(drawn.y) };
       const place = placeAt(placesRef.current, tile);
       if (place && node.dataset.place !== place.id) {
         node.dataset.place = place.id;
@@ -533,6 +548,10 @@ export function TownView() {
       // value lands here so it is readable in words on hover and assertable in
       // a spec without reading pixels.
       if (node.dataset.activity !== c.activity) node.dataset.activity = c.activity;
+      // …and the posture, for the same reason. Whether a working agent is *sitting*
+      // at its desk or stepping on the spot beside it is the difference this
+      // change exists to make, and it was only ever visible in pixels.
+      if (node.dataset.posture !== c.posture) node.dataset.posture = c.posture;
 
       const where = node.dataset.where;
       const doing = ACTIVITY_PHRASE[c.activity];

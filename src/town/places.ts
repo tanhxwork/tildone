@@ -70,6 +70,8 @@ const FURNITURE_NAME: Record<Furniture["kind"], string> = {
   boxes: "some boxes",
   catbed: "the cat bed",
   bookstack: "a stack of books",
+  yogamat: "the exercise mat",
+  boardgame: "a half-finished game",
 };
 
 const SPOT_NAME: Record<LeisureSpot["kind"], string> = {
@@ -85,6 +87,12 @@ const SPOT_NAME: Record<LeisureSpot["kind"], string> = {
   cart: "the coffee cart",
   stall: "the market stall",
   board: "the notice board",
+  hammock: "the hammock",
+  chess: "the chess table",
+  hoop: "the basketball hoop",
+  picnic: "the picnic blanket",
+  stage: "the bandstand",
+  gym: "the exercise frame",
 };
 
 const PROP_NAME: Record<TownProp["kind"], string> = {

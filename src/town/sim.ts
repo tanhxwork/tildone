@@ -53,6 +53,14 @@
 // the desk count waits on distinct frontage tiles (spread by task id, never
 // stacked on the door). Idle characters converge on the plaza and mill there.
 //
+// And a character is not only a position and a verb: it has a *posture*
+// (TIL-200). The renderer used to animate everything that was not walking with the
+// walk cycle at half speed, so a worker heads-down for 25 minutes marched on the
+// spot at its desk and a sleeper marched on the spot beside its bed. The sim now
+// says whether a character is on its feet, sat down or lying — and, when it is on
+// furniture, which tile to draw it on, since a sofa is blocked and the tile a
+// character can actually stand on is the one *next to* it.
+//
 // Under prefers-reduced-motion the whole thing collapses to a still tableau:
 // every character snapped to its resting tile, no paths, no motion.
 
@@ -60,9 +68,11 @@ import type { PresenceState } from "../utils/presence";
 import { findPath } from "./pathfind";
 import {
   isWalkable,
+  spotPosture,
   type Affordance,
   type ActivityVerb,
   type LeisureSpot,
+  type SpotKind,
   type Tile,
   type TownWorld,
 } from "./world";
@@ -111,6 +121,12 @@ const CHORE_VERBS: ActivityVerb[] = [
   // reads as work happening rather than as a break from it.
   "planning",
   "deploying",
+  // The research's phrase for this loop is "coffee, a stretch at the window, back
+  // to the desk", and until TIL-200 the stretch was the one part missing. Watering
+  // the plant is the same shape of break — a minute away from the screen, still in
+  // the house.
+  "exercising",
+  "gardening",
 ];
 
 /**
@@ -130,6 +146,12 @@ const LEISURE_VERBS: ActivityVerb[] = [
   "reading",
   "coffee",
   "washing",
+  // TIL-200: an evening of seven verbs, four of which are the kitchen, was still
+  // a short evening. A game, a mat and the plants are the rest of it — and each
+  // has an outdoor twin on the green, so the two halves of the day rhyme.
+  "gaming",
+  "exercising",
+  "gardening",
 ];
 /** An evening is more restless than a workday: shorter gaps, longer stays. */
 const LEISURE_MIN_MS = 7000;
@@ -137,9 +159,16 @@ const LEISURE_SPREAD_MS = 9000;
 const LEISURE_DWELL_MS = 6500;
 /** How long a visitor stays at a spot whose whole point is staying a while. */
 const SPOT_DWELL_MS: Partial<Record<ActivityVerb, number>> = {
+  // A doze is the longest thing you can do outdoors and a coffee the shortest;
+  // the point of the spread is that the square never empties and refills in step.
+  napping: 14_000,
   fishing: 9000,
   painting: 8000,
+  gaming: 8000,
+  music: 7500,
+  playing: 6500,
   reading: 6000,
+  exercising: 5500,
   eating: 5000,
   gardening: 5000,
   shopping: 3000,
@@ -147,6 +176,22 @@ const SPOT_DWELL_MS: Partial<Record<ActivityVerb, number>> = {
 };
 
 export type Facing = "up" | "down" | "left" | "right";
+
+/**
+ * How a character is holding itself: on its feet, sat down, or lying.
+ *
+ * The sim owned "where" and "what it is doing" and left the *body* to the
+ * renderer, which had one animation for everything that was not walking: the walk
+ * cycle, at half speed, with a bob. So an agent heads-down at its desk for 25
+ * minutes stepped in place the whole time, and so did one asleep in bed — the town
+ * read as a room full of people marching on the spot (TIL-200, and the thing the
+ * user actually asked for).
+ *
+ * Posture belongs here rather than there because only the sim knows *why* a
+ * character is where it is: the same tile is somewhere to sit if you came to sit
+ * on the bench and somewhere to stand if you came to fish off the bank.
+ */
+export type Posture = "stand" | "sit" | "lie";
 
 /** What presence resolves a character to want, physically.
  *
@@ -192,7 +237,12 @@ export type Activity =
   | "gardening"
   | "shopping"
   | "playing"
-  | "painting";
+  | "painting"
+  // Each of these happens in two places — a board game at the chess table or on
+  // the lounge floor, a stretch at the frame or on the mat, a doze in the hammock.
+  | "gaming"
+  | "exercising"
+  | "napping";
 
 /** The activity a log line implies, or null when it says nothing useful. Kept
  *  deliberately small and literal — this is a legibility aid, not an intent
@@ -237,6 +287,9 @@ const VERB_ACTIVITY: Record<ActivityVerb, Activity> = {
   shopping: "shopping",
   playing: "playing",
   painting: "painting",
+  gaming: "gaming",
+  exercising: "exercising",
+  napping: "napping",
 };
 
 export interface CharAgent {
@@ -261,6 +314,9 @@ export interface CharAgent {
    *  need the world to resolve, and so an idle character reads as *doing* the
    *  thing it walked across town to do. */
   spotVerb: ActivityVerb | null;
+  /** …and what kind of thing it is, so posture can tell a bench from a pond bank
+   *  without the sim having to look the spot up again. */
+  spotKind: SpotKind | null;
   /** Remaining time (ms) to linger at the claimed spot. */
   dwellMs: number;
   /** The interior desk seat this character works at (its building's seat tile),
@@ -277,6 +333,11 @@ export interface CharAgent {
   restSpot: Tile | null;
   /** Which it is — what the character is resting *on*, for the glyph. */
   restKind: "sofa" | "bed" | null;
+  /** The sofa/bed tile itself. A rest spot is the walkable tile *beside* the
+   *  furniture (it has to be — the furniture is blocked), so drawing the character
+   *  at its position put it standing smartly to attention next to the bed it was
+   *  supposedly asleep in. This is where the renderer actually draws it. */
+  restObject: Tile | null;
   /** The short trip a working character is on: where it is going and what for.
    *  Null while it is at its desk. */
   chore: { tile: Tile; verb: ActivityVerb } | null;
@@ -289,6 +350,12 @@ export interface CharAgent {
   /** What this character is visibly doing, recomputed every step. The renderer
    *  draws it as a glyph over the head and the tooltip says it in words. */
   activity: Activity;
+  /** How it is holding itself, recomputed every step alongside `activity`. */
+  posture: Posture;
+  /** The furniture tile to draw this character *on* rather than at `pos` — the
+   *  sofa it is sat on, the bed it is asleep in. Null whenever it is drawn where
+   *  it stands, which is everywhere else. */
+  onTile: Tile | null;
   /** Remaining time (ms) of a chat with a passer-by; 0 when not chatting. While
    *  it runs the character stands still, faces its partner, and the renderer
    *  shows a bubble over it. Cosmetic — there is no dialogue (spec non-goal). */
@@ -350,10 +417,11 @@ function snapToRest(c: CharAgent, world: TownWorld): void {
   c.chore = null;
   c.spotId = null;
   c.spotVerb = null;
+  c.spotKind = null;
   c.dwellMs = 0;
   c.chatMs = 0;
   c.chatWith = null;
-  c.activity = activityOf(c, null);
+  setPose(c, null);
 }
 
 /** Settle the sim in place: everyone at a resting tile, nothing walking, no
@@ -473,6 +541,7 @@ function releaseSpot(sim: SimState, c: CharAgent) {
     sim.occupied.delete(c.spotId);
     c.spotId = null;
     c.spotVerb = null;
+    c.spotKind = null;
     c.dwellMs = 0;
   }
 }
@@ -544,6 +613,38 @@ function activityOf(c: CharAgent, logActivity: Activity | null): Activity {
   return "walking";
 }
 
+/**
+ * How this character is holding itself.
+ *
+ * Read off state that already exists rather than stored as a mode, so it cannot
+ * drift out of step with the thing it describes: a character is sitting because it
+ * is on its seat, not because something remembered to say so.
+ */
+function postureOf(c: CharAgent): Posture {
+  if (c.moving || c.intent === "off" || c.intent === "pace" || c.chatMs > 0) return "stand";
+  // A trip is to a counter, a whiteboard, a hob — things you stand at. The two you
+  // would sit or lie on are excluded from the trip verbs by construction, because
+  // getting up from the desk to go to bed is the exact picture CHORE_VERBS exists
+  // to prevent.
+  if (c.chore) return "stand";
+  if (c.intent === "work") return c.seated ? "sit" : "stand";
+  // Overflow (no sofa free) waits outside on its feet; everyone else is on the
+  // furniture it claimed.
+  if (c.intent === "rest") return !c.restSpot ? "stand" : c.restKind === "bed" ? "lie" : "sit";
+  if (c.spotId !== null && c.spotKind) return spotPosture(c.spotKind);
+  return "stand";
+}
+
+/** Recompute the visible pose — what it is doing, how it is holding itself, and
+ *  which tile to draw it on. One place, so the three can never disagree. */
+function setPose(c: CharAgent, logActivity: Activity | null): void {
+  c.activity = activityOf(c, logActivity);
+  c.posture = postureOf(c);
+  // Only a character on its own sofa or bed is drawn off its tile: a hammock or a
+  // bench *is* the tile it stands on, so those need no offset.
+  c.onTile = c.intent === "rest" && c.posture !== "stand" ? c.restObject : null;
+}
+
 /** `count` distinct walkable tiles near a building's door, nearest first, for
  *  overflow workers to wait on — a BFS out from the door that skips interior
  *  seats/doorways and leisure spots, so two overflow workers never share a tile
@@ -591,6 +692,7 @@ function releaseClaims(sim: SimState, c: CharAgent) {
   for (const [key, id] of sim.claims) if (id === c.taskId) sim.claims.delete(key);
   c.restSpot = null;
   c.restKind = null;
+  c.restObject = null;
   c.chore = null;
 }
 
@@ -724,6 +826,7 @@ function assignAnchors(
       if (spot) {
         c.restSpot = spot.tile;
         c.restKind = spot.kind;
+        c.restObject = spot.object;
         c.restTile = null;
       } else {
         overflow.push(id);
@@ -927,16 +1030,20 @@ export function stepTownSim(
       wanderPauseMs: 0,
       spotId: null,
       spotVerb: null,
+      spotKind: null,
       dwellMs: 0,
       seat: null,
       restTile: null,
       restSpot: null,
       restKind: null,
+      restObject: null,
       chore: null,
       choreMs: CHORE_MIN_MS + rng() * CHORE_SPREAD_MS,
       choreDwellMs: 0,
       seated: false,
       activity: "walking",
+      posture: "stand",
+      onTile: null,
       chatMs: 0,
       chatWith: null,
       chatCooldownMs: 0,
@@ -995,6 +1102,10 @@ export function stepTownSim(
     // the exception — a despawning character must not be held up by a chat.
     if (c.chatMs > 0 && c.intent !== "off") {
       c.moving = false;
+      // Posed before the `continue`, or a character that stopped to talk keeps
+      // whatever it was doing a frame ago: the bubble said "talking" while the
+      // tooltip still said "fishing".
+      setPose(c, logActivity.get(id) ?? null);
       continue;
     }
 
@@ -1077,6 +1188,7 @@ export function stepTownSim(
               sim.occupied.set(spot.id, c.taskId);
               c.spotId = spot.id;
               c.spotVerb = spot.verb;
+              c.spotKind = spot.kind;
               // Long enough to be doing the thing: an afternoon's fishing is not
               // the same length as a glance at the notice board.
               c.dwellMs = SPOT_DWELL_MS[spot.verb] ?? DWELL_MS;
@@ -1177,7 +1289,7 @@ export function stepTownSim(
       }
     }
 
-    c.activity = activityOf(c, logActivity.get(id) ?? null);
+    setPose(c, logActivity.get(id) ?? null);
   }
 
   return sim;

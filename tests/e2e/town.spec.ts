@@ -199,9 +199,22 @@ describe("town view", () => {
       "reading",
       "coffee",
       "washing",
+      // TIL-200 widened the evening: a game, the exercise mat, the plants.
+      "gaming",
+      "exercising",
+      "gardening",
     ];
     const activity = await char.getAttribute("data-activity");
     expect(HOME_LIFE).toContain(activity);
+    // …and it is *sitting* on the sofa (or lying in the bed) rather than standing
+    // beside it playing the walk cycle on the spot, which is what every settled
+    // character in the town used to do (TIL-200). Standing is legitimate only
+    // while it is up doing something.
+    const posture = await char.getAttribute("data-posture");
+    expect(["stand", "sit", "lie"]).toContain(posture);
+    if (activity === "resting") expect(posture).toBe("sit");
+    if (activity === "sleeping") expect(posture).toBe("lie");
+    if (activity === "walking") expect(posture).toBe("stand");
     const restingWhere = await char.getAttribute("data-where");
     // Somewhere in its own house, and never back at a desk.
     expect(restingWhere).toContain("house");
@@ -210,7 +223,7 @@ describe("town view", () => {
     // world and the name on hover, so the words have to actually be there. These
     // are the phrases, not the activity names: "resting" reads as "on the sofa".
     expect(await char.getAttribute("title")).toMatch(
-      /on the sofa|asleep|walking|watching television|playing the guitar|cooking|eating|reading|making coffee|washing up/,
+      /sitting|asleep|walking|watching television|playing music|cooking|eating|reading|making coffee|washing up|playing a game|exercising|watering the plants/,
     );
 
     // An evening is a *routine*, not a pose: over the next minute of simulated
@@ -381,6 +394,22 @@ describe("town view", () => {
       workActivity,
     );
     expect(["resting", "sleeping"]).not.toContain(workActivity);
+
+    // …and it is SITTING at that desk. This is the whole of TIL-200: heads-down
+    // work used to render as the walk cycle at half speed, so the busiest agent in
+    // town spent 25 minutes stepping on the spot at its own monitor. A worker is
+    // seated whenever it is at the desk, and on its feet only while it is up doing
+    // something — which is the pair of assertions below, not one or the other.
+    const workPosture = await char.getAttribute("data-posture");
+    if (workActivity === "walking" || ["coffee", "washing", "eating"].includes(workActivity ?? "")) {
+      expect(workPosture).toBe("stand");
+    } else {
+      expect(workPosture).toBe("sit");
+    }
+    // The artifact a reviewer can actually look at: a worker in a chair at a desk.
+    // Screenshots taken before the character settled are what let three defects
+    // through TIL-189, so this one is deliberately after the walk indoors.
+    await browser.saveScreenshot("./tests/e2e/artifacts/town-working.png");
 
     // Chat state is mirrored from the sim onto the overlay every frame. Only the
     // wiring is asserted here — that it is published, and that a working

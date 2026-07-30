@@ -58,6 +58,16 @@ export type Dir = "down" | "up" | "left" | "right";
  *  renderer cycles all frames while the character is moving. */
 export type DirFrames = Record<Dir, Texture[]>;
 
+/** The seated pose, per facing: the standing frame with its legs cropped off.
+ *
+ *  The sheet ships walk cycles and nothing else, so there is no sitting sprite to
+ *  slice — but a seated figure is mostly *not showing its legs*, and at 16px a
+ *  torso ending where the chair or the sofa begins reads as sitting far better
+ *  than a full-length figure standing behind the furniture does. Which is what the
+ *  town used to draw: the walk cycle at half speed, so a worker heads-down for 25
+ *  minutes marched on the spot (TIL-200). */
+export type SitFrames = Record<Dir, Texture>;
+
 /** Kenney Tiny Town world tiles the renderer composes from. The house bodies
  *  are furnished cutaways from `InteriorTiles` (see drawBuilding), so only the
  *  ground, the tinted roof and the scattered green decorations come from here. */
@@ -120,6 +130,14 @@ export interface TownTextures {
   world: WorldTiles;
   /** Walk-cycle atlas per agent key (see charKeyForAgent). */
   chars: Record<string, DirFrames>;
+  /** The same agents, seated — the standing frame cropped at the hip. */
+  sits: Record<string, SitFrames>;
+  /** The workstation chair, in two parts: the whole thing for the seat tile, and
+   *  its back again for over the character sitting in it (see drawDeskChair). */
+  chair: { all: Texture; back: Texture };
+  /** Small self-authored decorations that belong to no other category: the mat at
+   *  a front door, the clock on a workroom wall. */
+  decor: { mat: Texture; clock: Texture };
   /** Procedural CC0 leisure-spot props, by kind — frame arrays (the campfire and
    *  pond animate; bench and garden are single-frame). */
   spots: Record<SpotKind, Texture[]>;
@@ -171,13 +189,34 @@ const CHAR_INDEX: Record<string, number> = {
   generic: 3, // hard hat
 };
 
+const DIRS: Dir[] = ["down", "up", "left", "right"];
+
 function sliceChar(source: TextureSource, personIndex: number): DirFrames {
   const base = personIndex * 3; // three walk-frame rows per person
   const out = {} as DirFrames;
-  for (const d of ["down", "up", "left", "right"] as Dir[]) {
+  for (const d of DIRS) {
     const col = CHAR_DIR_COL[d];
     // stand → stepA → stand → stepB reads as a bob-walk when advanced.
     out[d] = [base, base + 1, base, base + 2].map((r) => sub(source, col, r));
+  }
+  return out;
+}
+
+/** How much of the standing frame a seated character keeps. Cuts at the hip: the
+ *  figure occupies roughly rows 2–15 of its cell, so 11 keeps head, shoulders and
+ *  most of the torso and drops the legs. */
+const SIT_H = 11;
+
+/** The same person, cropped at the hip — one frame per facing (frame 0, the
+ *  standing pose: a seated character is still, and stillness is the whole point). */
+function sliceSit(source: TextureSource, personIndex: number): SitFrames {
+  const row = personIndex * 3;
+  const out = {} as SitFrames;
+  for (const d of DIRS) {
+    out[d] = new Texture({
+      source,
+      frame: new Rectangle(CHAR_DIR_COL[d] * STRIDE, row * STRIDE, FRAME, SIT_H),
+    });
   }
   return out;
 }
@@ -241,6 +280,103 @@ function drawSpot(ctx: CanvasRenderingContext2D, kind: SpotKind, frame = 0) {
     ctx.fillRect(10, 3, 1, 6);
     ctx.fillStyle = "#c9902e"; // seat
     ctx.fillRect(5, 9, 7, 2);
+  } else if (kind === "hammock") {
+    // Strung north–south, not east–west, and that is not an arbitrary choice: a
+    // character lying down is drawn as its standing sprite (top-down, a lying
+    // figure and a standing one are the same silhouette), so it is vertical — and
+    // it has to lie *along* the hammock. Hung sideways, the napper read as
+    // somebody standing in front of a hammock.
+    ctx.fillStyle = "#5e3d1c"; // the two posts, head and foot
+    ctx.fillRect(3, 0, 10, 2);
+    ctx.fillRect(3, 14, 10, 2);
+    ctx.fillStyle = "#c9902e"; // the slung cloth, bellying out in the middle
+    ctx.fillRect(5, 2, 6, 12);
+    ctx.fillRect(4, 5, 8, 6);
+    ctx.fillStyle = "#e0b45c"; // sunlit left edge
+    ctx.fillRect(4, 5, 1, 6);
+    ctx.fillRect(5, 2, 1, 12);
+    ctx.fillStyle = "#a8761c"; // the weave, and the shadow down the right side
+    ctx.fillRect(11, 5, 1, 6);
+    for (let y = 3; y < 14; y += 3) ctx.fillRect(5, y, 6, 1);
+    ctx.fillStyle = "#5e3d1c"; // ropes gathering at each end
+    ctx.fillRect(7, 2, 2, 1);
+    ctx.fillRect(7, 13, 2, 1);
+  } else if (kind === "chess") {
+    ctx.fillStyle = "#6f4a24"; // stools either side
+    ctx.fillRect(0, 9, 3, 3);
+    ctx.fillRect(13, 9, 3, 3);
+    ctx.fillStyle = "#5e3d1c"; // pedestal
+    ctx.fillRect(7, 10, 2, 4);
+    ctx.fillStyle = "#8a5a2b"; // table top
+    ctx.fillRect(3, 4, 10, 7);
+    ctx.fillStyle = "#f2f0ea"; // board
+    ctx.fillRect(4, 5, 8, 5);
+    ctx.fillStyle = "#3a3340"; // the dark squares
+    for (let r = 0; r < 3; r++) {
+      for (let i = 0; i < 4; i++) ctx.fillRect(4 + i * 2 + (r % 2), 5 + r * 2, 1, 1);
+    }
+    ctx.fillStyle = "#c0562e"; // a piece each, mid-game
+    ctx.fillRect(5, 6, 1, 1);
+    ctx.fillStyle = "#f7f3ea";
+    ctx.fillRect(10, 8, 1, 1);
+  } else if (kind === "hoop") {
+    ctx.fillStyle = "#8f8a82"; // post
+    ctx.fillRect(7, 6, 2, 8);
+    ctx.fillStyle = "#f2f0ea"; // backboard
+    ctx.fillRect(4, 1, 8, 5);
+    ctx.fillStyle = "#c9c3b8";
+    ctx.fillRect(4, 1, 8, 1);
+    ctx.fillStyle = "#c0562e"; // rim
+    ctx.fillRect(5, 6, 6, 1);
+    ctx.fillStyle = "rgba(245,242,234,0.85)"; // net
+    ctx.fillRect(6, 7, 1, 2);
+    ctx.fillRect(9, 7, 1, 2);
+    ctx.fillStyle = "#e8791f"; // the ball, left where it stopped
+    ctx.beginPath();
+    ctx.ellipse(3, 12, 2.2, 2.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#b85c14";
+    ctx.fillRect(1, 12, 4, 1);
+  } else if (kind === "picnic") {
+    ctx.fillStyle = "#d9cdb4"; // the blanket, laid flat
+    ctx.fillRect(2, 5, 12, 9);
+    ctx.fillStyle = "#c9552f"; // its check
+    for (let r = 0; r < 3; r++) {
+      for (let i = 0; i < 3; i++) ctx.fillRect(3 + i * 4 + (r % 2) * 2, 6 + r * 3, 2, 2);
+    }
+    ctx.fillStyle = "#b08a5a"; // basket
+    ctx.fillRect(9, 2, 6, 4);
+    ctx.fillStyle = "#8f6c42";
+    ctx.fillRect(9, 2, 6, 1);
+    ctx.fillRect(11, 3, 1, 3);
+  } else if (kind === "stage") {
+    ctx.fillStyle = "#9a948a"; // the bandstand platform
+    ctx.fillRect(1, 9, 14, 5);
+    ctx.fillStyle = "#b3ada2";
+    ctx.fillRect(1, 9, 14, 1);
+    ctx.fillStyle = "#7f7a70"; // step
+    ctx.fillRect(4, 14, 8, 1);
+    ctx.fillStyle = "#5e3d1c"; // canopy posts
+    ctx.fillRect(2, 4, 1, 5);
+    ctx.fillRect(13, 4, 1, 5);
+    ctx.fillStyle = "#3f7fb0"; // canopy
+    ctx.fillRect(0, 1, FRAME, 3);
+    ctx.fillStyle = "#5fa0cf";
+    ctx.fillRect(0, 1, FRAME, 1);
+    ctx.fillStyle = "#2e6b8f"; // its scalloped edge
+    for (let x = 0; x < FRAME; x += 3) ctx.fillRect(x, 4, 2, 1);
+  } else if (kind === "gym") {
+    ctx.fillStyle = "#54524d"; // uprights
+    ctx.fillRect(2, 4, 2, 11);
+    ctx.fillRect(12, 4, 2, 11);
+    ctx.fillStyle = "#6f6a63"; // the bar you pull up on
+    ctx.fillRect(1, 3, 14, 2);
+    ctx.fillStyle = "#8f8a82";
+    ctx.fillRect(1, 3, 14, 1);
+    ctx.fillStyle = "#3b3a37"; // a dumbbell left on the ground
+    ctx.fillRect(6, 12, 4, 1);
+    ctx.fillRect(5, 11, 2, 3);
+    ctx.fillRect(9, 11, 2, 3);
   } else if (kind === "easel") {
     ctx.fillStyle = "#8a5a2b"; // legs
     ctx.fillRect(4, 8, 1, 6);
@@ -649,6 +785,35 @@ function drawClutter(c: CanvasRenderingContext2D, kind: ClutterKind) {
     c.fillRect(7, 1, 2, 6);
     c.fillStyle = "#d8d2c6"; // head
     c.fillRect(6, 0, 4, 2);
+  } else if (kind === "yogamat") {
+    shadow();
+    c.fillStyle = "#5f8fa8"; // the mat, unrolled
+    c.fillRect(1, 6, 11, 7);
+    c.fillStyle = "#7fb0c8"; // lit face
+    c.fillRect(1, 6, 11, 2);
+    c.fillStyle = "#4a7288"; // the rolled end
+    c.fillRect(11, 5, 4, 9);
+    c.fillStyle = "#6fa0b8";
+    c.fillRect(11, 5, 4, 1);
+    c.fillStyle = "#3d5f72"; // the roll's spiral
+    c.fillRect(13, 8, 2, 3);
+  } else if (kind === "boardgame") {
+    shadow();
+    c.fillStyle = "#efe9dc"; // the board, mid-game
+    c.fillRect(2, 5, 10, 9);
+    c.fillStyle = "#8c4a3f"; // its squares
+    for (let r = 0; r < 3; r++) {
+      for (let i = 0; i < 3; i++) c.fillRect(3 + i * 3 + (r % 2), 6 + r * 3, 2, 2);
+    }
+    c.fillStyle = "#3f6a8c"; // two counters
+    c.fillRect(4, 7, 2, 2);
+    c.fillStyle = "#c9902e";
+    c.fillRect(8, 11, 2, 2);
+    c.fillStyle = "#f7f3ea"; // a die beside it
+    c.fillRect(12, 10, 4, 4);
+    c.fillStyle = "#3a3340";
+    c.fillRect(13, 11, 1, 1);
+    c.fillRect(14, 12, 1, 1);
   } else if (kind === "boxes") {
     shadow();
     c.fillStyle = "#b08a5a"; // lower carton
@@ -689,6 +854,82 @@ function drawClutter(c: CanvasRenderingContext2D, kind: ClutterKind) {
     c.fillRect(12, 5, 1, 3);
     c.fillRect(13, 11, 1, 3);
   }
+}
+
+/**
+ * The chair at a workstation — and the reason it is drawn in two parts.
+ *
+ * A worker faces *up* into its monitor, so the viewer sees its back, which means
+ * the chair's own back is between the viewer and the character. Drawn entirely
+ * beneath the sprite it reads as a chair the character is standing in front of;
+ * drawn entirely over it, it hides the person. So `all` goes down on the seat tile
+ * with the rest of the furniture (an empty desk then has a visible empty chair,
+ * which is half of what makes a six-desk workroom read as one worker in it), and
+ * `back` is drawn again inside the character's own container, above the sprite —
+ * the overlap is what puts the character *in* the chair rather than behind it.
+ */
+function drawDeskChair(c: CanvasRenderingContext2D, part: "all" | "back") {
+  c.clearRect(0, 0, FRAME, FRAME);
+  if (part === "all") {
+    c.fillStyle = "rgba(0,0,0,0.16)"; // ground shadow
+    c.beginPath();
+    c.ellipse(8, 15, 5, 1.6, 0, 0, Math.PI * 2);
+    c.fill();
+    // The seat runs right up to the top of the tile, where the desk's front edge
+    // is: a chair drawn only in the lower half of its tile left a strip of bare
+    // floor between it and the desk, so it read as a chair pushed *back* from the
+    // desk rather than tucked under it.
+    c.fillStyle = "#4b525c";
+    c.fillRect(3, 1, 10, 11);
+    c.fillStyle = "#5a626d"; // seat highlight
+    c.fillRect(4, 2, 8, 2);
+    c.fillStyle = "#343a42"; // the seat's front lip
+    c.fillRect(3, 10, 10, 2);
+  }
+  // The back — the part that overlaps the person. Low in the tile, because a
+  // character sits with its head at the top of it: the back comes up to the
+  // shoulders and no further. A taller back covered everything except the crown of
+  // the head, so a worker read as a hat on a chair.
+  c.fillStyle = "#2f343a"; // armrests
+  c.fillRect(1, 9, 2, 5);
+  c.fillRect(13, 9, 2, 5);
+  c.fillStyle = "#3d434c"; // backrest
+  c.fillRect(3, 11, 10, 5);
+  c.fillStyle = "#4b525c"; // its padded panel
+  c.fillRect(4, 12, 8, 3);
+  c.fillStyle = "#343a42"; // centre seam
+  c.fillRect(8, 12, 1, 3);
+  c.fillStyle = "#565e6a"; // top edge catching the monitor's light
+  c.fillRect(3, 11, 10, 1);
+}
+
+/** A doormat at a front door. The cheapest possible "someone lives here": a house
+ *  whose facade is a door, two windows and nothing else reads as a model of a
+ *  house rather than one in use. */
+function drawMat(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#7d6f58";
+  c.fillRect(3, 9, 10, 5);
+  c.fillStyle = "#93866c"; // worn middle
+  c.fillRect(4, 10, 8, 3);
+  c.fillStyle = "#6a5d48"; // bristle lines
+  for (const x of [5, 7, 9, 11]) c.fillRect(x, 10, 1, 3);
+}
+
+/** A wall clock for the back wall of a workroom. */
+function drawClock(c: CanvasRenderingContext2D) {
+  c.clearRect(0, 0, FRAME, FRAME);
+  c.fillStyle = "#3b3a37"; // case
+  c.beginPath();
+  c.ellipse(8, 8, 5, 5, 0, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = "#f2efe8"; // face
+  c.beginPath();
+  c.ellipse(8, 8, 4, 4, 0, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = "#3b3a37"; // hands, at a quarter past ten
+  c.fillRect(8, 5, 1, 4);
+  c.fillRect(8, 8, 3, 1);
 }
 
 /**
@@ -888,6 +1129,31 @@ function drawGlyph(c: CanvasRenderingContext2D, activity: Activity) {
     c.fillRect(6, 8, 2, 2);
     c.fillStyle = "#e2c15a";
     c.fillRect(9, 8, 2, 2);
+  } else if (activity === "gaming") {
+    c.fillStyle = ink; // a die, tipped towards the viewer
+    c.fillRect(3, 4, 9, 9);
+    c.fillStyle = "rgba(30,27,22,0.82)"; // its pips
+    c.fillRect(5, 6, 2, 2);
+    c.fillRect(8, 9, 2, 2);
+    c.fillStyle = "#c9a227"; // a counter beside it
+    c.fillRect(11, 10, 3, 3);
+  } else if (activity === "exercising") {
+    c.fillStyle = ink; // a dumbbell
+    c.fillRect(6, 7, 4, 2);
+    c.fillRect(3, 5, 3, 6);
+    c.fillRect(10, 5, 3, 6);
+    c.fillStyle = "rgba(30,27,22,0.82)"; // the gap between plates
+    c.fillRect(4, 7, 1, 2);
+    c.fillRect(11, 7, 1, 2);
+  } else if (activity === "napping") {
+    // One Z, where sleeping has a stack of two. A hammock under a Z was tried
+    // first and at 16px the slung curve read as a bowl — the Z is the only part of
+    // that icon anyone would recognise, so it is the whole icon.
+    c.fillStyle = ink;
+    c.fillRect(4, 4, 8, 2);
+    c.fillRect(8, 6, 2, 2);
+    c.fillRect(6, 8, 2, 2);
+    c.fillRect(4, 10, 8, 2);
   } else if (activity === "playing") {
     c.fillStyle = ink; // a ball in the air, and its bounce
     c.beginPath();
@@ -945,6 +1211,9 @@ function buildGlyphs(): Record<Activity, Texture | null> {
     "shopping",
     "playing",
     "painting",
+    "gaming",
+    "exercising",
+    "napping",
   ];
   const out = {
     walking: null,
@@ -1330,8 +1599,10 @@ export async function loadTownTextures(): Promise<TownTextures> {
   const urban = loaded.urban.source;
 
   const chars: Record<string, DirFrames> = {};
+  const sits: Record<string, SitFrames> = {};
   for (const [key, idx] of Object.entries(CHAR_INDEX)) {
     chars[key] = sliceChar(urban, idx);
+    sits[key] = sliceSit(urban, idx);
   }
 
   cache = {
@@ -1347,6 +1618,15 @@ export async function loadTownTextures(): Promise<TownTextures> {
       mushrooms: loaded.mushrooms,
     },
     chars,
+    sits,
+    chair: {
+      all: canvasTexture((c) => drawDeskChair(c, "all")),
+      back: canvasTexture((c) => drawDeskChair(c, "back")),
+    },
+    decor: {
+      mat: canvasTexture(drawMat),
+      clock: canvasTexture(drawClock),
+    },
     spots: {
       bench: [canvasTexture((c) => drawSpot(c, "bench"))],
       pond: [0, 1, 2].map((f) => canvasTexture((c) => drawSpot(c, "pond", f))),
@@ -1354,6 +1634,12 @@ export async function loadTownTextures(): Promise<TownTextures> {
       garden: [canvasTexture((c) => drawSpot(c, "garden"))],
       swing: [canvasTexture((c) => drawSpot(c, "swing"))],
       easel: [canvasTexture((c) => drawSpot(c, "easel"))],
+      hammock: [canvasTexture((c) => drawSpot(c, "hammock"))],
+      chess: [canvasTexture((c) => drawSpot(c, "chess"))],
+      hoop: [canvasTexture((c) => drawSpot(c, "hoop"))],
+      picnic: [canvasTexture((c) => drawSpot(c, "picnic"))],
+      stage: [canvasTexture((c) => drawSpot(c, "stage"))],
+      gym: [canvasTexture((c) => drawSpot(c, "gym"))],
       // Standing places: worn ground, since the prop beside them is the object.
       cart: [canvasTexture((c) => drawSpot(c, "cart"))],
       stall: [canvasTexture((c) => drawSpot(c, "stall"))],
@@ -1390,6 +1676,8 @@ export async function loadTownTextures(): Promise<TownTextures> {
       boxes: canvasTexture((c) => drawClutter(c, "boxes")),
       catbed: canvasTexture((c) => drawClutter(c, "catbed")),
       bookstack: canvasTexture((c) => drawClutter(c, "bookstack")),
+      yogamat: canvasTexture((c) => drawClutter(c, "yogamat")),
+      boardgame: canvasTexture((c) => drawClutter(c, "boardgame")),
       counter: canvasTexture((c) => drawFurniture(c, "counter")),
       sink: canvasTexture((c) => drawFurniture(c, "sink")),
       table: canvasTexture((c) => drawFurniture(c, "table")),

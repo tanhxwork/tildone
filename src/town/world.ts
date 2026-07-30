@@ -111,7 +111,11 @@ export type ClutterKind =
   | "guitar"
   | "boxes"
   | "catbed"
-  | "bookstack";
+  | "bookstack"
+  // Two more usable ones (TIL-200): a house needs things to *do* of an evening as
+  // much as things to look at, and the guitar was carrying that on its own.
+  | "yogamat"
+  | "boardgame";
 
 /** What a character can *do* at a piece of furniture. The place tree (places.ts)
  *  already says where something is — "the counter, in the kitchen, in Alpha's
@@ -142,7 +146,14 @@ export type ActivityVerb =
   | "gardening"
   | "shopping"
   | "playing"
-  | "painting";
+  | "painting"
+  // A town whose whole off-duty life is a bench, a pond and a swing runs out of
+  // things to be doing (TIL-200). These three are each in two places — one out
+  // of doors and one in the house — so an evening in and an afternoon out are
+  // drawn from the same vocabulary rather than being two separate lists.
+  | "gaming"
+  | "exercising"
+  | "napping";
 
 /** Which furniture affords what. Absent kinds are scenery — you walk past a
  *  bookshelf's neighbours all day, but only a bookshelf can be read at. */
@@ -159,9 +170,17 @@ const FURNITURE_VERB: Partial<Record<FurnitureKind, ActivityVerb>> = {
   whiteboard: "planning",
   serverrack: "deploying",
   shower: "washing",
+  // Scenery promoted to something you can do (TIL-200). Both were already in
+  // every house and both are things people actually get up for: a plant wants
+  // watering, and a fridge is where a snack comes from between meals. Nothing new
+  // is drawn and nothing new is placed — the house simply admits what it has.
+  plant: "gardening",
+  fridge: "eating",
   // Clutter you can pick up and use. The guitar was scenery that said who lived
   // here; making it playable is most of what an evening at home looks like.
   guitar: "music",
+  yogamat: "exercising",
+  boardgame: "gaming",
 };
 
 /**
@@ -188,6 +207,10 @@ export interface Affordance {
 export interface RestSpot {
   tile: Tile;
   kind: "sofa" | "bed";
+  /** The sofa or bed itself — blocked, so nobody can *stand* on it, but it is
+   *  where a resting character is drawn (TIL-200). Without it "went home to the
+   *  sofa" rendered as a figure standing to attention beside the sofa. */
+  object: Tile;
 }
 
 /** A named room of a house. "Room" here is the room you stand in — a project's
@@ -280,7 +303,17 @@ export type SpotKind =
   | "easel"
   | "cart"
   | "stall"
-  | "board";
+  | "board"
+  // The green's second half (TIL-200). Water, fire and planting were the whole of
+  // what was out there, so every park was the same afternoon: these are the
+  // others — somewhere to doze, a game, a court, a blanket, a bandstand, a frame
+  // to pull up on.
+  | "hammock"
+  | "chess"
+  | "hoop"
+  | "picnic"
+  | "stage"
+  | "gym";
 
 export interface LeisureSpot {
   id: number;
@@ -305,12 +338,31 @@ const SPOT_VERB: Record<SpotKind, ActivityVerb> = {
   cart: "coffee",
   stall: "shopping",
   board: "reading",
+  hammock: "napping",
+  chess: "gaming",
+  hoop: "playing",
+  picnic: "eating",
+  stage: "music",
+  gym: "exercising",
 };
 
 /** A standing place beside a prop draws nothing of its own — the prop is already
  *  there. Everything else in `spots` is a piece of furniture on the ground. */
 export function isStandingSpot(kind: SpotKind): boolean {
   return kind === "cart" || kind === "stall" || kind === "board";
+}
+
+/** A spot you *sit* at (or lie in), rather than stand at.
+ *
+ *  Posture is the sim's, not the renderer's, because only the sim knows what a
+ *  character came here for — but which spots have somewhere to sit is a fact about
+ *  the furniture, so it is declared here beside the rest of it. A visitor at the
+ *  pond is standing on the bank with a rod; one on a bench is sat down. */
+export function spotPosture(kind: SpotKind): "stand" | "sit" | "lie" {
+  if (kind === "hammock") return "lie";
+  return kind === "bench" || kind === "chess" || kind === "picnic" || kind === "swing"
+    ? "sit"
+    : "stand";
 }
 
 /** A furnishing that is *not* a leisure spot: blocked, so characters path around
@@ -524,11 +576,23 @@ function furnishPark(
     [-3, 2],
     [3, 2],
   ];
-  // A rotation, so each of pond / campfire / garden still appears exactly once
-  // however the plan is turned — a park without water is not the variation we
-  // are after. The swing and the easel are the park's own: a town where the only
-  // thing to do off-duty is sit on a bench reads as a waiting room.
-  const kinds: SpotKind[] = ["pond", "campfire", "garden", "swing", "easel"];
+  // Water, fire and planting go in three of the five slots, rotated — so each
+  // still appears exactly once however the plan is turned (a park without water is
+  // not the variation we are after), and which slot each lands in varies.
+  const core: SpotKind[] = ["pond", "campfire", "garden"];
+  // …and the two slots left over are drawn from the rest, per park. This is what
+  // stops "the park" being one afternoon repeated: the swing and the easel used to
+  // be in every single one, because five kinds rotating through five slots is not
+  // variation, it is the same set every time (TIL-200).
+  const extras: SpotKind[] = ["swing", "easel", "chess", "hoop", "gym", "stage", "picnic"];
+  const pick = Math.floor(hashStr(seed, 17) * extras.length);
+  const kinds: SpotKind[] = [
+    ...core,
+    extras[pick],
+    // Stride 3 rather than +1 so the pair is never two neighbours off one list —
+    // a park with the swing and the easel is exactly what this is escaping.
+    extras[(pick + 3) % extras.length],
+  ];
   slots.forEach(([sx, sy], i) => add(cx + sx, cy + sy * flip, kinds[(i + turn) % kinds.length]));
 
   // One blocked centrepiece so the park has something to gather around, and so
@@ -866,10 +930,17 @@ function furnishCommonsGreen(
 ) {
   const y = cellY + ROAD_ROW + 1; // the green strip immediately south of the street
   if (y >= rows) return;
+  // Three tiles apart, which is the spacing rule the whole file keeps: the sim
+  // routes around every spot but its own target, so neighbours make each other
+  // unclaimable. The last two are here rather than only in the parks because a
+  // town of three projects has no park at all, and it should still have somewhere
+  // to eat outside and somewhere to doze (TIL-200).
   const plan: [number, SpotKind][] = [
     [2, "pond"],
     [5, "campfire"],
     [8, "garden"],
+    [11, "picnic"],
+    [14, "hammock"],
   ];
   for (const [dx, kind] of plan) {
     const x = cellX + dx;
@@ -1425,7 +1496,7 @@ function deriveRestSpots(affordances: Affordance[]): RestSpot[] {
     const key = `${a.tile.x},${a.tile.y}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ tile: a.tile, kind });
+    out.push({ tile: a.tile, kind, object: a.object });
   }
   return out;
 }
@@ -1442,6 +1513,8 @@ const CLUTTER_ROOMS: { kind: ClutterKind; rooms: RoomKind[] }[] = [
   { kind: "boxes", rooms: ["bedroom", "lounge", "kitchen", "hall"] },
   { kind: "bookstack", rooms: ["lounge", "workroom", "bedroom", "kitchen"] },
   { kind: "catbed", rooms: ["lounge", "bedroom", "kitchen"] },
+  { kind: "yogamat", rooms: ["bedroom", "lounge", "hall"] },
+  { kind: "boardgame", rooms: ["lounge", "kitchen", "bedroom"] },
 ];
 
 /** Items per interior tile every house is furnished to. The midpoint of the

@@ -25,8 +25,8 @@ import {
 } from "pixi.js";
 import type { PresenceState } from "../utils/presence";
 import type { Camera } from "./camera";
-import type { DirFrames, TownTextures } from "./assets";
-import type { SimState } from "./sim";
+import type { DirFrames, SitFrames, TownTextures } from "./assets";
+import type { Activity, SimState } from "./sim";
 import { inRect, isStandingSpot, TILE_PX, type RoomKind, type Tile, type TownWorld } from "./world";
 
 export interface TownTheme {
@@ -57,6 +57,12 @@ export interface CharStyle {
 interface CharView {
   container: Container;
   sprite: Sprite;
+  /** The chair back, drawn *over* the sprite while this character is at its desk —
+   *  what makes it read as sitting in the chair rather than standing behind it. */
+  chairBack: Sprite;
+  /** The soft ground shadow at the feet. Hidden when there are no feet on the
+   *  ground: a shadow under someone asleep in bed reads as a hole in the mattress. */
+  shadow: Graphics;
   ring: Graphics;
   /** The "…" bubble shown while this character is mid-chat. */
   bubble: Graphics;
@@ -123,6 +129,36 @@ interface Glow {
 
 /** ms per walk frame. */
 const FRAME_MS = 130;
+
+/** How far (texture px) a seated character settles below where it would stand. */
+const SIT_LIFT = 3;
+
+/** How far (screen px) the activity badge lifts for a seated character.
+ *
+ *  A desk sits in the tile directly above its seat, so a badge at its usual height
+ *  lands squarely on the monitor. Lifting it clears the screen — the badge belongs
+ *  over the head, and above a desk that means above the desk. */
+const SIT_GLYPH_LIFT = 10;
+
+/**
+ * Activities that are *calm* — a slow breath rather than busy hands.
+ *
+ * Everything not listed gets the brisk tick, which is the right default: most of
+ * what a character stops to do is a pair of hands moving (typing, cooking,
+ * washing up, playing a guitar). Sleeping, dozing and sitting watching something
+ * are the exceptions, and animating them at the same tempo as typing is what made
+ * every stationary character look equally busy.
+ */
+const CALM: ReadonlySet<Activity> = new Set<Activity>([
+  "sleeping",
+  "napping",
+  "resting",
+  "waiting",
+  "watching",
+  "reading",
+  "fishing",
+  "stuck",
+]);
 
 /** Character sprite key by agent name — mirrors agents.tsx RULES. */
 export function charKeyForAgent(name: string | null | undefined): string {
@@ -245,6 +281,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       g.addChild(tile(int.artA, tx + 2, ty));
       g.addChild(tile(int.artB, tx + tw - 3, ty));
     }
+    // …and a clock between them, once the wall is wide enough that it is not
+    // crowding the pictures. The room a clock belongs in is the one people work in.
+    if (tw >= 8) g.addChild(tile(tex.decor.clock, tx + Math.floor(tw / 2), ty));
 
     // Furniture. Everything but the rug is bottom-anchored so it overlaps the
     // tile above and the room gains a little depth.
@@ -310,10 +349,20 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       deskLights.push({ seat: place.seats[i] ?? { x: d.x, y: d.y + 1 }, sprite: lit });
     });
 
+    // A chair at every workstation, occupied or not. Drawn here in the building
+    // layer so it sits *under* whoever is in it (the character's own container
+    // draws the chair's back again, on top — see drawDeskChair), and so an empty
+    // desk still has a chair pushed up to it. An office of six desks and no chairs
+    // reads as a furniture showroom.
+    for (const s of place.seats) g.addChild(tile(tex.chair.all, s.x, s.y));
+
     // Facade: the door, with a window either side of it.
     const winCols = [tx + 1, tx + tw - 2];
     for (const wx of winCols) g.addChild(tile(tex.facade.window, wx, frontWallY));
     g.addChild(tile(tex.facade.door, place.door.x, frontWallY));
+    // A mat on the step. The whole facade was a door and two windows; a doorstep
+    // with something on it is the difference between a house and a model of one.
+    g.addChild(tile(tex.decor.mat, place.door.x, place.door.y));
 
     // The roof, as a liftable lid over everything above the facade. A house you
     // can never see into is just a box; fading the roof out while anyone is home
@@ -586,6 +635,13 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     const shadow = new Graphics()
       .ellipse(0, -1, 6, 2.5)
       .fill({ color: 0x000000, alpha: 0.22 });
+    // The chair back, in the character's own container so it can be drawn over
+    // the sprite. Positioned like a tile sprite: the container origin is the
+    // bottom-centre of the tile, so the tile's top-left is (-tilePx/2, -tilePx).
+    const chairBack = new Sprite(tex.chair.back);
+    chairBack.scale.set(scale);
+    chairBack.position.set(-tilePx / 2, -tilePx);
+    chairBack.visible = false;
     const ring = new Graphics().circle(0, -6, 13).stroke({ width: 2, color: 0xe03131, alpha: 0.9 });
     ring.visible = false;
     // Chat bubble: a small rounded plate with three dots and a tail, floated
@@ -613,9 +669,9 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
     glyph.scale.set(scale * 0.8);
     glyph.position.set(0, -32);
     glyph.visible = false;
-    container.addChild(shadow, ring, sprite, bubble, glyph);
+    container.addChild(shadow, ring, sprite, chairBack, bubble, glyph);
     charLayer.addChild(container);
-    return { container, sprite, ring, bubble, glyph, anim: 0, agentKey };
+    return { container, sprite, chairBack, shadow, ring, bubble, glyph, anim: 0, agentKey };
   }
 
   function syncChars(
@@ -644,28 +700,46 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       }
       const frames = (tex.chars[agentKey] ?? tex.chars.generic) as DirFrames;
       const seq = frames[c.facing];
-      // Lingering at a leisure spot, or seated heads-down at a desk (both not
-      // walking) → a gentle activity loop, not a frozen frame. Seated work reads
-      // as typing: a slow frame cycle + a tiny bob.
-      // Chatting counts: a pair frozen on frame 0 reads as two sprites stuck,
-      // not as two people talking.
-      const dwelling = (c.spotId !== null || c.seated || c.chatMs > 0) && !c.moving;
+      const sitFrames = (tex.sits[agentKey] ?? tex.sits.generic) as SitFrames;
+      // The walk cycle plays while walking, and at no other time.
+      //
+      // It used to play at half speed for everything that was not walking too —
+      // seated at a desk, on a sofa, asleep in bed — so the busiest agent in town
+      // spent 25 minutes stepping on the spot at its own monitor (TIL-200). What a
+      // still character gets instead is its posture, held: a seated character is
+      // cropped at the hip so the chair and the desk finish the figure, and the
+      // only motion is a breath, or a shallow tick if its hands are busy.
+      const sitting = c.posture === "sit";
+      v.sprite.anchor.set(0.5, sitting ? 1 : 0.9);
+      const baseY = sitting ? -SIT_LIFT * scale : 0;
       if (c.moving && !theme.reducedMotion) {
         v.anim += dtMs;
         v.sprite.texture = seq[Math.floor(v.anim / FRAME_MS) % seq.length];
         v.sprite.y = 0;
-      } else if (dwelling && !theme.reducedMotion) {
-        v.anim += dtMs;
-        v.sprite.texture = seq[Math.floor(v.anim / (FRAME_MS * 2)) % seq.length];
-        v.sprite.y = Math.sin(v.anim / 240) * -1.5; // small bob
       } else {
-        v.anim = 0;
-        v.sprite.texture = seq[0];
-        v.sprite.y = 0;
+        v.sprite.texture = sitting ? sitFrames[c.facing] : seq[0];
+        if (theme.reducedMotion) {
+          v.anim = 0;
+          v.sprite.y = baseY;
+        } else {
+          v.anim += dtMs;
+          const bob = CALM.has(c.activity)
+            ? Math.sin(v.anim / 620) * 0.9 // a slow breath
+            : Math.sin(v.anim / 95) * 0.7; // busy hands
+          v.sprite.y = baseY + bob;
+        }
       }
-      v.container.x = c.pos.x * tilePx + tilePx / 2;
-      v.container.y = c.pos.y * tilePx + tilePx;
-      v.container.zIndex = c.pos.y;
+      // A character on furniture is drawn on the furniture, not beside it: a rest
+      // spot has to be the walkable tile *next to* the sofa, because the sofa
+      // itself is blocked, so "went home to the sofa" used to render as a figure
+      // standing to attention next to one.
+      const drawX = c.onTile ? c.onTile.x : c.pos.x;
+      const drawY = c.onTile ? c.onTile.y : c.pos.y;
+      v.chairBack.visible = c.seated;
+      v.shadow.visible = c.posture === "stand";
+      v.container.x = drawX * tilePx + tilePx / 2;
+      v.container.y = drawY * tilePx + tilePx;
+      v.container.zIndex = drawY;
       const st = style?.state;
       v.ring.visible = st === "blocked";
       v.bubble.visible = c.chatMs > 0;
@@ -675,6 +749,7 @@ export function createTownScene(app: Application, tex: TownTextures, scale = 2) 
       const badge = tex.glyphs[c.activity];
       v.glyph.visible = badge !== null && c.chatMs === 0;
       if (badge) v.glyph.texture = badge;
+      v.glyph.y = sitting ? -32 - SIT_GLYPH_LIFT : -32;
       if (c.intent === "off") {
         v.sprite.alpha = Math.max(0.1, v.sprite.alpha - dtMs / 1500);
       } else {
