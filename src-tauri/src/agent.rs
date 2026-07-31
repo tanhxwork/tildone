@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo},
+    model::{
+        CacheScope, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, ResultType, ServerCapabilities, ServerInfo,
+    },
     schemars,
     service::{NotificationContext, RequestContext},
     tool, tool_handler, tool_router,
@@ -1193,20 +1196,41 @@ impl TildoneAgent {
         );
     }
 
-    /// The calling MCP client's own name for itself (e.g. `claude-code`), from the
-    /// `initialize` handshake.
+    /// The calling MCP client's own name for itself (e.g. `claude-code`) — the
+    /// agent's mark on the card.
     ///
-    /// Only trustworthy because this server runs in rmcp's **stateful** mode:
-    /// `StreamableHttpServerConfig::default()` sets `stateful_mode: true` and
-    /// `server_config` does not override it. In stateless mode rmcp keeps no
-    /// handshake and synthesises `client_info` from `Implementation::default()`,
-    /// which is `from_build_env()` — *Tildone's own* name and version. That would
-    /// not read as "unknown", it would read as a confident lie. So if this server
-    /// ever moves to stateless, attribution must be switched off rather than left
-    /// to fall back.
+    /// Two eras answer this differently, and `RequestContext::client_info()` is
+    /// the one accessor that gets both right:
+    ///
+    /// - **2026-07-28 and later** deleted the `initialize` handshake, so there is
+    ///   no session to remember who called. Identity rides every request instead,
+    ///   in `_meta` under `io.modelcontextprotocol/clientInfo` (SEP-2575) — and it
+    ///   is a SHOULD, not a MUST, so an anonymous caller is legal. rmcp returns
+    ///   `None` there.
+    /// - **2025-11-25 and earlier** still handshake, so rmcp falls back to the
+    ///   remembered `peer_info`.
+    ///
+    /// What must never happen is a fall back to `Implementation::default()`. That
+    /// would not read as "unknown", it would read as a confident lie — every agent
+    /// write on the board wearing a name nobody claimed.
+    ///
+    /// Which is why the version check below is explicit rather than delegated to
+    /// `RequestContext::client_info()`. That accessor is *supposed* to suppress the
+    /// fallback for stateless callers (it guards on `request_metadata_required()`),
+    /// and over a direct transport it does. Over streamable HTTP it does not:
+    /// `peer_info_for_stateless_request` synthesises a peer with
+    /// `client_info: Implementation::default()` so that `protocol_version()` keeps
+    /// working inside handlers, and that synthetic peer defeats the guard. An
+    /// anonymous 2026-07-28 caller then attributes as `rmcp` — a real name, for a
+    /// client that never gave one. `mcp_stateless_2026_07_28` is the regression
+    /// test; it caught exactly this.
     fn client_name(ctx: &RequestContext<RoleServer>) -> Option<String> {
-        let info = ctx.peer.peer_info()?;
-        let name = info.client_info.name.trim();
+        // ISO dates sort lexicographically, which is how rmcp itself compares them.
+        let stateless = ctx
+            .protocol_version()
+            .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str());
+        let info = if stateless { ctx.meta.client_info() } else { ctx.client_info() }?;
+        let name = info.name.trim();
         (!name.is_empty()).then(|| name.to_string())
     }
 
@@ -3343,6 +3367,47 @@ impl ServerHandler for TildoneAgent {
         )
     }
 
+    /// The protocol revisions this server will serve, declared rather than
+    /// inherited.
+    ///
+    /// rmcp's default is `ProtocolVersion::KNOWN_VERSIONS` — every revision the
+    /// linked rmcp happens to know. That is the wrong default *here*: the Cargo
+    /// dependency is a caret range, so a routine `cargo update` could teach rmcp a
+    /// new revision and this server would start speaking it with nobody having
+    /// read what changed. The 2026-07-28 migration is the argument — it deleted
+    /// the handshake that attribution used to read from, and only an audit caught
+    /// it. So the list is explicit, and `serves_exactly_the_audited_protocols`
+    /// fails loudly when rmcp grows one.
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(&SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    /// Serves the slimmed tool list (see `new()`), plus the cache hints the
+    /// stateless era replaced `tools/list_changed` with.
+    ///
+    /// Overriding this is what suppresses the `#[tool_handler]` macro's own
+    /// `list_tools` — it only generates one when the impl doesn't already have it.
+    /// The macro's version is identical except that it sends no hints, so the
+    /// slimming and dispatch wiring are unaffected.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: Some(TOOL_LIST_TTL_MS),
+            // Private, not Public: nothing between this server and its client is
+            // entitled to a copy. On loopback there is no shared cache to fill
+            // anyway, so the permissive scope would buy nothing and only widen who
+            // may hold the list.
+            cache_scope: Some(CacheScope::Private),
+        })
+    }
+
     /// Tildone's tool set is fixed at compile time, so it never changes *within*
     /// a process — but it does change across an app upgrade, and a client that
     /// reconnects after one restores its cached tool list without re-listing.
@@ -3350,6 +3415,11 @@ impl ServerHandler for TildoneAgent {
     /// server was already serving it. There is no peer to notify at the moment
     /// the set actually changes (the app is restarting), so the notification
     /// goes out here instead: once a client is back, tell it to re-list.
+    ///
+    /// **Legacy clients only.** 2026-07-28 has no `initialize`, so nothing calls
+    /// this and there is no open stream to push a notification down even if it
+    /// did. `TOOL_LIST_TTL_MS` is what covers those clients instead — same bug,
+    /// different mechanism: staleness expires rather than being interrupted.
     fn on_initialized(
         &self,
         context: NotificationContext<RoleServer>,
@@ -3361,6 +3431,20 @@ impl ServerHandler for TildoneAgent {
         }
     }
 }
+
+/// Every protocol revision this build has been audited against — see
+/// `supported_protocol_versions`. Adding one is a deliberate act, not a
+/// side effect of a dependency bump.
+static SUPPORTED_PROTOCOL_VERSIONS: [ProtocolVersion; 2] =
+    [ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2026_07_28];
+
+/// How long a client may treat `tools/list` as fresh (SEP-2549).
+///
+/// The set only changes across an app upgrade, so this is not about churn — it
+/// is the ceiling on how long a client can keep serving a tool list from before
+/// one. Five minutes: an upgrade is picked up promptly, and the re-list it costs
+/// is one loopback round trip.
+const TOOL_LIST_TTL_MS: u64 = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Lifecycle commands
@@ -8052,25 +8136,45 @@ mod tests {
         assert_eq!(beats.lock().unwrap().get("s1").unwrap().state, "idle");
     }
 
-    /// Drives the real streamable-HTTP endpoint the way an MCP client does:
-    /// initialize → initialized → tools/list → tools/call.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn mcp_over_streamable_http() {
-        let agent = test_agent();
-        let ct = CancellationToken::new();
-        // Bind first, then configure from the real port — the same order as
-        // agent_server_start, so origin/host validation is exercised against the
-        // port actually in use rather than against AGENT_PORT.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    /// SSE responses frame each JSON-RPC message as a "data:" line.
+    fn sse_json(body: &str) -> Value {
+        // Skip the empty SSE priming event; take the first data line
+        // carrying JSON.
+        let data = body
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(str::trim)
+            .find(|d| !d.is_empty())
+            .unwrap_or(body);
+        serde_json::from_str(data).unwrap_or_else(|e| panic!("bad JSON ({e}) in body: {body:?}"))
+    }
+
+    /// Binds a real streamable-HTTP `/mcp` on a free port, exactly as
+    /// `agent_server_start` does (bind first, configure from the port actually in
+    /// use, so origin/host validation is exercised for real).
+    fn serve_mcp(agent: TildoneAgent, ct: &CancellationToken) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
         let config = server_config(addr.port()).with_cancellation_token(ct.child_token());
         let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
             StreamableHttpService::new(move || Ok(agent.clone()), Default::default(), config);
         let router = axum::Router::new().nest_service("/mcp", service);
-        let url = format!("http://{addr}/mcp");
         tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             let _ = axum::serve(listener, router).await;
         });
+        format!("http://{addr}/mcp")
+    }
+
+    /// Drives the real streamable-HTTP endpoint the way a **legacy** (2025-11-25
+    /// and earlier) MCP client does: initialize → initialized → tools/list →
+    /// tools/call. Still the majority of clients, and `legacy_session_mode` stays
+    /// on for exactly this reason — `mcp_stateless_2026_07_28` is the other era.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_over_streamable_http() {
+        let ct = CancellationToken::new();
+        let url = serve_mcp(test_agent(), &ct);
 
         let client = reqwest::Client::new();
         let post = |body: String, session: Option<String>| {
@@ -8088,20 +8192,6 @@ mod tests {
                 req.send().await.unwrap()
             }
         };
-        // SSE responses frame each JSON-RPC message as a "data:" line.
-        fn sse_json(body: &str) -> Value {
-            // Skip the empty SSE priming event; take the first data line
-            // carrying JSON.
-            let data = body
-                .lines()
-                .filter_map(|l| l.strip_prefix("data:"))
-                .map(str::trim)
-                .find(|d| !d.is_empty())
-                .unwrap_or(body);
-            serde_json::from_str(data)
-                .unwrap_or_else(|e| panic!("bad JSON ({e}) in body: {body:?}"))
-        }
-
         let init = post(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#.into(),
             None,
@@ -8214,6 +8304,159 @@ mod tests {
         );
 
         ct.cancel();
+    }
+
+    /// The 2026-07-28 era: no `initialize`, no session id, every request
+    /// self-contained.
+    ///
+    /// The migration's real risk lives here. `client_name` used to read the
+    /// handshake's `peer_info`; a stateless caller never performed one, and the
+    /// fallback rmcp would otherwise reach for is `Implementation::default()` —
+    /// *Tildone's own* name. So the assertion that matters is not "did the call
+    /// succeed" but "whose mark ended up on the card".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_stateless_2026_07_28() {
+        let (agent, db) = test_agent_with_db();
+        let ct = CancellationToken::new();
+        let url = serve_mcp(agent, &ct);
+
+        let client = reqwest::Client::new();
+        // Note what is absent: no initialize handshake, no Mcp-Session-Id. What is
+        // present instead, on every single request, is the SEP-2243 header trio —
+        // and they are not decoration: rmcp rejects the call with -32020 if
+        // `Mcp-Method` is missing, or if `Mcp-Method`/`Mcp-Name` disagree with the
+        // JSON body. That is the point of them — a gateway can route and authorize
+        // without parsing the body, so the body must not be able to say otherwise.
+        let post = |id: i32, method: &'static str, name: Option<&'static str>, params: Value| {
+            let client = client.clone();
+            let url = url.clone();
+            async move {
+                let mut req = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("MCP-Protocol-Version", "2026-07-28")
+                    .header("Mcp-Method", method);
+                if let Some(name) = name {
+                    req = req.header("Mcp-Name", name);
+                }
+                let body =
+                    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+                        .to_string();
+                let res = req.body(body).send().await.unwrap();
+                let status = res.status();
+                let body = res.text().await.unwrap();
+                assert!(status.is_success(), "stateless call rejected ({status}): {body}");
+                sse_json(&body)
+            }
+        };
+        // SEP-2575 makes protocolVersion and clientCapabilities REQUIRED on every
+        // request, but clientInfo only a SHOULD — so `None` here is a legal caller,
+        // not a malformed one, and the server has to cope with an anonymous write.
+        let meta = |client_name: Option<&str>| {
+            let mut m = json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            });
+            if let Some(n) = client_name {
+                m["io.modelcontextprotocol/clientInfo"] = json!({"name": n, "version": "1.0"});
+            }
+            m
+        };
+
+        // --- tools/list: served cold, with the cache hints that replaced the
+        // tools/list_changed push (there is no stream to push down any more).
+        let tools =
+            post(1, "tools/list", None, json!({"_meta": meta(Some("test-stateless"))})).await;
+        let names: Vec<&str> = tools["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no tool list without a handshake: {tools}"))
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"create_task"), "stateless tools/list is short: {names:?}");
+        assert_eq!(
+            tools["result"]["ttlMs"],
+            json!(TOOL_LIST_TTL_MS),
+            "without ttlMs a stateless client may cache the tool list forever, and an \
+             app upgrade that adds a tool stays invisible — the append_note bug, again: {tools}"
+        );
+        assert_eq!(tools["result"]["cacheScope"], json!("private"), "{tools}");
+
+        // --- tools/call: the client said who it is, so the card must say so too.
+        let named = post(
+            2,
+            "tools/call",
+            Some("create_task"),
+            json!({
+                "_meta": meta(Some("test-stateless")),
+                "name": "create_task",
+                "arguments": {
+                    "title": "claimed by a stateless client",
+                    "status": "doing",
+                    "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+                },
+            }),
+        )
+        .await;
+        assert_eq!(named["result"]["isError"], Value::Bool(false), "{named}");
+
+        // --- and the anonymous caller must read as unknown, never as "tildone".
+        let anon = post(
+            3,
+            "tools/call",
+            Some("create_task"),
+            json!({
+                "_meta": meta(None),
+                "name": "create_task",
+                "arguments": {
+                    "title": "claimed anonymously",
+                    "status": "doing",
+                    "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+                },
+            }),
+        )
+        .await;
+        assert_eq!(anon["result"]["isError"], Value::Bool(false), "{anon}");
+
+        let agent_name = |session: &str| -> Option<String> {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT agent_name FROM agent_claims WHERE session_id = ?1",
+                    [session],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            agent_name("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1").as_deref(),
+            Some("test-stateless"),
+            "per-request _meta clientInfo must reach the claim — this is the whole \
+             attribution surface once the handshake is gone"
+        );
+        assert_eq!(
+            agent_name("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"),
+            None,
+            "an anonymous stateless caller is unknown; falling back to \
+             Implementation::default() would mark every agent write 'tildone'"
+        );
+
+        ct.cancel();
+    }
+
+    /// rmcp's default is "every revision this build of rmcp knows", which a caret
+    /// dependency bump can widen without anyone reading the spec diff. This is the
+    /// tripwire for that: it fails when rmcp learns a revision Tildone has not been
+    /// audited against, rather than silently serving it.
+    #[test]
+    fn serves_exactly_the_audited_protocols() {
+        let served: Vec<String> = test_agent()
+            .supported_protocol_versions()
+            .iter()
+            .map(|v| v.as_str().to_string())
+            .collect();
+        assert_eq!(served, vec!["2025-11-25", "2026-07-28"]);
     }
 
     // -----------------------------------------------------------------------
