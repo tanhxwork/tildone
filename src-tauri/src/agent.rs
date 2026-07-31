@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
-        CacheScope, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
-        ProtocolVersion, ResultType, ServerCapabilities, ServerInfo,
+        CacheScope, CallToolResult, ContentBlock, DiscoverResult, ListToolsResult,
+        PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities, ServerInfo,
     },
     schemars,
     service::{NotificationContext, RequestContext},
@@ -3367,19 +3367,60 @@ impl ServerHandler for TildoneAgent {
         )
     }
 
-    /// The protocol revisions this server will serve, declared rather than
-    /// inherited.
+    /// The protocol revisions this server will serve **on the inline-negotiation
+    /// path**, declared rather than inherited.
     ///
     /// rmcp's default is `ProtocolVersion::KNOWN_VERSIONS` — every revision the
-    /// linked rmcp happens to know. That is the wrong default *here*: the Cargo
-    /// dependency is a caret range, so a routine `cargo update` could teach rmcp a
-    /// new revision and this server would start speaking it with nobody having
-    /// read what changed. The 2026-07-28 migration is the argument — it deleted
-    /// the handshake that attribution used to read from, and only an audit caught
-    /// it. So the list is explicit, and `serves_exactly_the_audited_protocols`
-    /// fails loudly when rmcp grows one.
+    /// linked rmcp happens to know, currently five. That is the wrong default
+    /// *here*: the Cargo dependency is a caret range, so a routine `cargo update`
+    /// could teach rmcp a new revision and this server would start speaking it
+    /// with nobody having read what changed. The 2026-07-28 migration is the
+    /// argument — it deleted the handshake that attribution reads from, and only
+    /// an audit caught it.
+    ///
+    /// **Know what this does and does not bound.** rmcp consults it only for
+    /// requests that negotiate inline — `server/discover`, and any request
+    /// declaring its version in `_meta` (`handler/server.rs`). The legacy
+    /// `initialize` handshake does not come through here at all: it goes to
+    /// `negotiate_protocol_version`, which matches against rmcp's own
+    /// `KNOWN_VERSIONS` and otherwise falls back to the server default. So a
+    /// legacy client can still negotiate `2025-03-26` — Tildone's own legacy wire
+    /// test does exactly that — and nothing below refuses it. The guard covers the
+    /// path where a *new* revision would actually arrive (2026-07-28 and later are
+    /// inline by construction), which is the risk it was written for; it is not a
+    /// list of every version reachable on the wire. `the_audited_protocol_list_
+    /// bounds_inline_negotiation_only` pins both halves so this stays honest.
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
         std::borrow::Cow::Borrowed(&SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    /// Modern discovery — and the one place capabilities are told to a 2026-07-28
+    /// client, since there is no `initialize` result to carry them.
+    ///
+    /// It exists to drop `tools.listChanged`, which `get_info()` advertises and
+    /// which is **true for legacy callers only**. A legacy session gets the
+    /// notification from `on_initialized` over its open stream. A modern client has
+    /// no such stream: it would subscribe via `subscriptions/listen`, and rmcp
+    /// answers that with method-not-found unless the handler overrides
+    /// `accepted_subscription_filter` — which this one does not, because an
+    /// in-process tool set never changes and a subscription that can never fire is
+    /// not worth holding open. Advertising the capability anyway would promise a
+    /// modern client a notification it cannot receive, so discovery advertises the
+    /// truth instead: no `listChanged`, and `ttlMs` on `tools/list` is how
+    /// staleness is bounded. The spec explicitly allows that pairing — "a server
+    /// MAY provide `ttlMs` without advertising `listChanged: true`".
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
+        let mut info = self.get_info();
+        if let Some(tools) = info.capabilities.tools.as_mut() {
+            tools.list_changed = None;
+        }
+        Ok(DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            info,
+        ))
     }
 
     /// Serves the slimmed tool list (see `new()`), plus the cache hints the
@@ -3433,8 +3474,9 @@ impl ServerHandler for TildoneAgent {
 }
 
 /// Every protocol revision this build has been audited against — see
-/// `supported_protocol_versions`. Adding one is a deliberate act, not a
-/// side effect of a dependency bump.
+/// `supported_protocol_versions` for the exact scope this bounds (the inline
+/// path, not the legacy handshake). Adding one is a deliberate act, not a side
+/// effect of a dependency bump.
 static SUPPORTED_PROTOCOL_VERSIONS: [ProtocolVersion; 2] =
     [ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2026_07_28];
 
@@ -8445,18 +8487,125 @@ mod tests {
         ct.cancel();
     }
 
-    /// rmcp's default is "every revision this build of rmcp knows", which a caret
-    /// dependency bump can widen without anyone reading the spec diff. This is the
-    /// tripwire for that: it fails when rmcp learns a revision Tildone has not been
-    /// audited against, rather than silently serving it.
-    #[test]
-    fn serves_exactly_the_audited_protocols() {
-        let served: Vec<String> = test_agent()
+    /// The declared list is a tripwire for a caret dependency bump widening what
+    /// this server speaks — but it only covers rmcp's **inline-negotiation** path.
+    /// The first version of this test asserted the getter alone and was read as
+    /// proof the server serves exactly these two. It does not: legacy `initialize`
+    /// negotiates against rmcp's own five-entry `KNOWN_VERSIONS` and never consults
+    /// the getter. So all three facts are pinned here — the declaration, the guard
+    /// actually biting where it applies, and the legacy hole it does not cover —
+    /// because the dangerous version of this test is the one that passes while
+    /// meaning less than its name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_audited_protocol_list_bounds_inline_negotiation_only() {
+        let declared: Vec<String> = test_agent()
             .supported_protocol_versions()
             .iter()
             .map(|v| v.as_str().to_string())
             .collect();
-        assert_eq!(served, vec!["2025-11-25", "2026-07-28"]);
+        assert_eq!(declared, vec!["2025-11-25", "2026-07-28"]);
+
+        let ct = CancellationToken::new();
+        let url = serve_mcp(test_agent(), &ct);
+        let client = reqwest::Client::new();
+
+        // Where the guard bites: an inline request naming an unaudited revision is
+        // refused, even though rmcp itself knows that revision perfectly well.
+        let inline = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-06-18")
+            .header("Mcp-Method", "tools/list")
+            .body(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+                   "io.modelcontextprotocol/protocolVersion":"2025-06-18",
+                   "io.modelcontextprotocol/clientCapabilities":{}}}}"#
+                    .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        let inline_body = inline.text().await.unwrap();
+        assert!(
+            !inline_body.contains("\"tools\":["),
+            "an unaudited revision must not be served on the inline path: {inline_body}"
+        );
+
+        // Where it does not: the legacy handshake reaches rmcp's own KNOWN_VERSIONS
+        // and 2025-03-26 negotiates fine. Asserted so the comment above can never
+        // drift back into claiming otherwise.
+        let legacy = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"legacy","version":"1.0"}}}"#.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            legacy.status(),
+            200,
+            "legacy initialize is negotiated by rmcp, not by the declared list"
+        );
+
+        ct.cancel();
+    }
+
+    /// `listChanged` is true for legacy callers and false for modern ones, and
+    /// `get_info()` cannot tell them apart — so discovery has to correct it.
+    /// Promising a modern client a notification it can only fetch through
+    /// `subscriptions/listen` (which this handler answers with method-not-found)
+    /// is exactly the kind of capability lie that makes a client stop re-listing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discovery_does_not_promise_a_notification_the_modern_path_cannot_send() {
+        let ct = CancellationToken::new();
+        let url = serve_mcp(test_agent(), &ct);
+        let client = reqwest::Client::new();
+
+        let res = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "server/discover")
+            .body(
+                r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{
+                   "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                   "io.modelcontextprotocol/clientCapabilities":{}}}}"#
+                    .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let body = sse_json(&res.text().await.unwrap());
+        let caps = &body["result"]["capabilities"];
+        assert!(
+            caps["tools"].is_object(),
+            "discovery must still advertise tools: {body}"
+        );
+        assert!(
+            caps["tools"]["listChanged"].is_null(),
+            "discovery must not advertise listChanged — the modern path has no way \
+             to deliver it, and ttlMs is what bounds staleness there: {body}"
+        );
+        // Note where identity lives on a discover result: `_meta`, not a top-level
+        // field. rmcp populates it here and nowhere else, which is why tools/list
+        // still ships none (TIL-202).
+        assert_eq!(
+            body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "tildone",
+            "{body}"
+        );
+        assert!(
+            body["result"]["supportedVersions"]
+                .as_array()
+                .is_some_and(|v| v.len() == 2),
+            "discovery reports the audited list: {body}"
+        );
+
+        ct.cancel();
     }
 
     // -----------------------------------------------------------------------
