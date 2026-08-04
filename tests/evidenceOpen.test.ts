@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { describe, expect, it, mock, beforeEach, setSystemTime } from "bun:test";
 
 // The gesture matrix — which click reaches openPath, which reveals, which
 // previews — is the security-relevant half of evidence links, so it is tested
@@ -8,6 +8,9 @@ const opened: string[] = [];
 const revealed: string[] = [];
 const read: string[] = [];
 let readFails = new Set<string>();
+/** What the mocked `git remote get-url origin` answers, and how often it ran. */
+let remoteUrl: string | null = null;
+let remoteCalls = 0;
 
 mock.module("@tauri-apps/plugin-opener", () => ({
   openPath: async (p: string) => {
@@ -30,7 +33,10 @@ mock.module("@tauri-apps/api/core", () => ({
       read.push(args.path);
       return new ArrayBuffer(4);
     }
-    if (cmd === "git_remote_url") return null;
+    if (cmd === "git_remote_url") {
+      remoteCalls += 1;
+      return remoteUrl;
+    }
     return null;
   },
 }));
@@ -39,7 +45,7 @@ mock.module("@tauri-apps/api/core", () => ({
 (globalThis as unknown as { URL: { createObjectURL: (b: unknown) => string } }).URL
   .createObjectURL = () => "blob:stub";
 
-const { openEvidence } = await import("../src/utils/evidenceOpen");
+const { openEvidence, resolveRepoBase } = await import("../src/utils/evidenceOpen");
 
 const CWD = "/Users/tester/repo";
 const galleryOpens: { src: string; filename: string }[][] = [];
@@ -55,6 +61,57 @@ beforeEach(() => {
   read.length = 0;
   galleryOpens.length = 0;
   readFails = new Set();
+  remoteUrl = null;
+  remoteCalls = 0;
+});
+
+describe("resolveRepoBase", () => {
+  const hostile = [
+    { id: 1, task_id: 1, url: "https://evil.example/a/b/commit/abc1234", label: "c", kind: "commit" },
+  ] as never;
+
+  // The remote is read from the repository on disk; links were written over
+  // MCP. Ordering is the guard, so it gets a test of its own (the fifth Codex
+  // verify pass noted there was none).
+  it("prefers the git remote over the card's links", async () => {
+    remoteUrl = "git@github.com:trusted/repo.git";
+    const base = await resolveRepoBase(hostile, "/w/one");
+    expect(base?.base).toBe("https://github.com/trusted/repo");
+  });
+
+  it("falls back to links only when there is no remote", async () => {
+    remoteUrl = null;
+    const base = await resolveRepoBase(hostile, "/w/two");
+    expect(base?.base).toBe("https://evil.example/a/b");
+  });
+
+  it("retries a failed remote lookup instead of demoting the task forever", async () => {
+    const start = new Date("2026-08-04T12:00:00Z");
+    setSystemTime(start);
+    remoteUrl = null;
+    expect((await resolveRepoBase(hostile, "/w/three"))?.base).toBe("https://evil.example/a/b");
+
+    // A remote appears — a fresh clone, `git remote add`, a transient failure
+    // that has passed. Same cwd, so only the miss expiring can save it.
+    remoteUrl = "git@github.com:trusted/appeared.git";
+    const before = remoteCalls;
+    expect((await resolveRepoBase(hostile, "/w/three"))?.base).toBe("https://evil.example/a/b");
+    expect(remoteCalls).toBe(before); // still cached, still cheap
+
+    setSystemTime(new Date(start.getTime() + 31_000));
+    const base = await resolveRepoBase(hostile, "/w/three");
+    expect(base?.base).toBe("https://github.com/trusted/appeared");
+    expect(remoteCalls).toBe(before + 1);
+    setSystemTime();
+  });
+
+  it("keeps a successful remote cached", async () => {
+    remoteUrl = "git@github.com:trusted/cached.git";
+    await resolveRepoBase(hostile, "/w/four");
+    const after = remoteCalls;
+    await resolveRepoBase(hostile, "/w/four");
+    expect(remoteCalls).toBe(after);
+  });
 });
 
 describe("openEvidence", () => {

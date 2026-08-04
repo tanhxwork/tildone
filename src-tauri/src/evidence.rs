@@ -29,9 +29,32 @@ fn home_dir() -> Option<PathBuf> {
     std::fs::canonicalize(PathBuf::from(home)).ok()
 }
 
+/// Which file, as the kernel counts identity — not which name.
+///
+/// Device + inode is what survives the games a path cannot: renames, a parent
+/// directory swapped for a symlink, a hardlink alias. `F_GETPATH` looked like
+/// an answer but is not one: macOS rebuilds that path from the vnode's *mutable*
+/// parent chain at query time, so a file renamed into `$HOME` for the duration
+/// of the check and out again afterwards still passes (fifth Codex verify pass
+/// on TIL-203). Windows has no stable equivalent on stable Rust, so it keeps a
+/// name-based re-check — weaker, and noted as such in the spec.
+#[cfg(unix)]
+type FileId = (u64, u64);
+#[cfg(not(unix))]
+type FileId = ();
+
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &std::fs::Metadata) -> FileId {}
+
 /// Canonicalise and vet one evidence path. Split from the command so the guard
 /// is unit-testable without a Tauri runtime.
-fn vet(path: &Path, home: &Path) -> Result<PathBuf, String> {
+fn vet(path: &Path, home: &Path) -> Result<(PathBuf, FileId), String> {
     // Canonicalise first: it resolves `..` and follows symlinks, so the
     // containment check below sees where the read would actually land.
     let real = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
@@ -53,20 +76,21 @@ fn vet(path: &Path, home: &Path) -> Result<PathBuf, String> {
     if meta.len() > MAX_BYTES {
         return Err("too large to preview".into());
     }
-    Ok(real)
+    Ok((real, file_id(&meta)))
 }
 
 /// Read the file the vetted path named — the *same* file, not whatever now
 /// answers to that name.
 ///
 /// Checking a path and then reading it by name is two resolutions with a gap
-/// between them, and the gap is enough: swap the file for a symlink after the
-/// check and the read follows it out of `$HOME`, or swap in a huge file and the
-/// size cap is judged on a file that no longer exists (TOCTOU, found by the
-/// third Codex verify pass on TIL-203). So the read opens once, refuses to
-/// follow a symlink at the final component, and takes its size and its bytes
-/// from that one open handle.
-fn read_vetted(real: &Path, home: &Path) -> Result<Vec<u8>, String> {
+/// between them, and the gap is enough: swap the file for a symlink and the read
+/// follows it out of `$HOME`; swap a *parent directory* for one and `O_NOFOLLOW`
+/// never sees it; swap in a bigger file and the size cap was judged on a file
+/// that no longer exists. Every one of those changes which inode the name leads
+/// to, so the only durable answer is to compare identity — device and inode —
+/// between what was vetted and what was opened (third, fourth and fifth Codex
+/// verify passes on TIL-203, each defeating the previous, path-shaped fix).
+fn read_vetted(real: &Path, expected: FileId, home: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
@@ -80,14 +104,26 @@ fn read_vetted(real: &Path, home: &Path) -> Result<Vec<u8>, String> {
     }
     let mut file = opts.open(real).map_err(|e| e.to_string())?;
 
-    // Ask the *descriptor* where it landed, and judge that. O_NOFOLLOW guards
-    // only the last component, so swapping a parent directory for a symlink
-    // between the check and the open still redirected the read out of $HOME —
-    // the path was vetted, but a different file was opened (fourth Codex verify
-    // pass on TIL-203). What we opened is the only thing worth checking.
-    #[cfg(target_os = "macos")]
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+
+    // Same file, or nothing. This is the whole guard on unix: a rename, a
+    // swapped parent, a replacement file — all of them change the inode behind
+    // the name, and none of them can change the identity of a handle already
+    // open.
+    #[cfg(unix)]
     {
-        let opened = path_of(&file).ok_or("cannot identify the opened file")?;
+        let _ = home;
+        if file_id(&meta) != expected {
+            return Err("the file changed while it was being opened".into());
+        }
+    }
+    // Windows has no stable device/inode pair on stable Rust, and no
+    // O_NOFOLLOW; fall back to re-checking the name, which is weaker but not
+    // nothing (creating a symlink there needs privilege by default).
+    #[cfg(not(unix))]
+    {
+        let _ = expected;
+        let opened = std::fs::canonicalize(real).map_err(|e| e.to_string())?;
         if !opened.starts_with(home) {
             return Err("outside the home directory".into());
         }
@@ -100,10 +136,7 @@ fn read_vetted(real: &Path, home: &Path) -> Result<Vec<u8>, String> {
             return Err("not a previewable image".into());
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = home;
 
-    let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".into());
     }
@@ -122,26 +155,12 @@ fn read_vetted(real: &Path, home: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Where an open descriptor actually points, straight from the kernel — the one
-/// answer a racing rename cannot change out from under us.
-#[cfg(target_os = "macos")]
-fn path_of(file: &std::fs::File) -> Option<PathBuf> {
-    use std::os::unix::io::AsRawFd;
-    let mut buf = [0u8; libc::PATH_MAX as usize];
-    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
-    if rc == -1 {
-        return None;
-    }
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    Some(PathBuf::from(String::from_utf8_lossy(&buf[..end]).into_owned()))
-}
-
 /// Read one image named as evidence in a task's notes, for the lightbox.
 #[tauri::command]
 pub fn read_evidence_image(path: String) -> Result<tauri::ipc::Response, String> {
     let home = home_dir().ok_or("no home directory")?;
-    let real = vet(Path::new(&path), &home)?;
-    Ok(tauri::ipc::Response::new(read_vetted(&real, &home)?))
+    let (real, id) = vet(Path::new(&path), &home)?;
+    Ok(tauri::ipc::Response::new(read_vetted(&real, id, &home)?))
 }
 
 /// `git remote get-url origin` for a claim's working directory — the fallback
@@ -189,7 +208,7 @@ mod tests {
         let home = scratch("ok");
         let shot = home.join("work/shot.png");
         write(&shot, b"x");
-        assert_eq!(vet(&shot, &home).unwrap(), std::fs::canonicalize(&shot).unwrap());
+        assert_eq!(vet(&shot, &home).unwrap().0, std::fs::canonicalize(&shot).unwrap());
     }
 
     #[test]
@@ -262,12 +281,12 @@ mod tests {
         write(&shot, b"real");
 
         // Vet the honest file, then swap it for a link to the secret one.
-        let vetted = vet(&shot, &home).unwrap();
+        let (vetted, id) = vet(&shot, &home).unwrap();
         std::fs::remove_file(&shot).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&secret, &shot).unwrap();
 
-        assert!(read_vetted(&vetted, &home).is_err(), "the read followed the swap");
+        assert!(read_vetted(&vetted, id, &home).is_err(), "the read followed the swap");
     }
 
     /// O_NOFOLLOW guards only the last component, so the parent has to be
@@ -281,7 +300,7 @@ mod tests {
         let shot = dir.join("shot.png");
         write(&shot, b"real");
 
-        let vetted = vet(&shot, &home).unwrap();
+        let (vetted, id) = vet(&shot, &home).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, &dir).unwrap();
@@ -289,7 +308,7 @@ mod tests {
         // The name still resolves — to a regular, correctly-named png outside
         // the home directory. Only the descriptor's own path catches it.
         assert!(
-            read_vetted(&vetted, &home).is_err(),
+            read_vetted(&vetted, id, &home).is_err(),
             "the read followed a swapped parent directory"
         );
     }
@@ -300,14 +319,35 @@ mod tests {
         let home = scratch("fifo");
         let shot = home.join("shot.png");
         write(&shot, b"real");
-        let vetted = vet(&shot, &home).unwrap();
+        let (vetted, id) = vet(&shot, &home).unwrap();
         std::fs::remove_file(&shot).unwrap();
         #[cfg(unix)]
         {
             let c = std::ffi::CString::new(shot.to_str().unwrap()).unwrap();
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         }
-        assert!(read_vetted(&vetted, &home).is_err());
+        assert!(read_vetted(&vetted, id, &home).is_err());
+    }
+
+    /// The replacement need not be suspicious in any way a *path* can see: a
+    /// perfectly ordinary in-home png, renamed over the vetted name, is still
+    /// not the file that was vetted. Identity is the only thing that catches
+    /// it — the check the fifth verify pass forced.
+    #[test]
+    fn the_read_refuses_a_different_in_home_file_renamed_over_the_name() {
+        let home = scratch("swap-in-home");
+        let shot = home.join("shot.png");
+        write(&shot, b"vetted");
+        let other = home.join("other.png");
+        write(&other, b"substitute");
+
+        let (vetted, id) = vet(&shot, &home).unwrap();
+        std::fs::rename(&other, &shot).unwrap();
+
+        assert!(
+            read_vetted(&vetted, id, &home).is_err(),
+            "a substitute file passed as the vetted one"
+        );
     }
 
     #[test]
@@ -315,8 +355,8 @@ mod tests {
         let home = scratch("read-ok");
         let shot = home.join("shot.png");
         write(&shot, b"pixels");
-        let vetted = vet(&shot, &home).unwrap();
-        assert_eq!(read_vetted(&vetted, &home).unwrap(), b"pixels");
+        let (vetted, id) = vet(&shot, &home).unwrap();
+        assert_eq!(read_vetted(&vetted, id, &home).unwrap(), b"pixels");
     }
 
     /// Size is judged on the handle that is actually read, and the read itself
@@ -326,8 +366,8 @@ mod tests {
         let home = scratch("grew");
         let shot = home.join("shot.png");
         write(&shot, b"small");
-        let vetted = vet(&shot, &home).unwrap();
+        let (vetted, id) = vet(&shot, &home).unwrap();
         write(&shot, &vec![0u8; (MAX_BYTES + 1) as usize]);
-        assert!(read_vetted(&vetted, &home).is_err());
+        assert!(read_vetted(&vetted, id, &home).is_err());
     }
 }

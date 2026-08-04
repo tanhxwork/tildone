@@ -155,8 +155,15 @@ export async function openEvidence(
 }
 
 /** cwd → the repo it belongs to. `git remote` is a subprocess; a note may hold
- *  a dozen shas, and they all resolve to the same answer. */
-const remoteCache = new Map<string, RepoBase | null>();
+ *  a dozen shas, and they all resolve to the same answer.
+ *
+ *  A *failed* lookup is remembered only briefly. Caching "no remote" forever
+ *  meant one transient failure — or a worktree whose remote was added a minute
+ *  later — permanently demoted that task to its agent-written links, which is
+ *  precisely the source the remote-first ordering exists to outrank (fifth
+ *  Codex verify pass on TIL-203). */
+const remoteCache = new Map<string, { base: RepoBase | null; at: number }>();
+const REMOTE_MISS_TTL_MS = 30_000;
 
 /**
  * Where a sha or #NN on this task points.
@@ -183,7 +190,10 @@ export async function resolveRepoBase(
 
 async function remoteBase(cwd: string): Promise<RepoBase | null> {
   const cached = remoteCache.get(cwd);
-  if (cached !== undefined) return cached;
+  if (cached) {
+    if (cached.base) return cached.base;
+    if (Date.now() - cached.at < REMOTE_MISS_TTL_MS) return null;
+  }
   let base: RepoBase | null = null;
   try {
     const remote = await invoke<string | null>("git_remote_url", { cwd });
@@ -191,6 +201,6 @@ async function remoteBase(cwd: string): Promise<RepoBase | null> {
   } catch {
     base = null;
   }
-  remoteCache.set(cwd, base);
+  remoteCache.set(cwd, { base, at: Date.now() });
   return base;
 }
