@@ -105,11 +105,18 @@ describe("resolveRepoBase", () => {
     setSystemTime();
   });
 
-  it("keeps a successful remote cached", async () => {
+  it("keeps a successful remote cached — the value, not just the call count", async () => {
     remoteUrl = "git@github.com:trusted/cached.git";
-    await resolveRepoBase(hostile, "/w/four");
+    const first = await resolveRepoBase(hostile, "/w/four");
+    expect(first?.base).toBe("https://github.com/trusted/cached");
+
+    // Asserting only "it didn't call again" would also pass if the success had
+    // been cached as null and the second call fell through to the hostile link,
+    // which is the failure worth catching (sixth Codex verify pass).
+    remoteUrl = null;
     const after = remoteCalls;
-    await resolveRepoBase(hostile, "/w/four");
+    const second = await resolveRepoBase(hostile, "/w/four");
+    expect(second?.base).toBe("https://github.com/trusted/cached");
     expect(remoteCalls).toBe(after);
   });
 });
