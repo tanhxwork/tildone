@@ -189,6 +189,12 @@ pub fn run() {
             sql: include_str!("../migrations/023_task_cwd.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 24,
+            description: "task_cwd_newest",
+            sql: include_str!("../migrations/024_task_cwd_newest.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()

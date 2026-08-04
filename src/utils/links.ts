@@ -31,10 +31,13 @@ export function isFileEvidence(target: string): boolean {
 
 /** Extensions that execute script when handed to the OS default app: an HTML or
  *  SVG file opens in the browser and runs any inline JavaScript (in a file://
- *  origin). They stay attachable as evidence, but the UI reveals them in Finder
- *  instead of opening them — the user opens them deliberately if they trust the
- *  source. Never call openPath on these. See openLink in TaskEditor. */
-export const REVEAL_ONLY_EXTENSIONS = new Set(["html", "htm", "svg"]);
+ *  origin), and a PDF may carry document-level JavaScript that Acrobat — though
+ *  not Preview — runs on open. They stay attachable as evidence, but the UI
+ *  reveals them in Finder instead of opening them; the user opens them
+ *  deliberately if they trust the source. That mattered more once evidence
+ *  links let agent-written *prose* name a file to open (Codex verify pass,
+ *  TIL-203). Never call openPath on these. See openLink in TaskEditor. */
+export const REVEAL_ONLY_EXTENSIONS = new Set(["html", "htm", "svg", "pdf"]);
 
 export function isRevealOnlyEvidence(target: string): boolean {
   return REVEAL_ONLY_EXTENSIONS.has(fileExtension(target));

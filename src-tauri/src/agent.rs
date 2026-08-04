@@ -4568,6 +4568,38 @@ mod tests {
         assert_eq!(after, "/w/repo", "but the directory survives it");
     }
 
+    /// The backfill has to pick the newest claim per task too. 023 selected
+    /// without an ORDER BY, so whichever row SQLite visited last won — 024
+    /// corrects it (found by the Codex verify pass on TIL-203).
+    #[test]
+    fn the_backfill_takes_the_newest_claim_per_task() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, notes, status, position, created_at)
+             VALUES (1, 't', '', 'doing', 0, '2026-08-04T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        // Inserted newest-first on purpose: the wrong query keeps the last row
+        // it happens to read, which is the older one here.
+        conn.execute(
+            "INSERT INTO agent_claims (session_id, task_id, cwd, claimed_at)
+             VALUES ('new', 1, '/w/new', '2026-08-04T10:00:00.000Z'),
+                    ('old', 1, '/w/old', '2026-08-01T10:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM task_cwds", []).unwrap();
+
+        conn.execute_batch(include_str!("../migrations/024_task_cwd_newest.sql"))
+            .unwrap();
+
+        let snapshot: String = conn
+            .query_row("SELECT cwd FROM task_cwds WHERE task_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(snapshot, "/w/new");
+    }
+
     /// A later claim from another worktree wins — the newest is the one the
     /// notes were most likely written against.
     #[test]

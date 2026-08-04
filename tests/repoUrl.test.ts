@@ -37,6 +37,12 @@ describe("repoBaseFromUrl", () => {
       base: "https://github.com/o/r",
       gitlab: false,
     });
+    // …but strict mode wants the URL to show it is a forge URL.
+    expect(repoBaseFromUrl("https://github.com/o/r", true)).toBeNull();
+    expect(repoBaseFromUrl("https://github.com/o/r/commit/abc1234", true)).toEqual({
+      base: "https://github.com/o/r",
+      gitlab: false,
+    });
   });
 
   it("is null for non-repo and non-http urls", () => {
@@ -61,6 +67,13 @@ describe("repoBaseFromLinks", () => {
 
   // A generic link is whatever someone pasted; letting one become the base
   // aimed every sha on the card at a stranger's host (Codex verify, TIL-203).
+  // `kind` is whatever the agent that added the link chose, so the URL has to
+  // prove it is a forge URL (Codex verify pass, TIL-203).
+  it("refuses a repo-kinded link whose url proves nothing", () => {
+    expect(repoBaseFromLinks([link("https://evil.example/a/b", "branch")])).toBeNull();
+    expect(repoBaseFromLinks([link("https://evil.example/a/b", "commit")])).toBeNull();
+  });
+
   it("ignores link kinds that don't name a repo", () => {
     const links = [
       link("https://evil.example/a/b", "other"),

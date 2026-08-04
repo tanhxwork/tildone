@@ -36,7 +36,12 @@ import {
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
   const openEditor = useStore((s) => s.openEditor);
-  const evidence = href ? parseEvidenceUrl(href) : null;
+  const owner = useContext(OwnerContext);
+  // Turning the plugin off is not enough to keep evidence out of a surface:
+  // the sentinel can be hand-written as an ordinary markdown link, and this
+  // renderer would still activate it (found by the Codex verify pass on
+  // TIL-203). The surface decides here, not the plugin chain.
+  const evidence = href && owner.evidence ? parseEvidenceUrl(href) : null;
 
   // The link must also *say* what it opens. Our plugin always labels a token
   // with the token itself, so requiring that is a round-trip check — and it is
@@ -90,11 +95,27 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   );
 }
 
-/** The text a link renders, when it is plain — used only to tell an autolinked
- *  URL from `[label](url)`, so a miss just means no icon. */
+/**
+ * Every character a link actually renders, including text nested in emphasis or
+ * a code span.
+ *
+ * Depth matters twice over: counting only direct string children let a label
+ * with bold text spliced in front of the path display words the target never
+ * contained and still pass the label check, and it made the common
+ * `` `docs/a.md` `` (a code span, so no direct text) fail it — inert evidence
+ * for the shape agents write most. Both found by the Codex verify pass on
+ * TIL-203.
+ */
 function childText(children: ReactNode): string {
   return Children.toArray(children)
-    .map((c) => (typeof c === "string" ? c : ""))
+    .map((child) => {
+      if (typeof child === "string") return child;
+      if (typeof child === "number") return String(child);
+      if (isValidElement<{ children?: ReactNode }>(child)) {
+        return childText(child.props.children);
+      }
+      return "";
+    })
     .join("");
 }
 
@@ -186,9 +207,22 @@ function EvidenceLink({
   );
 }
 
-/** Non-null claim directories, remembered for the session: the same path is
- *  asked for by every evidence token in a note. */
-const cwdCache = new Map<number, string>();
+/** Claim directories, remembered briefly: every evidence token in a note asks
+ *  for the same one. Short-lived on purpose — a task re-claimed in a different
+ *  worktree must not keep resolving against the old one for the rest of the app
+ *  run (found by the Codex verify pass on TIL-203). */
+const cwdCache = new Map<number, { cwd: string; at: number }>();
+const CWD_TTL_MS = 15_000;
+
+function cachedCwd(taskId: number): string | null {
+  const hit = cwdCache.get(taskId);
+  if (!hit) return null;
+  if (Date.now() - hit.at > CWD_TTL_MS) {
+    cwdCache.delete(taskId);
+    return null;
+  }
+  return hit.cwd;
+}
 
 /**
  * The working directory a relative evidence path hangs off.
@@ -201,30 +235,33 @@ function useClaimCwd(taskId: number | null): string | null {
   const fromPresence = useStore((s) =>
     taskId === null ? null : (s.live[taskId]?.cwd ?? null),
   );
-  const [fromClaim, setFromClaim] = useState<string | null>(() =>
-    taskId === null ? null : (cwdCache.get(taskId) ?? null),
+  // The answer is stamped with the task it belongs to and checked at *render*,
+  // not cleared in an effect: an effect runs after the frame it was meant to
+  // fix, so switching cards left one clickable frame resolving against the
+  // previous card's worktree (found by the Codex verify pass on TIL-203).
+  const [fetched, setFetched] = useState<{ taskId: number; cwd: string | null } | null>(
+    null,
   );
   useEffect(() => {
     if (taskId === null || fromPresence) return;
-    const known = cwdCache.get(taskId);
+    const known = cachedCwd(taskId);
     if (known) {
-      setFromClaim(known);
+      setFetched({ taskId, cwd: known });
       return;
     }
-    // Drop the previous task's answer before asking for this one: the editor is
-    // one long-lived component, and a click landing during the lookup would
-    // otherwise resolve against wherever the *last* task was worked on.
-    setFromClaim(null);
     let live = true;
     void fetchClaimCwd(taskId).then((cwd) => {
-      if (cwd) cwdCache.set(taskId, cwd);
-      if (live) setFromClaim(cwd);
+      if (cwd) cwdCache.set(taskId, { cwd, at: Date.now() });
+      if (live) setFetched({ taskId, cwd });
     });
     return () => {
       live = false;
     };
   }, [taskId, fromPresence]);
-  return fromPresence ?? fromClaim;
+  if (fromPresence) return fromPresence;
+  if (taskId === null) return null;
+  if (fetched?.taskId === taskId) return fetched.cwd;
+  return cachedCwd(taskId);
 }
 
 /** The repo a task's shas belong to. Links answer synchronously; the git
@@ -232,21 +269,26 @@ function useClaimCwd(taskId: number | null): string | null {
  *  takes and settles into a link once the answer lands. Null `links` means the
  *  caller doesn't need a repo at all. */
 function useRepoBase(links: TaskLink[] | null | undefined, cwd: string | null) {
-  const [repo, setRepo] = useState<RepoBase | null>(null);
+  // Keyed by the exact inputs it was resolved for, and compared at render —
+  // same stale-frame race as the cwd above, where the previous card's forge
+  // would have received this card's sha.
+  const [resolved, setResolved] = useState<{
+    links: TaskLink[] | null | undefined;
+    cwd: string | null;
+    repo: RepoBase | null;
+  } | null>(null);
   useEffect(() => {
     if (links === null) return;
-    // Same race as the cwd above: a stale repo would point this task's sha at
-    // the previous task's forge.
-    setRepo(null);
     let live = true;
-    void resolveRepoBase(links ?? [], cwd).then((base) => {
-      if (live) setRepo(base);
+    void resolveRepoBase(links ?? [], cwd).then((repo) => {
+      if (live) setResolved({ links, cwd, repo });
     });
     return () => {
       live = false;
     };
   }, [links, cwd]);
-  return repo;
+  if (!resolved || resolved.links !== links || resolved.cwd !== cwd) return null;
+  return resolved.repo;
 }
 
 /** The task whose notes are being rendered. An embed may only resolve to that
@@ -259,9 +301,15 @@ interface Owner {
   /** Which panel this prose is rendered in, so a failed evidence click reports
    *  itself where the user clicked. */
   scope: NoticeScope;
+  /** Whether this surface has evidence links at all. */
+  evidence: boolean;
 }
 
-const OwnerContext = createContext<Owner>({ taskId: null, scope: "notes" });
+const OwnerContext = createContext<Owner>({
+  taskId: null,
+  scope: "notes",
+  evidence: false,
+});
 
 /** ![alt](tildone://img/12) — an image attached to this task, rendered inline in
  *  its notes. The row is looked up live so a removed image degrades to its alt
@@ -442,7 +490,7 @@ export function Markdown({
     </ReactMarkdown>
   );
   const owned = (
-    <OwnerContext.Provider value={{ taskId: taskId ?? null, scope }}>
+    <OwnerContext.Provider value={{ taskId: taskId ?? null, scope, evidence }}>
       {rendered}
     </OwnerContext.Provider>
   );

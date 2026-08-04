@@ -71,12 +71,14 @@ describe("openEvidence", () => {
     expect(revealed).toEqual([]);
   });
 
+  // A PDF can carry document JavaScript that Acrobat runs on open, and evidence
+  // links let agent prose name one (Codex verify pass, TIL-203).
   it("reveals script-bearing files rather than opening them", async () => {
-    for (const name of ["docs/a.html", "docs/a.svg", "docs/a.htm"]) {
+    for (const name of ["docs/a.html", "docs/a.svg", "docs/a.htm", "docs/a.pdf"]) {
       await openEvidence(name, CWD, false, deps);
     }
     expect(opened).toEqual([]);
-    expect(revealed).toHaveLength(3);
+    expect(revealed).toHaveLength(4);
   });
 
   // The bug the Codex verify pass found: the set was judged by its first

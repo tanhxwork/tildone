@@ -30,8 +30,18 @@ const MARKERS = new Set([
   "releases",
 ]);
 
-/** The repo a forge URL belongs to. */
-export function repoBaseFromUrl(url: string): RepoBase | null {
+/**
+ * The repo a forge URL belongs to.
+ *
+ * `strict` additionally demands that the URL *prove* it is a forge URL by
+ * carrying one of the marker segments. It is used for links, whose `kind` is
+ * chosen by the agent that added them and therefore cannot be trusted on its
+ * own: a link labelled `branch` pointing at `https://evil.example/a/b` would
+ * otherwise become the base for every sha on the card (found by the Codex
+ * verify pass on TIL-203). A `git remote` answer needs no such proof — it came
+ * from the repository itself.
+ */
+export function repoBaseFromUrl(url: string, strict = false): RepoBase | null {
   if (!isHttpUrl(url)) return null;
   let parsed: URL;
   try {
@@ -44,6 +54,7 @@ export function repoBaseFromUrl(url: string): RepoBase | null {
   const cut = url.includes("/-/")
     ? segments.indexOf("-")
     : segments.findIndex((s) => MARKERS.has(s));
+  if (strict && cut === -1) return null;
   const repo = (cut === -1 ? segments : segments.slice(0, cut)).map(stripGitSuffix);
   if (repo.length < 2) return null;
   return { base: `${parsed.origin}/${repo.join("/")}`, gitlab };
@@ -61,7 +72,8 @@ const REPO_KINDS = new Set(["commit", "pr", "branch"]);
 export function repoBaseFromLinks(links: TaskLink[]): RepoBase | null {
   for (const link of links) {
     if (!REPO_KINDS.has(asLinkKind(link.kind))) continue;
-    const base = repoBaseFromUrl(link.url);
+    // Strict: the kind is the agent's word, the URL shape is evidence.
+    const base = repoBaseFromUrl(link.url, true);
     if (base) return base;
   }
   return null;
