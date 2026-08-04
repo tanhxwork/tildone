@@ -58,6 +58,17 @@ describe("repoBaseFromLinks", () => {
     expect(repoBaseFromLinks([link("https://example.com", "other")])).toBeNull();
     expect(repoBaseFromLinks([])).toBeNull();
   });
+
+  // A generic link is whatever someone pasted; letting one become the base
+  // aimed every sha on the card at a stranger's host (Codex verify, TIL-203).
+  it("ignores link kinds that don't name a repo", () => {
+    const links = [
+      link("https://evil.example/a/b", "other"),
+      link("https://elsewhere.example/x/y.png", "file"),
+      link("https://github.com/good/repo/commit/abcdef1", "commit"),
+    ];
+    expect(repoBaseFromLinks(links)?.base).toBe("https://github.com/good/repo");
+  });
 });
 
 describe("repoBaseFromRemote", () => {

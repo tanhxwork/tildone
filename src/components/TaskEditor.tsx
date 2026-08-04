@@ -1323,7 +1323,11 @@ export function TaskEditor() {
                       {/* Comments belong to this task, so their embeds resolve
                           against it. The Activity feed below is cross-task and
                           deliberately stays unowned. */}
-                      <Markdown taskId={task.id}>{c.body}</Markdown>
+                      {/* Comments are prose between people — evidence links are
+                          for what agents wrote in notes and the feed. */}
+                      <Markdown taskId={task.id} evidence={false}>
+                        {c.body}
+                      </Markdown>
                     </div>
                   </div>
                 );

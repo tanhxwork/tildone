@@ -98,18 +98,17 @@ export async function openEvidence(
   reveal: boolean,
   deps: EvidenceOpenDeps,
 ): Promise<string | null> {
-  // Second gate, deliberately redundant with the token grammar: this function
-  // hands a path to the OS, so it re-checks the allowlist itself rather than
-  // trusting that whoever called it did (post-commit review of aadeba9).
-  if (!isEvidenceFile(raw)) return null;
-
   const paths = await resolveEvidencePaths(raw, cwd);
   if (paths.length === 0) {
     return "No working directory is known for this task, so this path can't be resolved.";
   }
+  // Second gate, deliberately redundant with the token grammar: this function
+  // hands paths to the OS, so it re-checks the allowlist itself rather than
+  // trusting that whoever called it did (post-commit review of aadeba9). It
+  // must run per expanded path — `a.{md,html}` has no extension of its own.
   if (!paths.every(isEvidenceFile)) return null;
 
-  if (reveal || isRevealOnlyEvidence(paths[0])) {
+  if (reveal) {
     try {
       await revealItemInDir(paths[0]);
       return null;
@@ -120,6 +119,7 @@ export async function openEvidence(
 
   if (paths.every(isPreviewableImage)) {
     const files: { src: string; filename: string }[] = [];
+    const missing: string[] = [];
     for (const path of paths) {
       try {
         const bytes = await invoke<ArrayBuffer>("read_evidence_image", { path });
@@ -129,17 +129,24 @@ export async function openEvidence(
           filename: basename(path),
         });
       } catch {
-        // One missing shot out of a set is not a failure; all of them is.
+        missing.push(basename(path));
       }
     }
     if (files.length === 0) return `Can't find ${basename(paths[0])} — was it moved?`;
     deps.openFiles(files, 0);
-    return null;
+    // A shot that didn't load is still worth saying out loud — a gallery of
+    // two where three were named otherwise reads as success.
+    return missing.length > 0 ? `Can't find ${missing.join(", ")} — moved?` : null;
   }
 
+  // Per path, not per token: `docs/report.{md,html}` expands to one file that
+  // opens and one that must only be revealed, and judging the set by its first
+  // member handed the browser an agent-named HTML file to run (found by the
+  // Codex verify pass on TIL-203).
   for (const path of paths.slice(0, MAX_OPENS)) {
     try {
-      await openPath(path);
+      if (isRevealOnlyEvidence(path)) await revealItemInDir(path);
+      else await openPath(path);
     } catch {
       return `Can't find ${basename(path)} — was it moved?`;
     }

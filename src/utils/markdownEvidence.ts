@@ -86,10 +86,29 @@ function extensionOf(path: string): string {
 
 // Punctuation a token may be wrapped in when it sits in a sentence. Stripped
 // before classification and never part of the link — "…/a.md, then" must not
-// link the comma. A path always ends in its extension, so a trailing brace can
-// never be legitimate.
+// link the comma.
 const LEAD = /^[([{<"'`]+/;
-const TRAIL = /[)\]}>,.;:!?"'`]+$/;
+const TRAIL_CHARS = new Set([")", "]", "}", ">", ",", ".", ";", ":", "!", "?", '"', "'", "`"]);
+
+/** Trailing punctuation, minus a `}` that closes a brace set — a set may span
+ *  the extension (`report.{md,html}`), and eating its brace silently turned the
+ *  whole token back into prose (Codex verify pass, TIL-203). */
+function stripTrailing(token: string): string {
+  let out = token;
+  while (out.length > 0) {
+    const last = out[out.length - 1];
+    if (!TRAIL_CHARS.has(last)) break;
+    if (last === "}" && count(out, "{") === count(out, "}")) break;
+    out = out.slice(0, -1);
+  }
+  return out;
+}
+
+function count(s: string, ch: string): number {
+  let n = 0;
+  for (const c of s) if (c === ch) n += 1;
+  return n;
+}
 
 /** A path safe to *offer* as a link. The extension allowlist is the safety
  *  model (shared with attached file evidence and with agent.rs), so source and
@@ -99,7 +118,12 @@ function asFilePath(core: string): string | null {
   if (!core.includes("/")) return null;
   if (/^[a-z][a-z0-9+.-]*:/i.test(core)) return null; // a URL or another scheme
   if (!/^[\w./~@%+\-{},]+$/.test(core)) return null;
-  if (core.split("/").includes("..")) return null;
+  const segments = core.split("/");
+  if (segments.includes("..")) return null;
+  // A brace set names sibling files, so it belongs to the basename. Allowing it
+  // in a directory segment (`shots/{light,dark}/shot.png`) would turn one click
+  // into a walk across directories the prose never showed.
+  if (segments.slice(0, -1).some((s) => s.includes("{") || s.includes("}"))) return null;
   const expanded = braceExpand(core);
   if (expanded.length === 0) return null;
   if (!expanded.every((p) => EVIDENCE_EXTENSIONS.has(extensionOf(p)))) return null;
@@ -132,7 +156,7 @@ export function findEvidence(value: string): Hit[] {
     const raw = match[0];
     const at = match.index;
     const lead = LEAD.exec(raw)?.[0].length ?? 0;
-    const core = raw.slice(lead).replace(TRAIL, "");
+    const core = stripTrailing(raw.slice(lead));
     if (!core) continue;
     const ref = classifyToken(core);
     if (ref) hits.push({ start: at + lead, end: at + lead + core.length, ref });

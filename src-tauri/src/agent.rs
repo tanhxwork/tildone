@@ -1158,6 +1158,18 @@ impl TildoneAgent {
                last_pid = COALESCE(excluded.last_pid, agent_claims.last_pid)",
             rusqlite::params![session_id, task_id, cwd, branch, agent, now_iso(), last_pid],
         );
+        // Snapshot the directory alongside the claim. Completing the task
+        // releases the claim, and a relative evidence path in the notes of a
+        // *done* card must still resolve — that card is where an Evidence block
+        // spends its life (migration 023, found by the TIL-203 verify pass).
+        if let Some(cwd) = cwd {
+            let _ = conn.execute(
+                "INSERT INTO task_cwds (task_id, cwd, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(task_id) DO UPDATE SET cwd = excluded.cwd,
+                                                    updated_at = excluded.updated_at",
+                rusqlite::params![task_id, cwd, now_iso()],
+            );
+        }
     }
 
     /// The pid the session's hook last reported, if any beat has landed yet.
@@ -4521,8 +4533,58 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/015_task_tags_changes.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/016_pr_status.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/017_claim_pid.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/023_task_cwd.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
+    }
+
+    /// Completing a task releases its claims — and evidence links in the notes
+    /// of that now-done card still have to resolve their relative paths, so the
+    /// working directory must outlive the claim (migration 023).
+    #[test]
+    fn the_working_directory_outlives_the_claim_it_came_with() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, notes, status, position, created_at)
+             VALUES (1, 't', '', 'doing', 0, '2026-08-04T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        TildoneAgent::record_claim(&conn, "s1", 1, Some("/w/repo"), Some("br"), Some("claude"), None);
+
+        let snapshot: String = conn
+            .query_row("SELECT cwd FROM task_cwds WHERE task_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(snapshot, "/w/repo");
+
+        TildoneAgent::release_claims_for_task(&conn, 1);
+        let claims: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_claims WHERE task_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(claims, 0, "completing releases the claim");
+        let after: String = conn
+            .query_row("SELECT cwd FROM task_cwds WHERE task_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, "/w/repo", "but the directory survives it");
+    }
+
+    /// A later claim from another worktree wins — the newest is the one the
+    /// notes were most likely written against.
+    #[test]
+    fn the_newest_claim_replaces_the_snapshot() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, notes, status, position, created_at)
+             VALUES (1, 't', '', 'doing', 0, '2026-08-04T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        TildoneAgent::record_claim(&conn, "s1", 1, Some("/w/one"), None, None, None);
+        TildoneAgent::record_claim(&conn, "s2", 1, Some("/w/two"), None, None, None);
+        let snapshot: String = conn
+            .query_row("SELECT cwd FROM task_cwds WHERE task_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(snapshot, "/w/two");
     }
 
     /// A no-op notify_user for tests that don't assert on notifications.

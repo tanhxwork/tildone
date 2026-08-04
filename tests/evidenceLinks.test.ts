@@ -109,6 +109,18 @@ describe("brace sets", () => {
   it("leaves a path with no braces as itself", () => {
     expect(braceExpand("shots/a.png")).toEqual(["shots/a.png"]);
   });
+
+  // A set names sibling files. Allowing one in a directory segment would make a
+  // single click walk directories the prose never showed (Codex verify, TIL-203).
+  it("refuses a set outside the basename", () => {
+    expect(hrefs("shots/{light,dark}/shot.png")).toEqual([]);
+  });
+
+  it("allows a set that spans the extension", () => {
+    expect(hrefs("docs/report.{md,html}")).toEqual([
+      "tildone:file/docs%2Freport.%7Bmd%2Chtml%7D",
+    ]);
+  });
 });
 
 describe("commit shas", () => {

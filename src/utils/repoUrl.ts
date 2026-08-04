@@ -1,4 +1,4 @@
-import type { TaskLink } from "../types";
+import { asLinkKind, type TaskLink } from "../types";
 import { isHttpUrl } from "./links";
 
 // Where a bare sha or #NN in notes points. Two sources, in order: the task's own
@@ -49,11 +49,18 @@ export function repoBaseFromUrl(url: string): RepoBase | null {
   return { base: `${parsed.origin}/${repo.join("/")}`, gitlab };
 }
 
-/** The first link on the task that names a repo. Ordered by id (oldest first)
- *  by the store, and every link on a task points at the same repo in practice,
+/** Link kinds that actually name a repository. A `file` or `other` link is
+ *  whatever someone pasted — a docs page, a dashboard — and letting one become
+ *  the base would aim every sha on the card at a stranger's host (found by the
+ *  Codex verify pass on TIL-203). */
+const REPO_KINDS = new Set(["commit", "pr", "branch"]);
+
+/** The first repo-naming link on the task. Ordered by id (oldest first) by the
+ *  store, and every such link on a task points at the same repo in practice,
  *  so the first hit is as good as any. */
 export function repoBaseFromLinks(links: TaskLink[]): RepoBase | null {
   for (const link of links) {
+    if (!REPO_KINDS.has(asLinkKind(link.kind))) continue;
     const base = repoBaseFromUrl(link.url);
     if (base) return base;
   }

@@ -159,6 +159,27 @@ describe("evidence links", () => {
     expect(await $(".detail-notes-rendered a.md-evidence").isExisting()).toBe(false);
   });
 
+  // Completing a task releases every claim on it, and a done card is where an
+  // Evidence block spends its life — so the working directory has to outlive
+  // the claim (migration 023, found by the Codex verify pass).
+  it("still resolves a relative path after the claim is released", async () => {
+    sql(
+      `INSERT OR REPLACE INTO task_cwds (task_id, cwd, updated_at)
+       VALUES (${taskId}, ${q(ROOT)}, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`,
+    );
+    sql(`DELETE FROM agent_claims WHERE task_id = ${taskId};`);
+    await showNotes(taskId, `${MARKER}\n\nscreenshots: shots/shot-light.png`);
+
+    const link = $(".detail-notes-rendered a.md-evidence");
+    await link.waitForExist({ timeout: 10000 });
+    await link.click();
+    await $(".lightbox-overlay").waitForExist({ timeout: 10000 });
+    await browser.keys("Escape");
+    await $(".lightbox-overlay").waitForExist({ reverse: true, timeout: 5000 });
+
+    agentClaims(taskId, ROOT);
+  });
+
   it("links a sha to the repo once the task carries a repo link", async () => {
     sql(
       `INSERT INTO task_links (task_id, url, label, kind, created_at)

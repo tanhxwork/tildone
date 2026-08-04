@@ -38,7 +38,19 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   const openEditor = useStore((s) => s.openEditor);
   const evidence = href ? parseEvidenceUrl(href) : null;
 
-  if (evidence) return <EvidenceLink evidence={evidence}>{children}</EvidenceLink>;
+  // The link must also *say* what it opens. Our plugin always labels a token
+  // with the token itself, so requiring that is a round-trip check — and it is
+  // what stops a hand-written `[build log](tildone:file/~%2FLibrary%2Fsecret.txt)`
+  // in agent-written notes from hiding its target behind friendly words (found
+  // by the Codex verify pass on TIL-203).
+  if (evidence) {
+    const shown = childText(children);
+    const expected = evidence.kind === "pr" ? `#${evidence.value}` : evidence.value;
+    if (shown === expected) {
+      return <EvidenceLink evidence={evidence}>{children}</EvidenceLink>;
+    }
+    return <span className="md-evidence-inert">{children}</span>;
+  }
 
   if (href?.startsWith(TASK_SCHEME)) {
     const id = Number(href.slice(TASK_SCHEME.length));
@@ -199,6 +211,10 @@ function useClaimCwd(taskId: number | null): string | null {
       setFromClaim(known);
       return;
     }
+    // Drop the previous task's answer before asking for this one: the editor is
+    // one long-lived component, and a click landing during the lookup would
+    // otherwise resolve against wherever the *last* task was worked on.
+    setFromClaim(null);
     let live = true;
     void fetchClaimCwd(taskId).then((cwd) => {
       if (cwd) cwdCache.set(taskId, cwd);
@@ -219,6 +235,9 @@ function useRepoBase(links: TaskLink[] | null | undefined, cwd: string | null) {
   const [repo, setRepo] = useState<RepoBase | null>(null);
   useEffect(() => {
     if (links === null) return;
+    // Same race as the cwd above: a stale repo would point this task's sha at
+    // the previous task's forge.
+    setRepo(null);
     let live = true;
     void resolveRepoBase(links ?? [], cwd).then((base) => {
       if (live) setRepo(base);
@@ -365,12 +384,21 @@ const INLINE_COMPONENTS: Components = {
 };
 
 // remarkEvidenceLinks runs after remarkTaskRefs so a [[task N]] ref is already
-// a link node by the time bare tokens are considered.
+// a link node by the time bare tokens are considered. It is opt-out rather than
+// always-on: comments are prose between people, and the spec deliberately kept
+// them out (found still linkified by the Codex verify pass on TIL-203).
 const PLUGINS = [remarkGfm, remarkTaskRefs, remarkEvidenceLinks, remarkAsciiRules];
+const PLAIN_PLUGINS = [remarkGfm, remarkTaskRefs, remarkAsciiRules];
 const SECTIONED_PLUGINS = [
   remarkGfm,
   remarkTaskRefs,
   remarkEvidenceLinks,
+  remarkAsciiRules,
+  remarkSections,
+];
+const PLAIN_SECTIONED_PLUGINS = [
+  remarkGfm,
+  remarkTaskRefs,
   remarkAsciiRules,
   remarkSections,
 ];
@@ -381,6 +409,7 @@ export function Markdown({
   sections,
   taskId,
   scope = "notes",
+  evidence = true,
 }: {
   children: string;
   inline?: boolean;
@@ -392,10 +421,20 @@ export function Markdown({
   /** Which panel this prose sits in, so a failed evidence click reports itself
    *  there rather than somewhere else on screen. */
   scope?: NoticeScope;
+  /** Whether bare paths, shas and PR numbers become clickable. On for notes and
+   *  the Activity feed; off for comments, which the spec kept out of scope. */
+  evidence?: boolean;
 }) {
+  const plugins = sections
+    ? evidence
+      ? SECTIONED_PLUGINS
+      : PLAIN_SECTIONED_PLUGINS
+    : evidence
+      ? PLUGINS
+      : PLAIN_PLUGINS;
   const rendered = (
     <ReactMarkdown
-      remarkPlugins={sections ? SECTIONED_PLUGINS : PLUGINS}
+      remarkPlugins={plugins}
       urlTransform={taskUrlTransform}
       components={sections ? SECTIONED_COMPONENTS : inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS}
     >
