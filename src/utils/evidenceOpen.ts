@@ -158,16 +158,30 @@ export async function openEvidence(
  *  a dozen shas, and they all resolve to the same answer. */
 const remoteCache = new Map<string, RepoBase | null>();
 
-/** Where a sha or #NN on this task points: its own links first (they outlive
- *  the worktree), then the claim's git remote. Null means the token stays
- *  prose — better than a link to a repo we guessed at. */
+/**
+ * Where a sha or #NN on this task points.
+ *
+ * The git remote comes first, because it is the one source an agent cannot
+ * author: it is read from the repository on disk. Links are the fallback for a
+ * task whose worktree is gone — they keep an archived card working, but they
+ * were written over MCP, so a card with a `commit`-kinded link to
+ * `https://evil.example/a/b/commit/…` can still aim its shas there (fourth
+ * Codex verify pass on TIL-203). That is the residual: no execution, but a
+ * click can land somewhere the label didn't suggest, which is why the full URL
+ * is always in the link's tooltip.
+ *
+ * Null means the token stays prose — better than a repo we guessed at.
+ */
 export async function resolveRepoBase(
   links: TaskLink[],
   cwd: string | null,
 ): Promise<RepoBase | null> {
-  const fromLinks = repoBaseFromLinks(links);
-  if (fromLinks) return fromLinks;
-  if (!cwd) return null;
+  const fromRemote = cwd ? await remoteBase(cwd) : null;
+  if (fromRemote) return fromRemote;
+  return repoBaseFromLinks(links);
+}
+
+async function remoteBase(cwd: string): Promise<RepoBase | null> {
   const cached = remoteCache.get(cwd);
   if (cached !== undefined) return cached;
   let base: RepoBase | null = null;

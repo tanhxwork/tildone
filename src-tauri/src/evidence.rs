@@ -66,16 +66,43 @@ fn vet(path: &Path, home: &Path) -> Result<PathBuf, String> {
 /// third Codex verify pass on TIL-203). So the read opens once, refuses to
 /// follow a symlink at the final component, and takes its size and its bytes
 /// from that one open handle.
-fn read_vetted(real: &Path) -> Result<Vec<u8>, String> {
+fn read_vetted(real: &Path, home: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_NOFOLLOW);
+        // O_NOFOLLOW: no symlink at the final component. O_NONBLOCK: a FIFO
+        // swapped in for the file would otherwise park `open` forever, waiting
+        // for a writer that never comes.
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = opts.open(real).map_err(|e| e.to_string())?;
+
+    // Ask the *descriptor* where it landed, and judge that. O_NOFOLLOW guards
+    // only the last component, so swapping a parent directory for a symlink
+    // between the check and the open still redirected the read out of $HOME —
+    // the path was vetted, but a different file was opened (fourth Codex verify
+    // pass on TIL-203). What we opened is the only thing worth checking.
+    #[cfg(target_os = "macos")]
+    {
+        let opened = path_of(&file).ok_or("cannot identify the opened file")?;
+        if !opened.starts_with(home) {
+            return Err("outside the home directory".into());
+        }
+        let ext = opened
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+            return Err("not a previewable image".into());
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = home;
+
     let meta = file.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a file".into());
@@ -95,12 +122,26 @@ fn read_vetted(real: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Where an open descriptor actually points, straight from the kernel — the one
+/// answer a racing rename cannot change out from under us.
+#[cfg(target_os = "macos")]
+fn path_of(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if rc == -1 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    Some(PathBuf::from(String::from_utf8_lossy(&buf[..end]).into_owned()))
+}
+
 /// Read one image named as evidence in a task's notes, for the lightbox.
 #[tauri::command]
 pub fn read_evidence_image(path: String) -> Result<tauri::ipc::Response, String> {
     let home = home_dir().ok_or("no home directory")?;
     let real = vet(Path::new(&path), &home)?;
-    Ok(tauri::ipc::Response::new(read_vetted(&real)?))
+    Ok(tauri::ipc::Response::new(read_vetted(&real, &home)?))
 }
 
 /// `git remote get-url origin` for a claim's working directory — the fallback
@@ -226,7 +267,47 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&secret, &shot).unwrap();
 
-        assert!(read_vetted(&vetted).is_err(), "the read followed the swap");
+        assert!(read_vetted(&vetted, &home).is_err(), "the read followed the swap");
+    }
+
+    /// O_NOFOLLOW guards only the last component, so the parent has to be
+    /// judged too — from the descriptor, after the open (fourth verify pass).
+    #[test]
+    fn the_read_refuses_a_parent_directory_swapped_for_a_link_outside_home() {
+        let home = scratch("parent-swap");
+        let outside = scratch("parent-swap-outside");
+        write(&outside.join("shot.png"), b"secret");
+        let dir = home.join("d");
+        let shot = dir.join("shot.png");
+        write(&shot, b"real");
+
+        let vetted = vet(&shot, &home).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+
+        // The name still resolves — to a regular, correctly-named png outside
+        // the home directory. Only the descriptor's own path catches it.
+        assert!(
+            read_vetted(&vetted, &home).is_err(),
+            "the read followed a swapped parent directory"
+        );
+    }
+
+    /// A FIFO in place of the file would park `open` forever without O_NONBLOCK.
+    #[test]
+    fn the_read_refuses_a_fifo_swapped_in_after_the_check() {
+        let home = scratch("fifo");
+        let shot = home.join("shot.png");
+        write(&shot, b"real");
+        let vetted = vet(&shot, &home).unwrap();
+        std::fs::remove_file(&shot).unwrap();
+        #[cfg(unix)]
+        {
+            let c = std::ffi::CString::new(shot.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        assert!(read_vetted(&vetted, &home).is_err());
     }
 
     #[test]
@@ -235,7 +316,7 @@ mod tests {
         let shot = home.join("shot.png");
         write(&shot, b"pixels");
         let vetted = vet(&shot, &home).unwrap();
-        assert_eq!(read_vetted(&vetted).unwrap(), b"pixels");
+        assert_eq!(read_vetted(&vetted, &home).unwrap(), b"pixels");
     }
 
     /// Size is judged on the handle that is actually read, and the read itself
@@ -247,6 +328,6 @@ mod tests {
         write(&shot, b"small");
         let vetted = vet(&shot, &home).unwrap();
         write(&shot, &vec![0u8; (MAX_BYTES + 1) as usize]);
-        assert!(read_vetted(&vetted).is_err());
+        assert!(read_vetted(&vetted, &home).is_err());
     }
 }
