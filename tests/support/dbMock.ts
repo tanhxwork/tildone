@@ -83,6 +83,8 @@ const DEFAULTS = {
   }),
   fetchComments: async (_taskId: number): Promise<Comment[]> => [],
 
+  fetchClaimCwd: async (_taskId: number): Promise<string | null> => null,
+
   addLink: async (
     taskId: number,
     url: string,

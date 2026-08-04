@@ -168,4 +168,25 @@ describe("parseEvidenceUrl", () => {
     expect(parseEvidenceUrl("https://example.com")).toBeNull();
     expect(parseEvidenceUrl("tildone:task/3")).toBeNull();
   });
+
+  // The sentinel is not a capability: markdown lets an agent write the URL by
+  // hand, so a link that never went through the token grammar must not inherit
+  // its trust. Found by the post-commit review of aadeba9.
+  it("refuses a hand-written sentinel the grammar would never emit", () => {
+    for (const url of [
+      "tildone:file/%2Fbin%2Fsh",
+      "tildone:file/%2FApplications%2FEvil.app",
+      "tildone:file/..%2F..%2Fetc%2Fpasswd.txt",
+      "tildone:file/~%2FDownloads%2Fpayload.dmg",
+      "tildone:sha/deadbeef", // no digit — hex-shaped, but not a sha
+      "tildone:pr/notanumber",
+    ]) {
+      expect(parseEvidenceUrl(url)).toBeNull();
+    }
+  });
+
+  it("does not turn a hand-written sentinel into a live link", () => {
+    // The url transform strips it, leaving prose rather than a click.
+    expect(hrefs("[open me](tildone:file/%2Fbin%2Fsh)")).toEqual([""]);
+  });
 });

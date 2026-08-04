@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { TaskLink } from "../types";
-import { isRevealOnlyEvidence } from "./links";
+import { EVIDENCE_EXTENSIONS, isRevealOnlyEvidence } from "./links";
 import { braceExpand } from "./markdownEvidence";
 import { repoBaseFromLinks, repoBaseFromRemote, type RepoBase } from "./repoUrl";
 
@@ -38,6 +38,13 @@ function basename(path: string): string {
 
 export function isPreviewableImage(path: string): boolean {
   return PREVIEWABLE.has(extensionOf(path));
+}
+
+/** May this path be handed to the OS at all? The allowlist — shared with
+ *  attached file evidence and with agent.rs — never admits an executable, a
+ *  script, or a bundle. */
+export function isEvidenceFile(path: string): boolean {
+  return !path.split("/").includes("..") && EVIDENCE_EXTENSIONS.has(extensionOf(path));
 }
 
 let homeCache: string | null = null;
@@ -91,10 +98,16 @@ export async function openEvidence(
   reveal: boolean,
   deps: EvidenceOpenDeps,
 ): Promise<string | null> {
+  // Second gate, deliberately redundant with the token grammar: this function
+  // hands a path to the OS, so it re-checks the allowlist itself rather than
+  // trusting that whoever called it did (post-commit review of aadeba9).
+  if (!isEvidenceFile(raw)) return null;
+
   const paths = await resolveEvidencePaths(raw, cwd);
   if (paths.length === 0) {
     return "No working directory is known for this task, so this path can't be resolved.";
   }
+  if (!paths.every(isEvidenceFile)) return null;
 
   if (reveal || isRevealOnlyEvidence(paths[0])) {
     try {

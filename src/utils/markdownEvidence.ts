@@ -34,16 +34,30 @@ export function evidenceUrl(kind: EvidenceKind, value: string): string {
   return scheme + encodeURIComponent(value);
 }
 
-/** The evidence reference a sentinel URL addresses, or null if it isn't one. */
+/**
+ * The evidence reference a sentinel URL addresses, or null if it isn't one.
+ *
+ * The sentinel is not a capability. Notes are agent-writable, and markdown lets
+ * an agent hand-write the URL directly — `[shot](tildone:file/%2Fbin%2Fsh)` —
+ * so a URL that merely *looks* like one of ours would otherwise walk straight
+ * past the token grammar that is the entire safety model (flagged by the
+ * post-commit review of aadeba9). Every parse therefore re-runs the classifier
+ * and keeps only what the plugin itself would have produced.
+ */
 export function parseEvidenceUrl(url: string): EvidenceRef | null {
   for (const [scheme, kind] of SCHEMES) {
-    if (url.startsWith(scheme)) {
-      try {
-        return { kind, value: decodeURIComponent(url.slice(scheme.length)) };
-      } catch {
-        return null;
-      }
+    if (!url.startsWith(scheme)) continue;
+    let value: string;
+    try {
+      value = decodeURIComponent(url.slice(scheme.length));
+    } catch {
+      return null;
     }
+    // `#` for a PR is the shape classifyToken sees in prose; the sentinel
+    // carries the bare number.
+    const back = classifyToken(kind === "pr" ? `#${value}` : value);
+    if (!back || back.kind !== kind || back.value !== value) return null;
+    return back;
   }
   return null;
 }
