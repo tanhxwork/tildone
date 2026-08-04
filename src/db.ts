@@ -170,6 +170,23 @@ export async function fetchComments(taskId: number): Promise<Comment[]> {
   );
 }
 
+/**
+ * The working directory a task was most recently claimed in.
+ *
+ * Live presence carries the same field, but only while the agent server is
+ * running — and a relative screenshot path in a year-old note must still
+ * resolve with agent access switched off. The claim row outlives both the
+ * session and the server, so evidence links read it straight from the table.
+ */
+export async function fetchClaimCwd(taskId: number): Promise<string | null> {
+  const d = await getDb();
+  const rows = await d.select<{ cwd: string | null }[]>(
+    "SELECT cwd FROM agent_claims WHERE task_id = $1 AND cwd IS NOT NULL ORDER BY claimed_at DESC LIMIT 1",
+    [taskId],
+  );
+  return rows[0]?.cwd ?? null;
+}
+
 export async function addLink(
   taskId: number,
   url: string,

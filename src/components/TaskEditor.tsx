@@ -59,6 +59,7 @@ import {
   type Resumable,
 } from "../hostStore";
 import { Markdown } from "./Markdown";
+import { EvidenceNotice } from "./EvidenceNotice";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
@@ -1366,12 +1367,15 @@ export function TaskEditor() {
                         </span>
                       )}
                       <span className="detail-activity-label">
-                        <Markdown inline>{entry.label}</Markdown>
+                        <Markdown inline taskId={task.id} scope="activity">
+                          {entry.label}
+                        </Markdown>
                       </span>
                     </div>
                   );
                 })}
               </div>
+              <EvidenceNotice scope="activity" />
             </section>
           )}
         </div>

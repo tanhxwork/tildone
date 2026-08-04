@@ -2,6 +2,7 @@ mod agent;
 mod ai;
 mod artifacts;
 mod drops;
+mod evidence;
 mod forge;
 mod hookinstall;
 mod host;
@@ -339,6 +340,8 @@ pub fn run() {
             hookinstall::hook_install,
             hookinstall::hook_uninstall,
             icons::discover_project_icon,
+            evidence::read_evidence_image,
+            evidence::git_remote_url,
             debug_trace,
         ])
         .build(tauri::generate_context!())

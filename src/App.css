@@ -4015,6 +4015,45 @@ textarea:focus-visible,
   font-weight: 500;
 }
 
+/* Evidence an agent named in prose — a path, a sha, a PR. The icon is what
+   separates "this is a thing you can open" from ordinary link-blue prose, so it
+   rides with the text: inline-flex keeps icon and label on one line, and the
+   whole token wraps as a unit rather than orphaning the icon at a line end. */
+.md-evidence {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.md-evidence-icon {
+  display: inline-flex;
+  align-self: center;
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.md-evidence:hover .md-evidence-icon {
+  color: var(--accent);
+}
+
+/* A brace set is several files behind one token; say how many rather than
+   pretending the click opens one thing. */
+.md-evidence-count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* A token we recognised but cannot resolve — no claimed cwd, no repo. It reads
+   as the prose it is; the tooltip carries the reason. */
+.md-evidence-inert {
+  color: inherit;
+  cursor: help;
+  text-decoration: underline dotted var(--border);
+  text-underline-offset: 2px;
+}
+
 /* An embedded attachment sits in the text column at its natural size, capped so
    a screenshot never dominates the notes — the lightbox is where it goes big. */
 .md-image {

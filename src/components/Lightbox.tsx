@@ -6,12 +6,12 @@ import { IconChevronLeft, IconChevronRight, IconX } from "./Icons";
 /** Full-size image view over the standard scrim. Esc, click-outside, or ✕
  *  closes; arrow keys step through the task's images. */
 export function Lightbox() {
-  const { images, index, close, step } = useLightbox();
+  const { items, index, close, step } = useLightbox();
   useImageBase();
-  const image = images[index];
+  const item = items[index];
 
   useEffect(() => {
-    if (!image) return;
+    if (!item) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") close();
       else if (e.key === "ArrowLeft") step(-1);
@@ -23,30 +23,31 @@ export function Lightbox() {
     // Capture phase so Escape closes the image, not whatever editor sits below.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [image, close, step]);
+  }, [item, close, step]);
 
-  if (!image) return null;
-  const src = imageSrc(image);
+  if (!item) return null;
+  const filename = item.kind === "attached" ? item.image.filename : item.filename;
+  const src = item.kind === "attached" ? imageSrc(item.image) : item.src;
 
   return (
     <div
       className="lightbox-overlay"
       role="dialog"
-      aria-label={image.filename}
+      aria-label={filename}
       onClick={close}
     >
       {src && (
         <img
           className="lightbox-image"
           src={src}
-          alt={image.filename}
+          alt={filename}
           onClick={(e) => e.stopPropagation()}
         />
       )}
       <button type="button" className="lightbox-close" aria-label="Close" onClick={close}>
         <IconX size={14} />
       </button>
-      {images.length > 1 && (
+      {items.length > 1 && (
         <>
           <button
             type="button"
@@ -71,7 +72,7 @@ export function Lightbox() {
             <IconChevronRight size={16} />
           </button>
           <span className="lightbox-count">
-            {index + 1} / {images.length}
+            {index + 1} / {items.length}
           </span>
         </>
       )}

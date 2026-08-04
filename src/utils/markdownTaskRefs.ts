@@ -1,6 +1,7 @@
 import { defaultUrlTransform } from "react-markdown";
 import { visit } from "unist-util-visit";
 import type { Root, Text } from "mdast";
+import { parseEvidenceUrl } from "./markdownEvidence";
 
 // [[task 33]] -> an in-app link to that task. The sentinel scheme below is
 // resolved by the custom <a> renderer in Markdown.tsx; pulling the plugin out
@@ -81,5 +82,9 @@ export function remarkTaskRefs() {
 // to the default transform, which still neutralises javascript:/data: URLs.
 export function taskUrlTransform(url: string) {
   if (url.startsWith(TASK_SCHEME) || imageRefId(url) !== null) return url;
+  // Evidence sentinels are resolved by the <a> renderer against the owning
+  // task — they never navigate, and the click still passes through the file
+  // allowlist and the http-only check before anything is opened.
+  if (parseEvidenceUrl(url) !== null) return url;
   return defaultUrlTransform(url);
 }

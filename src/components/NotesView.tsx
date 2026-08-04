@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { parseNoteSections, shouldAutoCollapse } from "../utils/markdownSections";
 import { IconChevronDown, IconList } from "./Icons";
 import { Markdown } from "./Markdown";
+import { EvidenceNotice } from "./EvidenceNotice";
 
 // Per-task expand/collapse memory for the lifetime of the app run — by
 // design not persisted (spec 2026-07-17): a restart resets to the default,
@@ -202,6 +203,7 @@ export function NotesView({
         <Markdown taskId={taskId} sections={sectioned ? sectionUi : undefined}>
           {source}
         </Markdown>
+        <EvidenceNotice scope="notes" />
       </div>
     </div>
   );
