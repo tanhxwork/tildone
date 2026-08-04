@@ -116,6 +116,20 @@ describe("brace sets", () => {
     expect(hrefs("shots/{light,dark}/shot.png")).toEqual([]);
   });
 
+  // Malformed sets used to slip through: only braces *after* the chosen close
+  // were checked (third Codex verify pass, TIL-203).
+  it("refuses stray, nested and doubled braces", () => {
+    for (const token of [
+      "docs/x}y{a,b}.png",
+      "docs/x{{a,b}.png",
+      "docs/{a,b}{c,d}.png",
+      "docs/x}.png",
+    ]) {
+      expect(hrefs(token)).toEqual([]);
+      expect(braceExpand(token)).toEqual([]);
+    }
+  });
+
   it("allows a set that spans the extension", () => {
     expect(hrefs("docs/report.{md,html}")).toEqual([
       "tildone:file/docs%2Freport.%7Bmd%2Chtml%7D",

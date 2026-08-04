@@ -56,16 +56,51 @@ fn vet(path: &Path, home: &Path) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// Read the file the vetted path named — the *same* file, not whatever now
+/// answers to that name.
+///
+/// Checking a path and then reading it by name is two resolutions with a gap
+/// between them, and the gap is enough: swap the file for a symlink after the
+/// check and the read follows it out of `$HOME`, or swap in a huge file and the
+/// size cap is judged on a file that no longer exists (TOCTOU, found by the
+/// third Codex verify pass on TIL-203). So the read opens once, refuses to
+/// follow a symlink at the final component, and takes its size and its bytes
+/// from that one open handle.
+fn read_vetted(real: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = opts.open(real).map_err(|e| e.to_string())?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".into());
+    }
+    if meta.len() > MAX_BYTES {
+        return Err("too large to preview".into());
+    }
+    // Bounded regardless of what the handle turns out to hold: `take` caps the
+    // allocation instead of trusting the size we just read.
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("too large to preview".into());
+    }
+    Ok(bytes)
+}
+
 /// Read one image named as evidence in a task's notes, for the lightbox.
 #[tauri::command]
 pub fn read_evidence_image(path: String) -> Result<tauri::ipc::Response, String> {
     let home = home_dir().ok_or("no home directory")?;
     let real = vet(Path::new(&path), &home)?;
-    let bytes = std::fs::read(&real).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err("too large to preview".into());
-    }
-    Ok(tauri::ipc::Response::new(bytes))
+    Ok(tauri::ipc::Response::new(read_vetted(&real)?))
 }
 
 /// `git remote get-url origin` for a claim's working directory — the fallback
@@ -172,5 +207,46 @@ mod tests {
     fn refuses_a_missing_file() {
         let home = scratch("missing");
         assert!(vet(&home.join("gone.png"), &home).is_err());
+    }
+
+    /// The read must not follow a symlink swapped in after the check — the
+    /// TOCTOU the third verify pass found.
+    #[test]
+    fn the_read_refuses_a_symlink_swapped_in_after_the_check() {
+        let home = scratch("toctou");
+        let outside = scratch("toctou-outside");
+        let secret = outside.join("secret.png");
+        write(&secret, b"secret");
+        let shot = home.join("shot.png");
+        write(&shot, b"real");
+
+        // Vet the honest file, then swap it for a link to the secret one.
+        let vetted = vet(&shot, &home).unwrap();
+        std::fs::remove_file(&shot).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, &shot).unwrap();
+
+        assert!(read_vetted(&vetted).is_err(), "the read followed the swap");
+    }
+
+    #[test]
+    fn the_read_returns_the_bytes_of_an_honest_file() {
+        let home = scratch("read-ok");
+        let shot = home.join("shot.png");
+        write(&shot, b"pixels");
+        let vetted = vet(&shot, &home).unwrap();
+        assert_eq!(read_vetted(&vetted).unwrap(), b"pixels");
+    }
+
+    /// Size is judged on the handle that is actually read, and the read itself
+    /// is capped — a file that grows between check and read cannot slip past.
+    #[test]
+    fn the_read_caps_a_file_that_grew_after_the_check() {
+        let home = scratch("grew");
+        let shot = home.join("shot.png");
+        write(&shot, b"small");
+        let vetted = vet(&shot, &home).unwrap();
+        write(&shot, &vec![0u8; (MAX_BYTES + 1) as usize]);
+        assert!(read_vetted(&vetted).is_err());
     }
 }

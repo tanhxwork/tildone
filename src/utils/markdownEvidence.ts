@@ -66,14 +66,20 @@ export function parseEvidenceUrl(url: string): EvidenceRef | null {
  *  a run produced the same shot three times. A malformed or nested set yields
  *  nothing, which is what disqualifies the token from linking at all. */
 export function braceExpand(path: string): string[] {
+  const opens = [...path].filter((c) => c === "{").length;
+  const closes = [...path].filter((c) => c === "}").length;
+  if (opens === 0 && closes === 0) return [path];
+  // Exactly one set, opened before it closes. Anything else — a stray `}`, a
+  // nested `{{`, two sets — is not a shape an agent writes on purpose, and
+  // accepting it made tokens like `x}y{a,b}.png` linkify (found by the third
+  // Codex verify pass on TIL-203).
+  if (opens !== 1 || closes !== 1) return [];
   const open = path.indexOf("{");
-  if (open === -1) return path.includes("}") ? [] : [path];
-  const close = path.indexOf("}", open);
-  if (close === -1) return [];
-  const rest = path.slice(close + 1);
-  if (rest.includes("{") || rest.includes("}")) return [];
+  const close = path.indexOf("}");
+  if (close < open) return [];
   const alts = path.slice(open + 1, close).split(",");
   if (alts.some((a) => a === "" || a.includes("/"))) return [];
+  const rest = path.slice(close + 1);
   return alts.map((a) => path.slice(0, open) + a + rest);
 }
 

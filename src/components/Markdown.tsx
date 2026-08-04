@@ -41,7 +41,14 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   // the sentinel can be hand-written as an ordinary markdown link, and this
   // renderer would still activate it (found by the Codex verify pass on
   // TIL-203). The surface decides here, not the plugin chain.
-  const evidence = href && owner.evidence ? parseEvidenceUrl(href) : null;
+  const sentinel = href ? parseEvidenceUrl(href) : null;
+  // On a surface without evidence, a sentinel is not merely inactive — it must
+  // not survive as an anchor at all, or it stays available to a context-menu
+  // "open link" (found by the third Codex verify pass on TIL-203).
+  if (sentinel && !owner.evidence) {
+    return <span className="md-evidence-inert">{children}</span>;
+  }
+  const evidence = owner.evidence ? sentinel : null;
 
   // The link must also *say* what it opens. Our plugin always labels a token
   // with the token itself, so requiring that is a round-trip check — and it is
@@ -78,7 +85,8 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
   const external = href ? isHttpUrl(href) : false;
   // A bare URL an agent typed autolinks to itself; give it the same leading
   // icon the other evidence carries, so a line of evidence reads as one list.
-  const bare = external && childText(children) === href;
+  // Only where evidence belongs, though — a comment's links stay plain.
+  const bare = external && owner.evidence && childText(children) === href;
   return (
     <a
       className={bare ? "md-link md-evidence" : "md-link"}
@@ -242,6 +250,11 @@ function useClaimCwd(taskId: number | null): string | null {
   const [fetched, setFetched] = useState<{ taskId: number; cwd: string | null } | null>(
     null,
   );
+  // Re-asked whenever presence refreshes (the poll replaces this map wholesale),
+  // so a task re-claimed in another worktree is picked up on a card that has
+  // been sitting open. A TTL on the cache alone only helped on remount — the
+  // mounted link kept its first answer forever (third Codex verify pass).
+  const presenceTick = useStore((s) => s.live);
   useEffect(() => {
     if (taskId === null || fromPresence) return;
     const known = cachedCwd(taskId);
@@ -257,7 +270,7 @@ function useClaimCwd(taskId: number | null): string | null {
     return () => {
       live = false;
     };
-  }, [taskId, fromPresence]);
+  }, [taskId, fromPresence, presenceTick]);
   if (fromPresence) return fromPresence;
   if (taskId === null) return null;
   if (fetched?.taskId === taskId) return fetched.cwd;

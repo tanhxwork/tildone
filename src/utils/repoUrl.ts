@@ -51,9 +51,12 @@ export function repoBaseFromUrl(url: string, strict = false): RepoBase | null {
   }
   const gitlab = url.includes("/-/") || parsed.hostname.includes("gitlab");
   const segments = parsed.pathname.split("/").filter(Boolean);
+  // A marker only counts *after* owner/repo: `github.com/owner/tree/tree/main`
+  // is a repository actually named "tree", and cutting at the first match
+  // dropped it (found by the third Codex verify pass on TIL-203).
   const cut = url.includes("/-/")
     ? segments.indexOf("-")
-    : segments.findIndex((s) => MARKERS.has(s));
+    : segments.findIndex((s, i) => i >= 2 && MARKERS.has(s));
   if (strict && cut === -1) return null;
   const repo = (cut === -1 ? segments : segments.slice(0, cut)).map(stripGitSuffix);
   if (repo.length < 2) return null;

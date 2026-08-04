@@ -45,6 +45,14 @@ describe("repoBaseFromUrl", () => {
     });
   });
 
+  // A repo can be named after a marker word; cutting at the first match lost it.
+  it("keeps a repo whose name is itself a marker word", () => {
+    expect(repoBaseFromUrl("https://github.com/owner/tree/tree/main", true)).toEqual({
+      base: "https://github.com/owner/tree",
+      gitlab: false,
+    });
+  });
+
   it("is null for non-repo and non-http urls", () => {
     expect(repoBaseFromUrl("https://example.com")).toBeNull();
     expect(repoBaseFromUrl("/Users/x/shot.png")).toBeNull();

@@ -50,5 +50,14 @@ describe("surfaces that don't want evidence", () => {
       evidence: false,
     });
     expect(live(html)).toBe(false);
+    // And not as an anchor at all: an inactive href is still openable from a
+    // context menu.
+    expect(html).not.toContain("tildone:file/");
+    expect(html).not.toContain("<a");
+  });
+
+  it("leaves a bare url in a comment plain, without the evidence icon", () => {
+    const html = render("https://example.com/a", { evidence: false });
+    expect(html).not.toContain("md-evidence");
   });
 });
