@@ -58,8 +58,17 @@ fn open_beneath(canonical: &Path) -> Result<std::fs::File, String> {
         return Err("not a file".into());
     }
 
+    // O_CLOEXEC throughout: this app spawns processes (git, PTY sessions), and a
+    // descriptor without it is inherited by every one of them — a handle to a
+    // directory or to the user's file, handed to an unrelated child (seventh
+    // Codex verify pass on TIL-203).
     let root = CString::new("/").unwrap();
-    let mut dir = unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    let mut dir = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
     if dir < 0 {
         return Err("cannot open the root directory".into());
     }
@@ -75,11 +84,16 @@ fn open_beneath(canonical: &Path) -> Result<std::fs::File, String> {
         };
         let flags = libc::O_RDONLY
             | libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
             | if last { libc::O_NONBLOCK } else { libc::O_DIRECTORY };
         let next = unsafe { libc::openat(dir, c.as_ptr(), flags) };
+        // Take the error *before* closing: close can fail in its own right
+        // (EINTR), and then the message would describe the close rather than
+        // the refusal that matters (seventh Codex verify pass).
+        let failure = (next < 0).then(std::io::Error::last_os_error);
         unsafe { libc::close(dir) };
-        if next < 0 {
-            return Err(std::io::Error::last_os_error().to_string());
+        if let Some(err) = failure {
+            return Err(err.to_string());
         }
         dir = next;
     }
@@ -312,6 +326,21 @@ mod tests {
     }
 
     /// A directory cannot masquerade as an image.
+    /// The app spawns children (git, PTY sessions); a descriptor without
+    /// close-on-exec rides along into them.
+    #[test]
+    #[cfg(unix)]
+    fn the_opened_handle_does_not_leak_into_spawned_processes() {
+        use std::os::unix::io::AsRawFd;
+        let home = scratch("cloexec");
+        let shot = home.join("shot.png");
+        write(&shot, b"pixels");
+        let file = open_vetted(&shot, &home).unwrap();
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::FD_CLOEXEC, libc::FD_CLOEXEC);
+    }
+
     #[test]
     fn refuses_a_directory_named_like_an_image() {
         let home = scratch("dir");
