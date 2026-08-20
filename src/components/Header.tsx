@@ -19,6 +19,7 @@ import {
 export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | null> }) {
   const {
     projects,
+    goals,
     tags,
     selection,
     viewMode,
@@ -39,6 +40,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
 
   let title = "";
   let headerProject: Project | undefined;
+  let headerGoalName: string | null = null;
   switch (selection.type) {
     case "today":
       title = "Today";
@@ -61,9 +63,19 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "completed":
       title = "Completed";
       break;
+    case "goals":
+      title = "Goals";
+      break;
     case "project": {
       headerProject = projects.find((p) => p.id === selection.projectId);
       title = headerProject?.name ?? "Project";
+      break;
+    }
+    case "goal": {
+      const goal = goals.find((g) => g.id === selection.goalId);
+      headerProject = goal ? projects.find((p) => p.id === goal.project_id) : undefined;
+      title = headerProject?.name ?? "Project";
+      headerGoalName = goal?.name ?? "Goal";
       break;
     }
   }
@@ -77,6 +89,12 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
         <h1 className="view-title" data-tauri-drag-region>
           {headerProject && <ProjectGlyph project={headerProject} size={20} large />}
           {title}
+          {headerGoalName && (
+            <>
+              <span className="view-title-sep">/</span>
+              <span className="view-title-sub">{headerGoalName}</span>
+            </>
+          )}
         </h1>
 
         {!isPage && !railActive && (

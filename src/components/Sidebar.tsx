@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
+import { goalProgress, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
+import { GoalDialog } from "./GoalDialog";
 import {
   IconArchive,
   IconCalendar,
@@ -13,6 +15,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconColumns,
+  IconFlag,
   IconInbox,
   IconLayers,
   IconPencil,
@@ -32,12 +35,16 @@ function isSelected(a: Selection, b: Selection): boolean {
   if (a.type === "project" && b.type === "project") {
     return a.projectId === b.projectId;
   }
+  if (a.type === "goal" && b.type === "goal") {
+    return a.goalId === b.goalId;
+  }
   return true;
 }
 
 export function Sidebar() {
   const {
     projects,
+    goals,
     tasks,
     tags,
     selection,
@@ -47,11 +54,14 @@ export function Sidebar() {
     removeTag,
   } = useStore();
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
+  const [newGoalProjectId, setNewGoalProjectId] = useState<number | null>(null);
   const aiMode = useAI((s) => s.config.mode);
   const openAISettings = useAI((s) => s.openSettings);
   const openSettings = useSettings((s) => s.openSettings);
   const tagsCollapsed = useSettings((s) => s.tagsCollapsed);
   const setTagsCollapsed = useSettings((s) => s.setTagsCollapsed);
+  const projectGoalsCollapsed = useSettings((s) => s.projectGoalsCollapsed);
+  const setProjectGoalsCollapsed = useSettings((s) => s.setProjectGoalsCollapsed);
   const setTagManagerOpen = useStore((s) => s.setTagManagerOpen);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
   // Dev builds run as "Tildone Dev — <worktree>" (scripts/tauri.sh); show
@@ -100,6 +110,7 @@ export function Sidebar() {
   ];
 
   const pages: { sel: Selection; label: string; icon: ReactNode }[] = [
+    { sel: { type: "goals" }, label: "Goals", icon: <IconFlag /> },
     { sel: { type: "week" }, label: "My Week", icon: <IconColumns /> },
     { sel: { type: "review" }, label: "Review", icon: <IconChart /> },
     { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
@@ -158,30 +169,97 @@ export function Sidebar() {
         </div>
         {projects.map((project) => {
           const sel: Selection = { type: "project", projectId: project.id };
+          // Position order, same as goals load from the DB (db.ts fetchAll
+          // ORDER BY position, id) — filtering preserves it.
+          const projectGoals = goals.filter((g) => g.project_id === project.id);
+          const openGoals = projectGoals.filter((g) => g.completed_at === null);
+          const hasOpenGoals = openGoals.length > 0;
+          const expanded = hasOpenGoals && projectGoalsCollapsed[project.id] !== true;
+          const noGoalCount = hasOpenGoals ? ungoaledOpenCount(tasks, project.id) : 0;
           return (
-            <div
-              key={project.id}
-              className={`nav-item nav-project ${isSelected(selection, sel) ? "active" : ""}`}
-              onClick={() => select(sel)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && select(sel)}
-            >
-              <ProjectGlyph project={project} size={16} />
-              <span className="nav-label">{project.name}</span>
-              <button
-                className="icon-btn row-action"
-                aria-label={`Edit ${project.name}`}
-                title="Edit project"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDialog(project);
-                }}
+            <div key={project.id}>
+              <div
+                className={`nav-item nav-project ${isSelected(selection, sel) ? "active" : ""}`}
+                onClick={() => select(sel)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && select(sel)}
               >
-                <IconPencil size={13} />
-              </button>
-              {(counts.byProject.get(project.id) ?? 0) > 0 && (
-                <span className="nav-count">{counts.byProject.get(project.id)}</span>
+                {hasOpenGoals ? (
+                  <button
+                    className="icon-btn nav-chevron"
+                    aria-label={expanded ? `Collapse ${project.name} goals` : `Expand ${project.name} goals`}
+                    aria-expanded={expanded}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setProjectGoalsCollapsed(project.id, expanded);
+                    }}
+                  >
+                    {expanded ? <IconChevronDown size={11} /> : <IconChevronRight size={11} />}
+                  </button>
+                ) : (
+                  <span className="nav-chevron-spacer" aria-hidden="true" />
+                )}
+                <ProjectGlyph project={project} size={16} />
+                <span className="nav-label">{project.name}</span>
+                <button
+                  className="icon-btn row-action"
+                  aria-label={`New goal in ${project.name}`}
+                  title="New goal"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setNewGoalProjectId(project.id);
+                  }}
+                >
+                  <IconPlus size={12} />
+                </button>
+                <button
+                  className="icon-btn row-action"
+                  aria-label={`Edit ${project.name}`}
+                  title="Edit project"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDialog(project);
+                  }}
+                >
+                  <IconPencil size={13} />
+                </button>
+                {(counts.byProject.get(project.id) ?? 0) > 0 && (
+                  <span className="nav-count">{counts.byProject.get(project.id)}</span>
+                )}
+              </div>
+              {expanded && (
+                <div className="nav-goals">
+                  {openGoals.map((goal) => {
+                    const gsel: Selection = { type: "goal", goalId: goal.id };
+                    const open = goalProgress(tasks, goal.id).open;
+                    return (
+                      <div
+                        key={goal.id}
+                        className={`nav-item nav-goal ${isSelected(selection, gsel) ? "active" : ""}`}
+                        onClick={() => select(gsel)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === "Enter" && select(gsel)}
+                      >
+                        <span className="goal-glyph" style={{ color: goal.color }} aria-hidden="true" />
+                        <span className="nav-label">{goal.name}</span>
+                        {open > 0 && <span className="nav-count">{open}</span>}
+                      </div>
+                    );
+                  })}
+                  {noGoalCount > 0 && (
+                    // Not yet clickable — moving a task off a goal happens from
+                    // the task editor's goal picker for this pass; this row is
+                    // only the count (spec surface A, "out of scope unless
+                    // cheap").
+                    <div className="nav-item nav-goal nav-goal-none">
+                      <span className="goal-glyph" aria-hidden="true" />
+                      <span className="nav-label">No goal</span>
+                      <span className="nav-count">{noGoalCount}</span>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           );
@@ -293,6 +371,9 @@ export function Sidebar() {
           project={dialog === "new" ? null : dialog}
           onClose={() => setDialog(null)}
         />
+      )}
+      {newGoalProjectId !== null && (
+        <GoalDialog goal={null} projectId={newGoalProjectId} onClose={() => setNewGoalProjectId(null)} />
       )}
     </aside>
   );

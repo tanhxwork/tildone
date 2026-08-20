@@ -421,6 +421,59 @@ textarea:focus-visible,
   border-radius: 4px;
 }
 
+/* ---------- Goals (sidebar nesting, migration 025) ---------- */
+
+/* Same slot whether or not a project shows a chevron, so ProjectGlyph lines up
+   across rows — a project with no open goal has none (spec: "only when it has
+   ≥1 open goal"). */
+.nav-chevron,
+.nav-chevron-spacer {
+  width: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-chevron {
+  color: var(--text-faint);
+  transition: color 150ms;
+}
+
+.nav-chevron:hover {
+  color: var(--text-muted);
+}
+
+.nav-goals {
+  margin-bottom: 2px;
+}
+
+.nav-goal {
+  padding: 4px 8px 4px 26px;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.nav-goal-none {
+  cursor: default;
+  color: var(--text-faint);
+}
+
+.nav-goal-none:hover {
+  background: none;
+}
+
+/* A goal's identity mark — a colour-bordered square, distinct from the round
+   project dot so the two levels read apart at a glance. Sharp corners on
+   purpose: this size (9px) is small enough that any radius from the scale
+   (xs = 4, half the box) reads as a circle again, defeating the point. */
+.goal-glyph {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  flex-shrink: 0;
+}
+
 /* ---------- Tags ---------- */
 
 .tag-cloud {
@@ -513,6 +566,18 @@ textarea:focus-visible,
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.3px;
+}
+
+/* The goal view's breadcrumb suffix: "ProjectName / GoalName" — same secondary
+   weight the detail card's own breadcrumb uses. */
+.view-title-sep {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.view-title-sub {
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .header-controls {
@@ -649,6 +714,94 @@ textarea:focus-visible,
 .tag-chip.removable .tag-delete,
 .tag-chip.removable svg {
   opacity: 1;
+}
+
+/* ---------- Goal band (surface A2) ---------- */
+
+.goal-band {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.goal-band-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.goal-band-glyph {
+  margin-top: 6px;
+}
+
+.goal-band-main {
+  min-width: 0;
+}
+
+.goal-band-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.goal-band-closed {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+.goal-band-outcome {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 3px;
+  max-width: 66ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-band-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.goal-band-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.goal-band-date.overdue {
+  color: var(--doing);
+  font-weight: 600;
+}
+
+.goal-band-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.goal-band-bar-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
 }
 
 /* ---------- Quick add ---------- */
@@ -952,6 +1105,47 @@ textarea:focus-visible,
   font-size: 11px;
   color: var(--text-faint);
   max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The card's goal chip (A3): what task-meta borrows --tag-color's pattern for —
+   a per-goal custom property, set inline, so one class serves every colour.
+   Suppressed inside the goal it names (spec "Instead of surface B"). */
+.goal-chip {
+  --goal-color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--goal-color) 40%, transparent);
+  color: color-mix(in srgb, var(--goal-color) 85%, var(--text));
+  background: color-mix(in srgb, var(--goal-color) 12%, transparent);
+  font-size: 11px;
+  max-width: 140px;
+  transition: background 150ms;
+}
+
+.goal-chip:hover {
+  background: color-mix(in srgb, var(--goal-color) 20%, transparent);
+}
+
+.goal-chip.mini {
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.goal-chip-glyph {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  flex-shrink: 0;
+}
+
+.goal-chip-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1921,16 +2115,22 @@ textarea:focus-visible,
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   padding: 6px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -1942,6 +2142,14 @@ textarea:focus-visible,
 .field-hint {
   font-size: 12px;
   color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* A store rejection surfaced in a modal (e.g. GoalDialog's duplicate-name
+   guard) — same size as .field-hint, danger ink instead of muted. */
+.field-error {
+  font-size: 12px;
+  color: var(--danger);
   line-height: 1.4;
 }
 
@@ -2975,6 +3183,123 @@ textarea:focus-visible,
   width: 34px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Goals page (surface C) ---------- */
+
+.goals-view {
+  padding-top: 8px;
+  max-width: 780px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.goals-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.goal-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  text-align: left;
+}
+
+.goal-row:hover {
+  background: var(--bg-hover);
+}
+
+.goal-row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.goal-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.goal-row-outcome {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-row-project {
+  font-size: 10px;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.goal-row-project-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.goal-row-right {
+  margin-left: auto;
+  text-align: right;
+  min-width: 140px;
+  flex-shrink: 0;
+}
+
+.goal-row-num {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.goal-row-num small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.goal-row-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.goal-row-bar-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform-origin: left center;
+}
+
+.goal-row-when {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  margin-top: 3px;
+}
+
+.goal-row-when.late {
+  color: var(--doing);
+  font-weight: 600;
 }
 
 .review-clear {

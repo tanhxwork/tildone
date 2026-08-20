@@ -94,6 +94,7 @@ export function TaskEditor() {
   const {
     tasks,
     projects,
+    goals,
     tags,
     subtasks,
     activity,
@@ -117,6 +118,7 @@ export function TaskEditor() {
     comments,
     addComment,
     live,
+    setTaskGoal,
   } = useStore();
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
@@ -709,6 +711,41 @@ export function TaskEditor() {
                 ))}
               </select>
             </span>
+
+            {/* A goal requires a project (invariant 1) — absent on an Inbox
+                task rather than a disabled control with nothing to pick. */}
+            {project && (
+              <>
+                <span className="detail-prop-label">Goal</span>
+                <span>
+                  <select
+                    className="detail-value-select"
+                    value={task.goal_id ?? ""}
+                    aria-label="Goal"
+                    onChange={(e) =>
+                      void setTaskGoal(
+                        task.id,
+                        e.target.value === "" ? null : Number(e.target.value),
+                      )
+                    }
+                  >
+                    <option value="">No goal</option>
+                    {goals
+                      .filter(
+                        (g) =>
+                          g.project_id === task.project_id &&
+                          (g.completed_at === null || g.id === task.goal_id),
+                      )
+                      .map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.name}
+                          {g.completed_at !== null ? " (closed)" : ""}
+                        </option>
+                      ))}
+                  </select>
+                </span>
+              </>
+            )}
 
             <span className="detail-prop-label">Tags</span>
             <span className="detail-tags">

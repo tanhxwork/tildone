@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Comment, Project, Status, Subtask, Tag, Task, TaskImage, TaskLink } from "./types";
+import type { ActivityEntry, Comment, Goal, Project, Status, Subtask, Tag, Task, TaskImage, TaskLink } from "./types";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
 
 /**
@@ -54,6 +54,7 @@ interface TaskRow extends Omit<Task, "tag_ids"> {}
 
 export async function fetchAll(): Promise<{
   projects: Project[];
+  goals: Goal[];
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
@@ -70,11 +71,14 @@ export async function fetchAll(): Promise<{
   const projects = await d.select<Project[]>(
     "SELECT id, name, color, position, folder_path, code FROM projects ORDER BY position, id",
   );
+  const goals = await d.select<Goal[]>(
+    "SELECT id, project_id, name, notes, color, position, target_date, created_at, completed_at FROM goals ORDER BY position, id",
+  );
   const tags = await d.select<Tag[]>(
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref, unseen_at FROM tasks",
+    "SELECT id, project_id, goal_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref, unseen_at FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -114,6 +118,7 @@ export async function fetchAll(): Promise<{
   for (const row of countRows) commentCounts[row.task_id] = row.n;
   return {
     projects,
+    goals,
     tasks,
     tags,
     subtasks,
@@ -352,8 +357,80 @@ export async function deleteProject(id: number): Promise<void> {
   await d.execute("DELETE FROM projects WHERE id = $1", [id]);
 }
 
+// --- Goals (migration 025) ---------------------------------------------------
+
+export async function insertGoal(goal: {
+  project_id: number;
+  name: string;
+  notes: string;
+  color: string;
+  target_date: string | null;
+}): Promise<Goal> {
+  const d = await getDb();
+  const max = await d.select<{ p: number | null }[]>(
+    "SELECT MAX(position) AS p FROM goals WHERE project_id = $1",
+    [goal.project_id],
+  );
+  const position = (max[0]?.p ?? -1) + 1;
+  const created_at = new Date().toISOString();
+  const result = await d.execute(
+    "INSERT INTO goals (project_id, name, notes, color, position, target_date, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    [goal.project_id, goal.name, goal.notes, goal.color, position, goal.target_date, created_at],
+  );
+  return {
+    id: result.lastInsertId ?? 0,
+    ...goal,
+    position,
+    created_at,
+    completed_at: null,
+  };
+}
+
+const GOAL_COLUMNS = new Set([
+  "name",
+  "notes",
+  "color",
+  "position",
+  "target_date",
+  "completed_at",
+]);
+
+/** project_id is deliberately not writable: a goal cannot change projects, because
+ *  its tasks would then belong to a goal outside their own project. Move the tasks
+ *  instead, or make a goal in the other project. */
+export async function updateGoal(
+  id: number,
+  patch: Partial<Omit<Goal, "id" | "project_id" | "created_at">>,
+): Promise<void> {
+  const entries = Object.entries(patch).filter(([key]) => GOAL_COLUMNS.has(key));
+  if (entries.length === 0) return;
+  const d = await getDb();
+  const sets = entries.map(([key], i) => `${key} = $${i + 1}`).join(", ");
+  await d.execute(`UPDATE goals SET ${sets} WHERE id = $${entries.length + 1}`, [
+    ...entries.map(([, value]) => value),
+    id,
+  ]);
+}
+
+export async function updateGoalPositions(
+  updates: { id: number; position: number }[],
+): Promise<void> {
+  const d = await getDb();
+  for (const u of updates) {
+    await d.execute("UPDATE goals SET position = $1 WHERE id = $2", [u.position, u.id]);
+  }
+}
+
+/** Deletes the goal only. Its tasks survive with goal_id NULL — the ON DELETE
+ *  SET NULL in migration 025, which is what makes this safe to expose to agents. */
+export async function deleteGoal(id: number): Promise<void> {
+  const d = await getDb();
+  await d.execute("DELETE FROM goals WHERE id = $1", [id]);
+}
+
 export async function insertTask(task: {
   project_id: number | null;
+  goal_id?: number | null;
   title: string;
   due_date: string | null;
   status: Status;
@@ -368,9 +445,10 @@ export async function insertTask(task: {
   const number = await nextTaskNumber(d, code);
   const ref = formatRef(code, number);
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    "INSERT INTO tasks (project_id, goal_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     [
       task.project_id,
+      task.goal_id ?? null,
       task.title,
       task.due_date,
       task.status,
@@ -479,6 +557,7 @@ export async function backfillRefs(): Promise<void> {
 
 const TASK_COLUMNS = new Set([
   "project_id",
+  "goal_id",
   "title",
   "notes",
   "status",
@@ -497,7 +576,13 @@ export async function updateTask(
   id: number,
   patch: Partial<Omit<Task, "id" | "tag_ids" | "created_at">>,
 ): Promise<void> {
-  const entries = Object.entries(patch).filter(([key]) => TASK_COLUMNS.has(key));
+  // A task's goal must belong to the task's own project (migration 025). Moving
+  // the task therefore clears the goal — unless the same patch names a new one,
+  // which is how "move project and regoal in one write" stays possible. Enforced
+  // at this boundary rather than at each call site, so no caller can forget.
+  const moved = "project_id" in patch && !("goal_id" in patch);
+  const effective = moved ? { ...patch, goal_id: null } : patch;
+  const entries = Object.entries(effective).filter(([key]) => TASK_COLUMNS.has(key));
   if (entries.length === 0) return;
   const d = await getDb();
   const sets = entries.map(([key], i) => `${key} = $${i + 1}`).join(", ");

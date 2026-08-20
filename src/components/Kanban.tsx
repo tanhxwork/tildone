@@ -619,7 +619,9 @@ function CardContent({
   const links = useStore((s) => s.links);
   const images = useStore((s) => s.images);
   const projects = useStore((s) => s.projects);
+  const goals = useStore((s) => s.goals);
   const selection = useStore((s) => s.selection);
+  const select = useStore((s) => s.select);
   const commentCount = useStore((s) => s.commentCounts[task.id] ?? 0);
   const paneTaskId = usePaneStore((s) => s.target?.taskId ?? null);
   const mine = subtasks.filter((s) => s.task_id === task.id);
@@ -651,6 +653,10 @@ function CardContent({
   const showProject = selection.type !== "project" && selection.type !== "inbox";
   const project =
     task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
+  // Same suppression rule as TaskMeta's goal chip: noise inside the goal it names.
+  const goal = task.goal_id !== null ? goals.find((g) => g.id === task.goal_id) : undefined;
+  const showGoalChip =
+    goal !== undefined && !(selection.type === "goal" && selection.goalId === goal.id);
 
   // A finished card is history, not work in flight: collapse it to one line —
   // check, strikethrough title, project dot, completion time. The full meta
@@ -674,6 +680,22 @@ function CardContent({
               that never landed (TIL-84). */}
           {state && (
             <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
+          )}
+          {showGoalChip && goal && (
+            <button
+              type="button"
+              className="goal-chip mini"
+              style={{ ["--goal-color" as string]: goal.color }}
+              title={`Goal: ${goal.name}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                select({ type: "goal", goalId: goal.id });
+              }}
+            >
+              <span className="goal-chip-glyph" aria-hidden="true" />
+              <span className="goal-chip-label">{goal.name}</span>
+            </button>
           )}
           {showProject && project && (
             <span className="project-label" title={project.name}>

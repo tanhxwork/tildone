@@ -2,6 +2,7 @@ import { mock, type Mock } from "bun:test";
 import type {
   ActivityEntry,
   Comment,
+  Goal,
   Project,
   Subtask,
   Tag,
@@ -29,6 +30,7 @@ export const NOW = "2026-01-01T00:00:00.000Z";
 
 export type Board = {
   projects: Project[];
+  goals: Goal[];
   tasks: Task[];
   tags: Tag[];
   subtasks: Subtask[];
@@ -42,6 +44,7 @@ export type Board = {
 export function emptyBoard(): Board {
   return {
     projects: [],
+    goals: [],
     tasks: [],
     tags: [],
     subtasks: [],
@@ -115,6 +118,23 @@ const DEFAULTS = {
   updateProject: async (..._a: unknown[]): Promise<void> => {},
   updateProjectPositions: async (..._a: unknown[]): Promise<void> => {},
   deleteProject: async (_id: number): Promise<void> => {},
+
+  insertGoal: async (goal: {
+    project_id: number;
+    name: string;
+    notes: string;
+    color: string;
+    target_date: string | null;
+  }): Promise<Goal> => ({
+    id: nextId(),
+    ...goal,
+    position: 0,
+    created_at: NOW,
+    completed_at: null,
+  }),
+  updateGoal: async (..._a: unknown[]): Promise<void> => {},
+  updateGoalPositions: async (..._a: unknown[]): Promise<void> => {},
+  deleteGoal: async (_id: number): Promise<void> => {},
 
   insertTask: async (_task: unknown): Promise<{ id: number; number: number; ref: string }> => {
     const id = nextId();

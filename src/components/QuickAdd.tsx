@@ -24,7 +24,7 @@ import { parseQuickAdd } from "../utils/quickParse";
 import { IconPlus, IconX } from "./Icons";
 
 export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | null> }) {
-  const { selection, addTask, attachImages, addTag, projects, tags } = useStore();
+  const { selection, addTask, attachImages, addTag, projects, goals, tags } = useStore();
   const defaultProjectId = useSettings((s) => s.defaultProjectId);
   const [title, setTitle] = useState("");
   // Screenshots pasted while typing, held here until Enter creates the task they
@@ -92,9 +92,19 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
     if (!trimmed && pending.length === 0) return;
     const p = trimmed ? parseQuickAdd(trimmed, { projects, tags }) : null;
     // Parsed tokens override the view defaults; absent tokens keep them.
+    // A goal view targets that goal's project, not the default one: the goal is
+    // inside a project, so a task added here plainly belongs to it. Without this
+    // the task landed in the Inbox, and store.addTask — which only attaches the
+    // open goal when the new task's project matches it — could never attach.
+    const goalProjectId =
+      selection.type === "goal"
+        ? (goals.find((g) => g.id === selection.goalId)?.project_id ?? null)
+        : null;
     const project_id =
       p?.projectId ??
-      (selection.type === "project" ? selection.projectId : defaultProjectId);
+      (selection.type === "project"
+        ? selection.projectId
+        : (goalProjectId ?? defaultProjectId));
     const due_date =
       p?.dueDate ??
       (selection.type === "today" || selection.type === "week"
@@ -140,9 +150,11 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
         ? "due tomorrow"
         : selection.type === "project"
           ? "in this project"
-          : defaultProject
-            ? `to ${defaultProject.name}`
-            : "to inbox";
+          : selection.type === "goal"
+            ? "in this goal"
+            : defaultProject
+              ? `to ${defaultProject.name}`
+              : "to inbox";
 
   return (
     <>

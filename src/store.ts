@@ -4,6 +4,7 @@ import * as db from "./db";
 import type {
   ActivityEntry,
   Comment,
+  Goal,
   LinkKind,
   Project,
   ProjectIcon,
@@ -66,6 +67,8 @@ interface Store {
    */
   initStatus: string;
   projects: Project[];
+  /** Every goal, all projects, ordered by (position, id) — migration 025. */
+  goals: Goal[];
   /** Discovered icon per project_id; absent/dataUri-null ⇒ render the colour dot. */
   projectIcons: Record<number, ProjectIcon>;
   tasks: Task[];
@@ -148,6 +151,25 @@ interface Store {
   ) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
   moveProject: (id: number, delta: -1 | 1) => Promise<void>;
+
+  addGoal: (input: {
+    project_id: number;
+    name: string;
+    notes?: string;
+    color?: string;
+    target_date?: string | null;
+  }) => Promise<number>;
+  editGoal: (
+    id: number,
+    patch: Partial<Pick<Goal, "name" | "notes" | "color" | "target_date">>,
+  ) => Promise<void>;
+  /** Close a goal by hand, or reopen it with `false`. Never touches its tasks. */
+  setGoalCompleted: (id: number, completed: boolean) => Promise<void>;
+  /** Delete the goal; its tasks survive, returned to "No goal". */
+  removeGoal: (id: number) => Promise<void>;
+  /** Put a task in a goal (or take it out with null). Rejects a goal from another
+   *  project, and any goal at all on an Inbox task. */
+  setTaskGoal: (taskId: number, goalId: number | null) => Promise<void>;
   /** Discover one project's icon from disk (Rust); merge into projectIcons. */
   loadProjectIcon: (project: Project) => Promise<void>;
   /** Discover every project's icon; called after each full data load. */
@@ -224,7 +246,9 @@ const SELECTION_TYPES: Selection["type"][] = [
   "week",
   "review",
   "completed",
+  "goals",
   "project",
+  "goal",
 ];
 
 function loadNav(): { selection: Selection; viewMode: ViewMode } {
@@ -241,6 +265,8 @@ function loadNav(): { selection: Selection; viewMode: ViewMode } {
     if (sel && SELECTION_TYPES.includes(sel.type)) {
       if (sel.type === "project") {
         if (typeof sel.projectId === "number") selection = { type: "project", projectId: sel.projectId };
+      } else if (sel.type === "goal") {
+        if (typeof sel.goalId === "number") selection = { type: "goal", goalId: sel.goalId };
       } else {
         selection = { type: sel.type };
       }
@@ -309,6 +335,7 @@ export const useStore = create<Store>()((set, get) => ({
   initError: null,
   initStatus: "Loading…",
   projects: [],
+  goals: [],
   projectIcons: {},
   tasks: [],
   tags: [],
@@ -379,6 +406,14 @@ export const useStore = create<Store>()((set, get) => ({
         if (
           selection.type === "project" &&
           !data.projects.some((p) => p.id === selection.projectId)
+        ) {
+          set({ selection: { type: "today" } });
+        }
+        // Same guard for a restored goal — deleted in another session, or gone
+        // with its project.
+        if (
+          selection.type === "goal" &&
+          !data.goals.some((g) => g.id === selection.goalId)
         ) {
           set({ selection: { type: "today" } });
         }
@@ -543,8 +578,14 @@ export const useStore = create<Store>()((set, get) => ({
     await db.deleteProject(id);
     for (const taskId of orphaned) void removeTaskAttachments(taskId);
     set((s) => {
+      // The project's goals went with it by FK cascade (migration 025); drop them
+      // from state, and leave no selection pointing at one.
+      const removedGoalIds = new Set(
+        s.goals.filter((g) => g.project_id === id).map((g) => g.id),
+      );
       const selection =
-        s.selection.type === "project" && s.selection.projectId === id
+        (s.selection.type === "project" && s.selection.projectId === id) ||
+        (s.selection.type === "goal" && removedGoalIds.has(s.selection.goalId))
           ? ({ type: "today" } as Selection)
           : s.selection;
       const removedTaskIds = new Set(
@@ -552,11 +593,135 @@ export const useStore = create<Store>()((set, get) => ({
       );
       return {
         projects: s.projects.filter((p) => p.id !== id),
+        goals: s.goals.filter((g) => g.project_id !== id),
         tasks: s.tasks.filter((t) => t.project_id !== id),
         subtasks: s.subtasks.filter((x) => !removedTaskIds.has(x.task_id)),
         selection,
       };
     });
+  },
+
+  // --- Goals (migration 025) ------------------------------------------------
+
+  addGoal: async ({ project_id, name, notes = "", color, target_date = null }) => {
+    // Goals are addressed BY NAME over MCP (`goal: "Ship it"`, resolved within
+    // the project), so two goals sharing a name in one project would make every
+    // agent-side resolution ambiguous. The name is unique per project on both
+    // write paths — agent.rs rejects a duplicate, and this throws.
+    //
+    // Throws rather than quietly adopting the existing goal: adopting would
+    // teleport the user to a different goal than the one they were creating,
+    // with no way to tell it had happened. The dialog catches this and shows it
+    // against the name field.
+    const trimmed = name.trim();
+    const existing = get().goals.find(
+      (g) =>
+        g.project_id === project_id &&
+        g.name.trim().toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (existing) {
+      throw new Error(`This project already has a goal called “${existing.name}”.`);
+    }
+    // Default colour cycles COLOR_CHOICES against what this project already uses,
+    // so two goals in one project never look alike until the palette runs out.
+    const used = new Set(
+      get()
+        .goals.filter((g) => g.project_id === project_id)
+        .map((g) => g.color),
+    );
+    const chosen =
+      color ?? COLOR_CHOICES.find((c) => !used.has(c)) ?? COLOR_CHOICES[0];
+    const goal = await db.insertGoal({
+      project_id,
+      name: trimmed,
+      notes,
+      color: chosen,
+      target_date,
+    });
+    set((s) => ({
+      goals: [...s.goals, goal],
+      selection: { type: "goal", goalId: goal.id },
+    }));
+    return goal.id;
+  },
+
+  editGoal: async (id, patch) => {
+    // Renaming into another goal's name in the same project breaks by-name
+    // resolution just as surely as creating a duplicate would. Throws for the
+    // same reason addGoal does — a silently-refused rename looks like a save
+    // that worked until the user reopens the dialog.
+    if (patch.name !== undefined) {
+      const goal = get().goals.find((g) => g.id === id);
+      const trimmed = patch.name.trim();
+      const clash = get().goals.find(
+        (g) =>
+          g.id !== id &&
+          g.project_id === goal?.project_id &&
+          g.name.trim().toLowerCase() === trimmed.toLowerCase(),
+      );
+      if (clash) {
+        throw new Error(`This project already has a goal called “${clash.name}”.`);
+      }
+      patch = { ...patch, name: trimmed };
+    }
+    await db.updateGoal(id, patch);
+    set((s) => ({
+      goals: s.goals.map((g) => (g.id === id ? { ...g, ...patch } : g)),
+    }));
+  },
+
+  setGoalCompleted: async (id, completed) => {
+    // Manual completion, by design: a goal does not close because its last task
+    // landed, and closing it leaves every task's own status alone.
+    const completed_at = completed ? new Date().toISOString() : null;
+    await db.updateGoal(id, { completed_at });
+    set((s) => ({
+      goals: s.goals.map((g) => (g.id === id ? { ...g, completed_at } : g)),
+      // A closed goal leaves the sidebar, so a selection sitting on it would
+      // strand the view; step back to the goal's project.
+      selection:
+        completed && s.selection.type === "goal" && s.selection.goalId === id
+          ? ({
+              type: "project",
+              projectId: s.goals.find((g) => g.id === id)?.project_id ?? 0,
+            } as Selection)
+          : s.selection,
+    }));
+  },
+
+  removeGoal: async (id) => {
+    await db.deleteGoal(id);
+    set((s) => {
+      const goal = s.goals.find((g) => g.id === id);
+      return {
+        goals: s.goals.filter((g) => g.id !== id),
+        // ON DELETE SET NULL already did this in the database — mirror it in
+        // state so the cards drop their chip without waiting for a reload.
+        tasks: s.tasks.map((t) => (t.goal_id === id ? { ...t, goal_id: null } : t)),
+        selection:
+          s.selection.type === "goal" && s.selection.goalId === id
+            ? ({ type: "project", projectId: goal?.project_id ?? 0 } as Selection)
+            : s.selection,
+      };
+    });
+  },
+
+  setTaskGoal: async (taskId, goalId) => {
+    const task = get().tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (goalId !== null) {
+      // Invariant 2: the goal must be one of the task's own project's goals.
+      // Silently dropping a bad pairing beats writing a task into a goal that
+      // its project does not own.
+      const goal = get().goals.find((g) => g.id === goalId);
+      if (!goal || task.project_id === null || goal.project_id !== task.project_id) {
+        return;
+      }
+    }
+    await db.updateTask(taskId, { goal_id: goalId });
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, goal_id: goalId } : t)),
+    }));
   },
 
   moveProject: async (id, delta) => {
@@ -575,8 +740,17 @@ export const useStore = create<Store>()((set, get) => ({
     const { tasks } = get();
     const position = groupSlot(tasks, project_id, "todo");
     const created_at = new Date().toISOString();
+    // Creating a task while a goal is open puts it in that goal — the same
+    // courtesy a project view already does for project_id. Guarded on the
+    // project matching, so it can never violate invariant 2.
+    const sel = get().selection;
+    const openGoal =
+      sel.type === "goal" ? get().goals.find((g) => g.id === sel.goalId) : undefined;
+    const goal_id =
+      openGoal && openGoal.project_id === project_id ? openGoal.id : null;
     const { id, number, ref } = await db.insertTask({
       project_id,
+      goal_id,
       title,
       due_date,
       status: "todo",
@@ -589,6 +763,7 @@ export const useStore = create<Store>()((set, get) => ({
     const task: Task = {
       id,
       project_id,
+      goal_id,
       title,
       notes: "",
       status: "todo",

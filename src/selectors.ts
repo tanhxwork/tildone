@@ -1,5 +1,5 @@
 import { format } from "date-fns";
-import type { Project, Selection, Task } from "./types";
+import type { Goal, Project, Selection, Task } from "./types";
 import { todayStr } from "./utils/dates";
 import {
   cardPresence,
@@ -101,14 +101,88 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
     case "inbox":
       return live.filter((t) => t.project_id === null);
     case "all":
-    // Pages (week, review, completed) do their own slicing from the full live set.
+    // Pages (week, review, completed, goals) do their own slicing from the full
+    // live set.
     case "week":
     case "review":
     case "completed":
+    case "goals":
       return live;
     case "project":
       return live.filter((t) => t.project_id === selection.projectId);
+    case "goal":
+      return live.filter((t) => t.goal_id === selection.goalId);
   }
+}
+
+// --- Goals -------------------------------------------------------------------
+
+export interface GoalProgress {
+  /** Tasks in this goal that are done — archived completions included, because
+   *  moving a finished card off the board does not un-finish it. */
+  done: number;
+  /** Every non-trashed task in the goal. Zero means the goal is empty, which
+   *  renders as "no tasks yet" rather than as 0%. */
+  total: number;
+  /** Todo + doing — the count the sidebar row and the No-goal row show. */
+  open: number;
+}
+
+/**
+ * A goal's progress, derived on every read and never stored (migration 025), so
+ * the bar cannot drift from the tasks it describes. Trashed tasks are excluded
+ * outright: a card in the trash is not work the goal still owes.
+ *
+ * Pure. Tested in tests/goalProgress.test.ts.
+ */
+export function goalProgress(tasks: Task[], goalId: number): GoalProgress {
+  let done = 0;
+  let total = 0;
+  for (const t of tasks) {
+    if (t.deleted_at !== null || t.goal_id !== goalId) continue;
+    total += 1;
+    if (t.status === "done") done += 1;
+  }
+  return { done, total, open: total - done };
+}
+
+/** Open tasks in `projectId` carrying no goal — the sidebar's "No goal" row. */
+export function ungoaledOpenCount(tasks: Task[], projectId: number): number {
+  return tasks.filter(
+    (t) =>
+      t.deleted_at === null &&
+      t.status !== "done" &&
+      t.project_id === projectId &&
+      t.goal_id === null,
+  ).length;
+}
+
+/**
+ * Goals ordered for the Goals page: overdue first (soonest overdue leading),
+ * then targeted goals by ascending target date, then untargeted ones. Ties fall
+ * back to the goal's own position then id, so the order is stable across reloads.
+ *
+ * `today` is a local YYYY-MM-DD — the same wall-clock convention `doneBoardWindow`
+ * uses, so "overdue" flips at local midnight rather than UTC's.
+ */
+export function goalsPageOrder(goals: Goal[], today: string): Goal[] {
+  const rank = (g: Goal): number => {
+    if (g.completed_at !== null) return 3;
+    if (g.target_date === null) return 2;
+    return g.target_date < today ? 0 : 1;
+  };
+  return [...goals].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (a.target_date !== b.target_date) {
+      if (a.target_date === null) return 1;
+      if (b.target_date === null) return -1;
+      return a.target_date < b.target_date ? -1 : 1;
+    }
+    if (a.position !== b.position) return a.position - b.position;
+    return a.id - b.id;
+  });
 }
 
 export function visibleTasks(

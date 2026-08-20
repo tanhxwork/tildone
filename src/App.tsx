@@ -11,6 +11,8 @@ import { CommandPalette } from "./components/CommandPalette";
 import { Lightbox } from "./components/Lightbox";
 import { CompletedView } from "./components/CompletedView";
 import { FirstRun, firstRunDismissed } from "./components/FirstRun";
+import { GoalBand } from "./components/GoalBand";
+import { GoalsView } from "./components/GoalsView";
 import { Header } from "./components/Header";
 import { Kanban } from "./components/Kanban";
 import { QuickAdd } from "./components/QuickAdd";
@@ -352,6 +354,8 @@ function App() {
     content = <ReviewView />;
   } else if (selection.type === "completed") {
     content = <CompletedView />;
+  } else if (selection.type === "goals") {
+    content = <GoalsView />;
   } else if (viewMode === "board") {
     content = <Kanban />;
   } else if (viewMode === "table") {
@@ -373,6 +377,7 @@ function App() {
       <Sidebar />
       <main className="main">
         <Header searchRef={searchRef} />
+        {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
         {!paneActive && (!isPage || selection.type === "week") && (
           <QuickAdd inputRef={quickAddRef} />
         )}

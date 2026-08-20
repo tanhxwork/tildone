@@ -1062,6 +1062,70 @@ impl TildoneAgent {
         )))
     }
 
+    /// Like `resolve_project`, but a goal has no Inbox: "inbox" or an empty spec
+    /// resolves to an error instead of `None`, since every goal tool needs a real
+    /// project id to scope its lookup.
+    fn resolve_project_for_goal(
+        conn: &Connection,
+        spec: &str,
+    ) -> Result<Result<i64, String>, rusqlite::Error> {
+        Ok(match Self::resolve_project(conn, spec)? {
+            Ok(Some(id)) => Ok(id),
+            Ok(None) => Err(
+                "A goal requires a project — it cannot live in the Inbox. \
+                 Give an existing project name."
+                    .to_string(),
+            ),
+            Err(msg) => Err(msg),
+        })
+    }
+
+    /// Resolve a goal by name within a project (invariant 1: a goal always
+    /// belongs to exactly one project, so lookup is always scoped). An unknown
+    /// name is an error listing the project's goals — unlike a tag, a goal is
+    /// never auto-created (docs/specs/2026-08-20-goals-inside-projects.md).
+    fn resolve_goal(
+        conn: &Connection,
+        project_id: i64,
+        name: &str,
+    ) -> Result<Result<i64, String>, rusqlite::Error> {
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM goals WHERE project_id = ?1 AND name = ?2 COLLATE NOCASE",
+                rusqlite::params![project_id, name],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        if let Some(id) = found {
+            return Ok(Ok(id));
+        }
+        let mut stmt =
+            conn.prepare("SELECT name FROM goals WHERE project_id = ?1 ORDER BY position, id")?;
+        let names: Vec<String> = stmt
+            .query_map([project_id], |r| r.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(Err(format!(
+            "Unknown goal \"{name}\" in this project. Existing goals: {}. Use create_goal first.",
+            if names.is_empty() { "(none)".to_string() } else { names.join(", ") }
+        )))
+    }
+
+    /// Progress for one goal: done / total over its non-trashed tasks. Derived,
+    /// never stored (invariant 5) — archived-done tasks still count as done.
+    fn goal_progress(conn: &Connection, goal_id: i64) -> Result<(i64, i64), rusqlite::Error> {
+        conn.query_row(
+            "SELECT COUNT(*), SUM(status = 'done')
+             FROM tasks WHERE goal_id = ?1 AND deleted_at IS NULL",
+            [goal_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        )
+        .map(|(total, done)| (done, total))
+    }
+
     /// The slot a task takes when it lands in the (project_id, status) group.
     ///
     /// `done` inserts at the TOP (MIN-1), the rest append at the BOTTOM (MAX+1):
@@ -1460,13 +1524,13 @@ impl TildoneAgent {
                 &format!(
                     "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
                             t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name,
-                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END, t.ref
+                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END, t.ref, t.goal_id
                      FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
                      WHERE t.id = ?1"
                 ),
                 [id],
                 |r| {
-                    Ok(json!({
+                    Ok((json!({
                         "id": r.get::<_, i64>(0)?,
                         "ref": r.get::<_, Option<String>>(12)?,
                         "title": r.get::<_, String>(1)?,
@@ -1483,7 +1547,9 @@ impl TildoneAgent {
                         },
                         // null for a trashed task — it has no place on the board.
                         "rank": r.get::<_, Option<i64>>(11)?,
-                    }))
+                    }),
+                        r.get::<_, Option<i64>>(13)?,
+                    ))
                 },
             )
             .map(Some)
@@ -1491,7 +1557,7 @@ impl TildoneAgent {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 other => Err(other),
             })?;
-        let Some(mut task) = row else { return Ok(None) };
+        let Some((mut task, goal_id)) = row else { return Ok(None) };
         let mut stmt = conn.prepare(
             "SELECT tg.name FROM tags tg
              JOIN task_tags tt ON tt.tag_id = tg.id
@@ -1501,6 +1567,21 @@ impl TildoneAgent {
             .query_map([id], |r| r.get::<_, String>(0))?
             .collect::<Result<_, _>>()?;
         task["tags"] = json!(tags);
+        // The goal this task serves, plus that goal's progress — so a session
+        // picking up a card sees what larger thing it's serving, not just the task.
+        if let Some(gid) = goal_id {
+            let name: Option<String> = conn
+                .query_row("SELECT name FROM goals WHERE id = ?1", [gid], |r| r.get(0))
+                .map(Some)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })?;
+            if let Some(name) = name {
+                let (done, total) = Self::goal_progress(conn, gid)?;
+                task["goal"] = json!({"name": name, "done": done, "total": total});
+            }
+        }
         Ok(Some(task))
     }
 
@@ -1516,6 +1597,7 @@ impl TildoneAgent {
         due_date: Option<String>,
         project: Option<String>,
         tags: Option<Vec<String>>,
+        goal: Option<String>,
         agent: Option<&str>,
         claim: ClaimInfo,
     ) -> Result<CallToolResult, ErrorData> {
@@ -1643,6 +1725,38 @@ impl TildoneAgent {
                 }
                 Err(msg) => return Ok(err(msg)),
             }
+        }
+
+        // Invariant 2: a task's goal must belong to its own project. Naming a goal
+        // resolves it within the DESTINATION project of this same call (so "move
+        // project and regoal" works in one write); leaving goal unset while the
+        // project changes clears it instead of letting it point at another
+        // project's goal. Mirrors db.ts `updateTask`'s "moved" rule on the
+        // frontend's write path.
+        if let Some(goal) = &goal {
+            let trimmed = goal.trim();
+            if trimmed.is_empty() {
+                push(&mut sets, &mut params, "goal_id", Box::new(None::<i64>));
+                activity.push("Goal cleared".to_string());
+            } else {
+                match dest_project.unwrap_or(old_project_id) {
+                    None => {
+                        return Ok(err(
+                            "A goal requires a project; this task has none. Set project, or omit goal.",
+                        ))
+                    }
+                    Some(pid) => match Self::resolve_goal(&conn, pid, trimmed).map_err(db_err)? {
+                        Ok(gid) => {
+                            push(&mut sets, &mut params, "goal_id", Box::new(gid));
+                            activity.push(format!("Goal set to {trimmed}"));
+                        }
+                        Err(msg) => return Ok(err(msg)),
+                    },
+                }
+            }
+        } else if dest_project.is_some() {
+            push(&mut sets, &mut params, "goal_id", Box::new(None::<i64>));
+            activity.push("Goal cleared (project changed)".to_string());
         }
 
         // A task that changes (project, status) group would otherwise carry its old
@@ -2077,6 +2191,8 @@ struct ListTasksParams {
     due_before: Option<String>,
     #[schemars(description = "Filter by tag name")]
     tag: Option<String>,
+    #[schemars(description = "Filter by goal name")]
+    goal: Option<String>,
     #[schemars(description = "Case-insensitive substring match on title and notes")]
     search: Option<String>,
     #[schemars(description = "Include completed tasks (default false; ignored when status is \"done\")")]
@@ -2096,6 +2212,10 @@ struct CreateTaskParams {
     priority: Option<i64>,
     #[schemars(description = "Tag names; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
+    #[schemars(
+        description = "Name of a goal in the task's project. Unlike tags, an unknown goal name is an error (lists the project's goals) — never auto-created. A goal requires a project; omit for an Inbox task."
+    )]
+    goal: Option<String>,
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
     #[schemars(
@@ -2123,6 +2243,10 @@ struct UpdateTaskParams {
     project: Option<String>,
     #[schemars(description = "Replaces the full tag list; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
+    #[schemars(
+        description = "Name of a goal in the task's project, or \"\" to clear it. Unlike tags, an unknown goal name is an error (lists the project's goals) — never auto-created. Moving the task to a different project clears its goal unless this same call also names a goal in the new project."
+    )]
+    goal: Option<String>,
     #[schemars(
         description = "Your CLAUDE_CODE_SESSION_ID env var — a UUID; never a session_01…/cse_01… id from a Claude-Session URL. Send with status \"doing\" to claim the task. Omit if not a live session."
     )]
@@ -2219,6 +2343,63 @@ struct AddCommentParams {
     task_id: TaskRef,
     #[schemars(description = "The comment text. Ask a question here when blocked; the user answers with another comment and you wake via list_changes.")]
     body: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema, Default)]
+struct ListGoalsParams {
+    #[schemars(
+        description = "Resolve a single goal by its numeric id — e.g. the entity_id of a 'goal' change from list_changes, which names no project. Overrides project and include_completed; an id that no longer exists (deleted) returns an empty list."
+    )]
+    id: Option<i64>,
+    #[schemars(description = "Filter by project name or id. Omit for goals across all projects.")]
+    project: Option<String>,
+    #[schemars(description = "Include completed goals (default false)")]
+    include_completed: Option<bool>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CreateGoalParams {
+    #[schemars(description = "Project the goal belongs to (name or id). A goal always lives inside exactly one project — there is no Inbox goal.")]
+    project: String,
+    #[schemars(description = "Goal name (must not already exist in this project)")]
+    name: String,
+    #[schemars(description = "The outcome statement: what is true once this goal is done")]
+    notes: Option<String>,
+    #[schemars(description = "Hex color like #6366f1; a color is picked automatically if omitted")]
+    color: Option<String>,
+    #[schemars(description = "Target date YYYY-MM-DD")]
+    target_date: Option<String>,
+}
+
+/// Identifies an existing goal by name, scoped to its project — the same
+/// by-name convention `update_project`/tags already use, except a goal has no
+/// id-based fallback because agents never see one.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct GoalRefParams {
+    #[schemars(description = "Project the goal belongs to (name or id)")]
+    project: String,
+    #[schemars(description = "Goal name")]
+    goal: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct UpdateGoalParams {
+    #[schemars(description = "Project the goal belongs to (name or id)")]
+    project: String,
+    #[schemars(description = "Goal name to update")]
+    goal: String,
+    #[schemars(description = "New goal name")]
+    name: Option<String>,
+    #[schemars(description = "New outcome statement")]
+    notes: Option<String>,
+    #[schemars(description = "New hex color like #6366f1")]
+    color: Option<String>,
+    #[schemars(description = "Target date YYYY-MM-DD, or \"\" to clear it")]
+    target_date: Option<String>,
+    #[schemars(
+        description = "true closes the goal (sets completed_at); false reopens it (clears completed_at). Never touches its tasks' statuses — closing a goal is manual and independent of them."
+    )]
+    completed: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,6 +2527,259 @@ impl TildoneAgent {
         ok_text(format!("Project \"{name}\" and its tasks were deleted."))
     }
 
+    #[tool(
+        description = "List goals — the level between a project and a task, tracking progress toward a named outcome. By default only open goals are returned. Pass id to resolve a single goal by its numeric id (e.g. a change feed entity_id) without knowing its project."
+    )]
+    fn list_goals(
+        &self,
+        Parameters(p): Parameters<ListGoalsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let mut wheres: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(id) = p.id {
+            // An id lookup is a change-feed follow-up (entity 'goal' names no
+            // project), so it ignores every other filter — including
+            // include_completed, since the goal that just closed is exactly
+            // what a caller chasing that event wants back.
+            params.push(Box::new(id));
+            wheres.push(format!("g.id = ?{}", params.len()));
+        } else {
+            if let Some(project) = &p.project {
+                match Self::resolve_project(&conn, project).map_err(db_err)? {
+                    Ok(Some(pid)) => {
+                        params.push(Box::new(pid));
+                        wheres.push(format!("g.project_id = ?{}", params.len()));
+                    }
+                    // "inbox" (or an empty spec) can never own a goal — a real
+                    // filter that always matches nothing, not an error.
+                    Ok(None) => return ok_json(&json!([])),
+                    Err(msg) => return Ok(err(msg)),
+                }
+            }
+            if !p.include_completed.unwrap_or(false) {
+                wheres.push("g.completed_at IS NULL".to_string());
+            }
+        }
+        let where_sql =
+            if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
+        let sql = format!(
+            "SELECT g.id, g.name, p.name, g.notes, g.color, g.target_date, g.completed_at,
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL),
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.status = 'done')
+             FROM goals g JOIN projects p ON p.id = g.project_id
+             {where_sql}
+             ORDER BY p.position, p.id, g.position, g.id"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let goals: Vec<Value> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                let total: i64 = r.get(7)?;
+                let done: i64 = r.get(8)?;
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "name": r.get::<_, String>(1)?,
+                    "project": r.get::<_, String>(2)?,
+                    "outcome": r.get::<_, String>(3)?,
+                    "color": r.get::<_, String>(4)?,
+                    "target_date": r.get::<_, Option<String>>(5)?,
+                    "completed": r.get::<_, Option<String>>(6)?.is_some(),
+                    "done": done,
+                    "total": total,
+                    "open": total - done,
+                }))
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        ok_json(&json!(goals))
+    }
+
+    #[tool(
+        description = "Create a goal — a named outcome inside a project that owns tasks and tracks progress toward it. A goal always lives inside a project; there is no Inbox goal."
+    )]
+    fn create_goal(
+        &self,
+        Parameters(p): Parameters<CreateGoalParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let name = p.name.trim().to_string();
+        if name.is_empty() {
+            return Ok(err("name cannot be empty."));
+        }
+        let target_date = match p.target_date.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(d) if valid_date(d) => Some(d.to_string()),
+            Some(_) => return Ok(err("target_date must be YYYY-MM-DD.")),
+        };
+        let conn = self.db.lock().unwrap();
+        let project_id = match Self::resolve_project_for_goal(&conn, &p.project).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM goals WHERE project_id = ?1 AND name = ?2 COLLATE NOCASE)",
+                rusqlite::params![project_id, name],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        if exists {
+            return Ok(err(format!("A goal named \"{name}\" already exists in this project.")));
+        }
+        let color = p.color.unwrap_or_else(|| color_for_name(&name).to_string());
+        let position: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM goals WHERE project_id = ?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        conn.execute(
+            "INSERT INTO goals (project_id, name, notes, color, position, target_date, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                project_id,
+                name,
+                p.notes.unwrap_or_default(),
+                color,
+                position,
+                target_date,
+                now_iso()
+            ],
+        )
+        .map_err(db_err)?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.notify();
+        ok_json(&json!({"id": id, "name": name, "status": "created"}))
+    }
+
+    #[tool(
+        description = "Update a goal's name, outcome, color, target date, or close/reopen it. Closing a goal never touches its tasks' statuses."
+    )]
+    fn update_goal(
+        &self,
+        Parameters(p): Parameters<UpdateGoalParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let project_id = match Self::resolve_project_for_goal(&conn, &p.project).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        let id = match Self::resolve_goal(&conn, project_id, p.goal.trim()).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+
+        let mut sets: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let push = |sets: &mut Vec<String>,
+                        params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+                        col: &str,
+                        v: Box<dyn rusqlite::types::ToSql>| {
+            params.push(v);
+            sets.push(format!("{col} = ?{}", params.len()));
+        };
+
+        if let Some(name) = &p.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Ok(err("name cannot be empty."));
+            }
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM goals WHERE project_id = ?1 AND name = ?2 COLLATE NOCASE AND id <> ?3)",
+                    rusqlite::params![project_id, name, id],
+                    |r| r.get(0),
+                )
+                .map_err(db_err)?;
+            if exists {
+                return Ok(err(format!("A goal named \"{name}\" already exists in this project.")));
+            }
+            push(&mut sets, &mut params, "name", Box::new(name));
+        }
+        if let Some(notes) = &p.notes {
+            push(&mut sets, &mut params, "notes", Box::new(notes.clone()));
+        }
+        if let Some(color) = &p.color {
+            push(&mut sets, &mut params, "color", Box::new(color.clone()));
+        }
+        if let Some(target_date) = &p.target_date {
+            let target_date = target_date.trim().to_string();
+            if target_date.is_empty() {
+                push(&mut sets, &mut params, "target_date", Box::new(None::<String>));
+            } else if valid_date(&target_date) {
+                push(&mut sets, &mut params, "target_date", Box::new(target_date));
+            } else {
+                return Ok(err("target_date must be YYYY-MM-DD (or \"\" to clear)."));
+            }
+        }
+        if let Some(completed) = p.completed {
+            // Manual completion only — a goal never closes because its last task
+            // landed (invariant 6), so this is the one way completed_at moves.
+            let completed_at: Option<String> = completed.then(now_iso);
+            push(&mut sets, &mut params, "completed_at", Box::new(completed_at));
+        }
+        if !sets.is_empty() {
+            let sql = format!("UPDATE goals SET {} WHERE id = ?{}", sets.join(", "), params.len() + 1);
+            params.push(Box::new(id));
+            conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
+                .map_err(db_err)?;
+        }
+        drop(conn);
+        self.notify();
+        ok_json(&json!({"id": id, "status": "updated"}))
+    }
+
+    #[tool(
+        description = "Close a goal (sets its completion date). Its tasks' statuses are untouched — closing is a manual, independent action. To reopen a closed goal, call update_goal with completed: false."
+    )]
+    fn complete_goal(
+        &self,
+        Parameters(GoalRefParams { project, goal }): Parameters<GoalRefParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let project_id = match Self::resolve_project_for_goal(&conn, &project).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        let id = match Self::resolve_goal(&conn, project_id, goal.trim()).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        conn.execute(
+            "UPDATE goals SET completed_at = ?1 WHERE id = ?2",
+            rusqlite::params![now_iso(), id],
+        )
+        .map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_json(&json!({"id": id, "status": "completed"}))
+    }
+
+    #[tool(
+        description = "Delete a goal. Its tasks are NOT deleted — they survive with no goal (ON DELETE SET NULL), which is what makes this safe, unlike delete_project."
+    )]
+    fn delete_goal(
+        &self,
+        Parameters(GoalRefParams { project, goal }): Parameters<GoalRefParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let project_id = match Self::resolve_project_for_goal(&conn, &project).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        let id = match Self::resolve_goal(&conn, project_id, goal.trim()).map_err(db_err)? {
+            Ok(id) => id,
+            Err(msg) => return Ok(err(msg)),
+        };
+        conn.execute("DELETE FROM goals WHERE id = ?1", [id])
+            .map_err(db_err)?;
+        drop(conn);
+        self.notify();
+        ok_text(format!("Goal \"{goal}\" deleted. Its tasks were kept, with no goal."))
+    }
+
     #[tool(description = "List tasks, optionally filtered. By default completed and trashed tasks are excluded.")]
     fn list_tasks(
         &self,
@@ -2391,6 +2825,13 @@ impl TildoneAgent {
             wheres.push(format!(
                 "EXISTS (SELECT 1 FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id
                          WHERE tt.task_id = t.id AND tg.name = ?{} COLLATE NOCASE)",
+                params.len()
+            ));
+        }
+        if let Some(goal) = &p.goal {
+            params.push(Box::new(goal.trim().to_string()));
+            wheres.push(format!(
+                "EXISTS (SELECT 1 FROM goals gl WHERE gl.id = t.goal_id AND gl.name = ?{} COLLATE NOCASE)",
                 params.len()
             ));
         }
@@ -2561,6 +3002,22 @@ impl TildoneAgent {
                 Err(msg) => return Ok(err(msg)),
             },
         };
+        // Invariant 1: a goal requires a project. Resolved by name within that
+        // project — an unknown name errors rather than auto-creating (unlike tags).
+        let goal_id = match p.goal.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(name) => match project_id {
+                None => {
+                    return Ok(err(
+                        "A goal requires a project; this task has none. Set project, or omit goal.",
+                    ))
+                }
+                Some(pid) => match Self::resolve_goal(&conn, pid, name).map_err(db_err)? {
+                    Ok(gid) => Some(gid),
+                    Err(msg) => return Ok(err(msg)),
+                },
+            },
+        };
         let position = Self::group_slot(&conn, project_id, &status).map_err(db_err)?;
         let completed_at: Option<String> = (status == "done").then(now_iso);
         // Mint the frozen ref from the task's project code; the counter is scoped to
@@ -2569,10 +3026,11 @@ impl TildoneAgent {
         let number = next_task_number(&conn, &code).map_err(db_err)?;
         let task_ref = format!("{code}-{number}");
         conn.execute(
-            "INSERT INTO tasks (project_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO tasks (project_id, goal_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 project_id,
+                goal_id,
                 title,
                 p.notes.unwrap_or_default(),
                 status,
@@ -2631,8 +3089,8 @@ impl TildoneAgent {
     ) -> Result<CallToolResult, ErrorData> {
         let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
         self.apply_task_update(
-            p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, agent,
-            claim,
+            p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, p.goal,
+            agent, claim,
         )
     }
 
@@ -2963,6 +3421,7 @@ impl TildoneAgent {
             None,
             None,
             None,
+            None,
             agent,
             ClaimInfo::default(),
         )
@@ -3287,7 +3746,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. kind is created/status/moved/trashed/restored/edited/link/comment/tag/image. A change says THAT a task changed, not what it now is — follow up with get_task."
+        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. entity is task or goal. For entity task, kind is created/status/moved/trashed/restored/edited/link/comment/tag/image — note a task's goal changing is reported as a task edit, not as the goal. For entity goal, kind is created/edited/completed/reopened/deleted. A change says THAT something changed, not what it now is — follow up with get_task(entity_id) or list_goals(id: entity_id)."
     )]
     async fn list_changes(
         &self,
@@ -4534,6 +4993,8 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/016_pr_status.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/017_claim_pid.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/023_task_cwd.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/024_task_cwd_newest.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/025_goals.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -4753,6 +5214,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -4786,6 +5248,7 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: None,
+                        goal: None,
                         session_id: session_id.map(Into::into),
                         cwd: cwd.map(Into::into),
                         branch: branch.map(Into::into),
@@ -5928,6 +6391,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: Some("cse_01XYZ".into()),
                         cwd: None,
                         branch: None,
@@ -6052,6 +6516,7 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: Some(tags.iter().map(|t| t.to_string()).collect()),
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -6106,6 +6571,7 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: Some(vec!["needs-review".into(), "keep-me".into()]),
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -6168,6 +6634,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9".into()),
                         cwd: None,
                         branch: Some("wt-9".into()),
@@ -6200,6 +6667,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9".into()),
                         cwd: None,
                         branch: None,
@@ -6703,6 +7171,7 @@ mod tests {
                         due_date: None,
                         project: None,
                         tags: tags.map(|t| t.into_iter().map(Into::into).collect()),
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -7048,6 +7517,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7083,6 +7553,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7189,6 +7660,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7220,6 +7692,7 @@ mod tests {
                     due_date: Some("2026-07-10".into()),
                     priority: Some(3),
                     tags: Some(vec!["release".into()]),
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7250,6 +7723,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7267,6 +7741,7 @@ mod tests {
                     status: None,
                     due_before: None,
                     tag: None,
+                    goal: None,
                     search: None,
                     include_done: None,
                 }))
@@ -7289,6 +7764,7 @@ mod tests {
                     status: None,
                     due_before: None,
                     tag: None,
+                    goal: None,
                     search: None,
                     include_done: None,
                 }))
@@ -7308,6 +7784,7 @@ mod tests {
                     due_date: Some("".into()),
                     project: Some("inbox".into()),
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7370,6 +7847,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7414,6 +7892,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7464,6 +7943,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7520,6 +8000,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7767,6 +8248,7 @@ mod tests {
                     due_date: Some(due.into()),
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7809,6 +8291,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: (title == "c").then(|| vec!["find-me".to_string()]),
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7852,6 +8335,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7882,6 +8366,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7941,6 +8426,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -7964,6 +8450,7 @@ mod tests {
                     due_date: None,
                     project: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -8072,6 +8559,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -8092,6 +8580,7 @@ mod tests {
                     due_date: None,
                     project: Some("work".into()),
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -8129,6 +8618,7 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                goal: None,
                 session_id: None,
                 cwd: None,
                 branch: None,
@@ -8375,6 +8865,11 @@ mod tests {
             "create_project",
             "update_project",
             "delete_project",
+            "list_goals",
+            "create_goal",
+            "update_goal",
+            "complete_goal",
+            "delete_goal",
             "list_tasks",
             "get_task",
             "create_task",
@@ -8917,6 +9412,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -8939,6 +9435,7 @@ mod tests {
                 due_date: None,
                 project: None,
                 tags: None,
+                goal: None,
                 session_id: None,
                 cwd: None,
                 branch: None,
@@ -9153,6 +9650,7 @@ mod tests {
                     due_date: None,
                     priority: None,
                     tags: None,
+                    goal: None,
                     session_id: None,
                     cwd: None,
                     branch: None,
@@ -9200,6 +9698,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -9242,6 +9741,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -9273,6 +9773,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -9376,6 +9877,7 @@ mod tests {
                         due_date: None,
                         priority: None,
                         tags: None,
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -9473,6 +9975,7 @@ mod tests {
                         due_date: None,
                         project: Some("Zeno Logistics".into()),
                         tags: None,
+                        goal: None,
                         session_id: None,
                         cwd: None,
                         branch: None,
@@ -9514,6 +10017,525 @@ mod tests {
         assert_eq!(row["title"], "Bare task");
         assert!(row.get("due_date").is_none(), "unset due_date must be omitted, not null");
         assert_eq!(row["status"], "todo");
+    }
+
+    // ---- goals (migration 025, TIL-204) ----
+    // docs/specs/2026-08-20-goals-inside-projects.md
+
+    fn new_goal(agent: &TildoneAgent, project: &str, name: &str) -> i64 {
+        let (is_err, g) = extract(
+            &agent
+                .create_goal(Parameters(CreateGoalParams {
+                    project: project.into(),
+                    name: name.into(),
+                    notes: None,
+                    color: None,
+                    target_date: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err, "create_goal failed: {g}");
+        g["id"].as_i64().unwrap()
+    }
+
+    /// Create a task carrying a goal, the way a live agent would.
+    fn task_with_goal(agent: &TildoneAgent, project: &str, goal: &str, title: &str) -> Value {
+        let (is_err, t) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: title.into(),
+                        project: Some(project.into()),
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        goal: Some(goal.into()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                        status: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!is_err, "create_task failed: {t}");
+        t
+    }
+
+    #[test]
+    fn create_task_with_a_valid_goal_resolves_within_the_project() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let created = task_with_goal(&agent, "Work", "Launch", "ship it");
+        let id = created["id"].as_i64().unwrap();
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert_eq!(task["goal"]["name"], "Launch");
+        assert_eq!(task["goal"]["done"], 0);
+        assert_eq!(task["goal"]["total"], 1);
+    }
+
+    #[test]
+    fn create_task_with_an_unknown_goal_errors_and_creates_nothing() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let (is_err, msg) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "ghost".into(),
+                        project: Some("Work".into()),
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        goal: Some("Nope".into()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                        status: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "an unknown goal name must error, never auto-create");
+        assert!(
+            msg.as_str().unwrap().contains("Launch"),
+            "the error must list the project's available goals: {msg}"
+        );
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "a refused goal name must create nothing");
+    }
+
+    #[test]
+    fn update_task_with_an_unknown_goal_errors_and_changes_nothing() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        let created = ref_task(&agent, Some("Work"), "task");
+        let id = created["id"].as_i64().unwrap();
+
+        let (is_err, msg) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: None,
+                        goal: Some("Nope".into()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "an unknown goal name must error, never auto-create");
+        assert!(msg.as_str().unwrap().contains("Unknown goal"), "{msg}");
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert!(task.get("goal").is_none(), "the refused write must leave the task goal-less");
+    }
+
+    #[test]
+    fn update_task_moving_project_clears_its_goal() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_project(&agent, "Play");
+        new_goal(&agent, "Work", "Launch");
+        let created = task_with_goal(&agent, "Work", "Launch", "t");
+        let id = created["id"].as_i64().unwrap();
+
+        let (is_err, _) = extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: Some("Play".into()),
+                        tags: None,
+                        goal: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(!is_err);
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert_eq!(task["project"]["name"], "Play");
+        assert!(task.get("goal").is_none(), "moving project must clear a goal from another project");
+    }
+
+    #[test]
+    fn a_goal_on_an_inbox_task_is_rejected() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let (is_err, msg) = extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: "loose".into(),
+                        project: None,
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        goal: Some("Launch".into()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                        status: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        assert!(is_err, "an Inbox task must never carry a goal");
+        assert!(msg.as_str().unwrap().to_lowercase().contains("project"), "{msg}");
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_goal_leaves_its_tasks_alive_with_goal_id_null() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let created = task_with_goal(&agent, "Work", "Launch", "t");
+        let id = created["id"].as_i64().unwrap();
+
+        let (is_err, _) = extract(
+            &agent
+                .delete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch".into() }))
+                .unwrap(),
+        );
+        assert!(!is_err);
+
+        let goal_id: Option<i64> = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT goal_id FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(goal_id, None, "the task survives, back to No goal");
+        let (is_err, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert!(!is_err, "the task itself must still exist");
+        assert_eq!(task["title"], "t");
+    }
+
+    #[test]
+    fn complete_goal_leaves_task_statuses_untouched() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let created = task_with_goal(&agent, "Work", "Launch", "t");
+        let id = created["id"].as_i64().unwrap();
+
+        let (is_err, _) = extract(
+            &agent
+                .complete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch".into() }))
+                .unwrap(),
+        );
+        assert!(!is_err);
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        assert_eq!(task["status"], "todo", "closing a goal must not touch its tasks' statuses");
+
+        let (_, listed) = extract(
+            &agent
+                .list_goals(Parameters(ListGoalsParams {
+                    id: None,
+                    project: Some("Work".into()),
+                    include_completed: Some(true),
+                }))
+                .unwrap(),
+        );
+        assert_eq!(listed[0]["completed"], true);
+    }
+
+    /// Reversible completion: reopening is `update_goal` with `completed: false`,
+    /// mirroring how a task reopens via `update_task(status: "todo")` rather than a
+    /// separate tool.
+    #[test]
+    fn update_goal_completed_false_reopens_a_closed_goal() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        extract(
+            &agent
+                .complete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch".into() }))
+                .unwrap(),
+        );
+
+        let (is_err, _) = extract(
+            &agent
+                .update_goal(Parameters(UpdateGoalParams {
+                    project: "Work".into(),
+                    goal: "Launch".into(),
+                    name: None,
+                    notes: None,
+                    color: None,
+                    target_date: None,
+                    completed: Some(false),
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err);
+
+        let (_, listed) = extract(
+            &agent
+                .list_goals(Parameters(ListGoalsParams {
+                    id: None,
+                    project: Some("Work".into()),
+                    include_completed: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(listed[0]["name"], "Launch", "a reopened goal is open again by default");
+        assert_eq!(listed[0]["completed"], false);
+    }
+
+    #[test]
+    fn create_goal_rejects_a_duplicate_name_in_the_same_project() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let (is_err, msg) = extract(
+            &agent
+                .create_goal(Parameters(CreateGoalParams {
+                    project: "Work".into(),
+                    name: "Launch".into(),
+                    notes: None,
+                    color: None,
+                    target_date: None,
+                }))
+                .unwrap(),
+        );
+        assert!(is_err);
+        assert!(msg.as_str().unwrap().contains("already exists"), "{msg}");
+    }
+
+    #[test]
+    fn goal_operations_leave_foreign_keys_consistent() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+        new_project(&agent, "Play");
+        new_goal(&agent, "Work", "Launch");
+        let created = task_with_goal(&agent, "Work", "Launch", "t");
+        let id = created["id"].as_i64().unwrap();
+
+        // Moved out from under its goal, clearing it (invariant 2)...
+        extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: Some("Play".into()),
+                        tags: None,
+                        goal: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+        // ...then the now-orphaned goal is deleted outright.
+        extract(
+            &agent
+                .delete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch".into() }))
+                .unwrap(),
+        );
+
+        let violations: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0, "foreign_key_check must be clean after goal writes");
+    }
+
+    /// Every goal-tool write reaches the change feed via the migration 025
+    /// triggers, exactly like every other board write (docs/specs/2026-08-20-
+    /// goals-inside-projects.md). Unlike the raw-SQL trigger tests above (which
+    /// prove the triggers catch a writer that never calls them), this goes
+    /// through the actual tool methods to prove agent.rs's own writes land too.
+    #[test]
+    fn goal_writes_reach_the_change_feed() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+
+        fn kinds_for(db: &Db, entity: &str, id: i64) -> Vec<String> {
+            db.lock()
+                .unwrap()
+                .prepare("SELECT kind FROM changes WHERE entity = ?1 AND entity_id = ?2 ORDER BY id")
+                .unwrap()
+                .query_map(rusqlite::params![entity, id], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        }
+
+        let goal_id = new_goal(&agent, "Work", "Launch");
+        assert_eq!(kinds_for(&db, "goal", goal_id), vec!["created"]);
+
+        extract(
+            &agent
+                .update_goal(Parameters(UpdateGoalParams {
+                    project: "Work".into(),
+                    goal: "Launch".into(),
+                    name: Some("Launch v2".into()),
+                    notes: None,
+                    color: None,
+                    target_date: None,
+                    completed: None,
+                }))
+                .unwrap(),
+        );
+        assert_eq!(kinds_for(&db, "goal", goal_id), vec!["created", "edited"]);
+
+        extract(
+            &agent
+                .complete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch v2".into() }))
+                .unwrap(),
+        );
+        assert_eq!(kinds_for(&db, "goal", goal_id), vec!["created", "edited", "completed"]);
+
+        extract(
+            &agent
+                .update_goal(Parameters(UpdateGoalParams {
+                    project: "Work".into(),
+                    goal: "Launch v2".into(),
+                    name: None,
+                    notes: None,
+                    color: None,
+                    target_date: None,
+                    completed: Some(false),
+                }))
+                .unwrap(),
+        );
+        assert_eq!(
+            kinds_for(&db, "goal", goal_id),
+            vec!["created", "edited", "completed", "reopened"]
+        );
+
+        extract(
+            &agent
+                .delete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch v2".into() }))
+                .unwrap(),
+        );
+        assert_eq!(
+            kinds_for(&db, "goal", goal_id),
+            vec!["created", "edited", "completed", "reopened", "deleted"]
+        );
+    }
+
+    /// A task's goal changing is reported as a change TO THE TASK (entity
+    /// 'task', kind 'edited'), not as a goal event — the same reason a link or
+    /// comment is logged against its task rather than as its own entity. This
+    /// is what lets an agent already parked on that task wake for a re-goal.
+    #[test]
+    fn setting_a_tasks_goal_reaches_the_change_feed_as_a_task_edit() {
+        let (agent, db) = test_agent_with_db();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let created = ref_task(&agent, Some("Work"), "t");
+        let task_id = created["id"].as_i64().unwrap();
+        db.lock().unwrap().execute("DELETE FROM changes", []).unwrap(); // drop the 'created' row
+
+        extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: task_id.into(),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: None,
+                        goal: Some("Launch".into()),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        );
+
+        let kinds: Vec<String> = db
+            .lock()
+            .unwrap()
+            .prepare("SELECT kind FROM changes WHERE entity = 'task' AND entity_id = ?1 ORDER BY id")
+            .unwrap()
+            .query_map([task_id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["edited"], "setting a task's goal must land as a task edit");
+    }
+
+    /// A caller holding a bare `{entity: "goal", entity_id}` from list_changes has
+    /// no project to scope a name lookup with (unlike a task, which resolves
+    /// straight through get_task(id)) — list_goals(id) is the same round trip.
+    #[test]
+    fn list_goals_resolves_a_bare_id_regardless_of_project_or_completion() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        let goal_id = new_goal(&agent, "Work", "Launch");
+        extract(
+            &agent
+                .complete_goal(Parameters(GoalRefParams { project: "Work".into(), goal: "Launch".into() }))
+                .unwrap(),
+        );
+
+        let (is_err, found) = extract(
+            &agent
+                .list_goals(Parameters(ListGoalsParams {
+                    id: Some(goal_id),
+                    project: None,
+                    include_completed: None,
+                }))
+                .unwrap(),
+        );
+        assert!(!is_err);
+        assert_eq!(found.as_array().unwrap().len(), 1);
+        assert_eq!(found[0]["name"], "Launch");
+        assert_eq!(found[0]["completed"], true, "an id lookup must not hide a completed goal");
     }
 }
 

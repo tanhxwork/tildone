@@ -41,7 +41,7 @@ export function TaskMeta({
    *  thing carrying the state. */
   hideState?: boolean;
 }) {
-  const { projects, tags } = useStore();
+  const { projects, tags, goals, selection, select } = useStore();
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
@@ -51,6 +51,11 @@ export function TaskMeta({
     (t) => task.tag_ids.includes(t.id) && !isReserved(t.name),
   );
   const overdue = isOverdue(task);
+  // The chip is noise inside the goal it names — suppressed only there (spec
+  // "Instead of surface B", the goal chip's whole reason for existing).
+  const goal = task.goal_id !== null ? goals.find((g) => g.id === task.goal_id) : undefined;
+  const showGoalChip =
+    goal !== undefined && !(selection.type === "goal" && selection.goalId === goal.id);
 
   const showDoing = task.status === "doing" && !hideStatus;
   const hasMeta =
@@ -59,7 +64,8 @@ export function TaskMeta({
     taskTags.length > 0 ||
     project ||
     showDoing ||
-    state;
+    state ||
+    showGoalChip;
   if (!hasMeta) return null;
 
   return (
@@ -68,6 +74,22 @@ export function TaskMeta({
         <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
       )}
       {showDoing && <span className="status-pill">{STATUS_LABELS.doing}</span>}
+      {showGoalChip && goal && (
+        <button
+          type="button"
+          className="goal-chip"
+          style={{ ["--goal-color" as string]: goal.color }}
+          title={`Goal: ${goal.name}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            select({ type: "goal", goalId: goal.id });
+          }}
+        >
+          <span className="goal-chip-glyph" aria-hidden="true" />
+          <span className="goal-chip-label">{goal.name}</span>
+        </button>
+      )}
       {task.due_date && (
         <span className={`due-chip ${overdue ? "overdue" : ""}`}>
           {dueLabel(task.due_date)}

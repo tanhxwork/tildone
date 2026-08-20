@@ -12,6 +12,10 @@ interface SettingsState {
    * task. Default on. Only meaningful while agentServer is on. */
   agentNotify: boolean;
   tagsCollapsed: boolean;
+  /** Per-project sidebar goal-nesting collapse (migration 025). Missing entry
+   * means expanded — same "true = collapsed" convention as tagsCollapsed, keyed
+   * by project id since each project's goal list collapses independently. */
+  projectGoalsCollapsed: Record<number, boolean>;
   settingsOpen: boolean;
 
   setTheme: (theme: Theme) => void;
@@ -20,6 +24,7 @@ interface SettingsState {
   setAgentServer: (enabled: boolean) => void;
   setAgentNotify: (enabled: boolean) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
+  setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
   openSettings: () => void;
   closeSettings: () => void;
 }
@@ -28,7 +33,13 @@ const STORAGE_KEY = "tildone-settings";
 
 function loadPersisted(): Pick<
   SettingsState,
-  "theme" | "weekStart" | "defaultProjectId" | "agentServer" | "agentNotify" | "tagsCollapsed"
+  | "theme"
+  | "weekStart"
+  | "defaultProjectId"
+  | "agentServer"
+  | "agentNotify"
+  | "tagsCollapsed"
+  | "projectGoalsCollapsed"
 > {
   const defaults = {
     theme: "auto" as Theme,
@@ -37,11 +48,19 @@ function loadPersisted(): Pick<
     agentServer: false,
     agentNotify: true,
     tagsCollapsed: false,
+    projectGoalsCollapsed: {} as Record<number, boolean>,
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
+    const projectGoalsCollapsed: Record<number, boolean> = {};
+    if (parsed.projectGoalsCollapsed && typeof parsed.projectGoalsCollapsed === "object") {
+      for (const [key, value] of Object.entries(parsed.projectGoalsCollapsed)) {
+        const id = Number(key);
+        if (Number.isFinite(id) && value === true) projectGoalsCollapsed[id] = true;
+      }
+    }
     return {
       theme: ["auto", "light", "dark"].includes(parsed.theme) ? parsed.theme : defaults.theme,
       weekStart: ["monday", "sunday"].includes(parsed.weekStart)
@@ -53,6 +72,7 @@ function loadPersisted(): Pick<
       // Default on: absent (older settings) or any non-false value means notify.
       agentNotify: parsed.agentNotify !== false,
       tagsCollapsed: parsed.tagsCollapsed === true,
+      projectGoalsCollapsed,
     };
   } catch {
     return defaults;
@@ -69,6 +89,7 @@ function persist(state: SettingsState) {
       agentServer: state.agentServer,
       agentNotify: state.agentNotify,
       tagsCollapsed: state.tagsCollapsed,
+      projectGoalsCollapsed: state.projectGoalsCollapsed,
     }),
   );
 }
@@ -100,6 +121,15 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   },
   setTagsCollapsed: (tagsCollapsed) => {
     set({ tagsCollapsed });
+    persist(get());
+  },
+  setProjectGoalsCollapsed: (projectId, collapsed) => {
+    set((s) => {
+      const next = { ...s.projectGoalsCollapsed };
+      if (collapsed) next[projectId] = true;
+      else delete next[projectId];
+      return { projectGoalsCollapsed: next };
+    });
     persist(get());
   },
   openSettings: () => set({ settingsOpen: true }),

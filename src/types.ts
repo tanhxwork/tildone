@@ -22,6 +22,28 @@ export interface Project {
   code: string | null;
 }
 
+/**
+ * A named outcome that owns tasks. Lives inside exactly one project; a task
+ * belongs to at most one goal (`Task.goal_id`). Closed by hand — `completed_at`
+ * is never set by a task landing — and its progress is derived from its tasks
+ * rather than stored, so the two can never disagree (see `goalProgress`).
+ * Migration 025, docs/specs/2026-08-20-goals-inside-projects.md.
+ */
+export interface Goal {
+  id: number;
+  project_id: number;
+  name: string;
+  /** The outcome statement: what is true once this goal is done. */
+  notes: string;
+  color: string;
+  position: number;
+  /** YYYY-MM-DD, or null for an untargeted goal. Same shape as Task.due_date. */
+  target_date: string | null;
+  created_at: string;
+  /** ISO-8601. Non-null means closed; clearing it reopens the goal. */
+  completed_at: string | null;
+}
+
 /** Result of icon discovery for one project (Rust: discover_project_icon). */
 export interface ProjectIcon {
   /** The folder actually scanned — the resolved guess or the override. */
@@ -40,6 +62,11 @@ export interface Tag {
 export interface Task {
   id: number;
   project_id: number | null;
+  /** The goal this task serves, or null for none. Always a goal of this task's
+   * own project: moving the task to another project clears it, enforced in
+   * db.ts `updateTask` and `apply_task_update` in agent.rs rather than left to
+   * callers. An Inbox task (project_id null) can never carry one. */
+  goal_id: number | null;
   title: string;
   notes: string;
   status: Status;
@@ -187,12 +214,17 @@ export type Selection =
   | { type: "week" }
   | { type: "review" }
   | { type: "completed" }
-  | { type: "project"; projectId: number };
+  | { type: "goals" }
+  | { type: "project"; projectId: number }
+  | { type: "goal"; goalId: number };
 
 /** Pages render their own layout; view mode, filters and quick add only apply to task lists. */
 export function isPageSelection(selection: Selection): boolean {
   return (
-    selection.type === "week" || selection.type === "review" || selection.type === "completed"
+    selection.type === "week" ||
+    selection.type === "review" ||
+    selection.type === "completed" ||
+    selection.type === "goals"
   );
 }
 
