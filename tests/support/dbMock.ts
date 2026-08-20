@@ -141,7 +141,10 @@ const DEFAULTS = {
     return { id, number: id, ref: `T-${id}` };
   },
   backfillRefs: async (): Promise<void> => {},
-  updateTask: async (_id: number, _patch: Partial<Task>): Promise<void> => {},
+  // Returns the patch it was given: the real one returns the patch it ACTUALLY
+  // wrote, which may differ (invariant 2 clears goal_id). A test that cares about
+  // that divergence overrides this to return the effective patch.
+  updateTask: async (_id: number, patch: Partial<Task>): Promise<Partial<Task>> => patch,
   deleteTask: async (_id: number): Promise<void> => {},
   deleteAllTrashed: async (): Promise<void> => {},
   purgeTrashedBefore: async (_cutoff: string): Promise<void> => {},

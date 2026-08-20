@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { db, resetDbMock, useStore } from "./support/dbMock";
+import { db, emptyBoard, resetDbMock, useStore } from "./support/dbMock";
 import type { Goal, Task } from "../src/types";
 
 // The store is where the goal invariants live for the UI side (agent.rs enforces
@@ -205,6 +205,46 @@ describe("addTask inside a goal view", () => {
       tag_ids: [],
     });
     expect(useStore.getState().tasks.find((t) => t.title === "plain")?.goal_id).toBeNull();
+  });
+});
+
+describe("regressions from the Codex verify pass on TIL-204", () => {
+  it("clears the goal in state, not just in the database, when a task changes project", async () => {
+    // Finding 1. db.updateTask enforces invariant 2 internally, so SQLite dropped
+    // the goal while editTask merged its own patch — which has no goal_id — and
+    // Zustand kept the stale goal until the next reload.
+    db.updateTask.mockImplementation(async (_id: number, patch: Record<string, unknown>) =>
+      "project_id" in patch ? { ...patch, goal_id: null } : patch,
+    );
+    useStore.setState({
+      goals: [goal({ id: 100, project_id: 7 })],
+      tasks: [task({ id: 10, project_id: 7, goal_id: 100 })],
+    });
+    await useStore.getState().patchTask(10, { project_id: 8 });
+    const moved = useStore.getState().tasks.find((t) => t.id === 10);
+    expect(moved?.project_id).toBe(8);
+    expect(moved?.goal_id).toBeNull();
+  });
+
+  it("drops a dead goal selection when a reload no longer has it", async () => {
+    // Finding 4. An agent calling delete_goal arrives as a reload; init validated
+    // the restored selection but reload did not, leaving the view pointed at a
+    // goal that no longer exists — empty board, no band, no way back.
+    db.fetchAll.mockImplementation(async () => ({
+      ...emptyBoard(),
+      projects: [{ id: 7, name: "p", color: "#000", position: 0, folder_path: null, code: "P" }],
+    }));
+    useStore.setState({ selection: { type: "goal", goalId: 100 } });
+    await useStore.getState().reload();
+    expect(useStore.getState().selection).toEqual({ type: "today" });
+  });
+
+  it("keeps a goal selection a reload still has", async () => {
+    const survivor = goal({ id: 100, project_id: 7 });
+    db.fetchAll.mockImplementation(async () => ({ ...emptyBoard(), goals: [survivor] }));
+    useStore.setState({ selection: { type: "goal", goalId: 100 } });
+    await useStore.getState().reload();
+    expect(useStore.getState().selection).toEqual({ type: "goal", goalId: 100 });
   });
 });
 

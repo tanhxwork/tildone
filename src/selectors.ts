@@ -162,10 +162,20 @@ export function ungoaledOpenCount(tasks: Task[], projectId: number): number {
  * then targeted goals by ascending target date, then untargeted ones. Ties fall
  * back to the goal's own position then id, so the order is stable across reloads.
  *
+ * Ties fall back to the goal's PROJECT position first, then the goal's own
+ * position, then id — so goals from one project stay together on the page in the
+ * order the sidebar shows them. Taking `projects` is what makes that possible;
+ * without it two projects' goals interleave by their local positions alone.
+ *
  * `today` is a local YYYY-MM-DD — the same wall-clock convention `doneBoardWindow`
  * uses, so "overdue" flips at local midnight rather than UTC's.
  */
-export function goalsPageOrder(goals: Goal[], today: string): Goal[] {
+export function goalsPageOrder(goals: Goal[], projects: Project[], today: string): Goal[] {
+  const projectPosition = new Map(projects.map((p) => [p.id, p.position]));
+  // A goal whose project is missing sorts last rather than at position 0, where it
+  // would silently outrank every real project.
+  const projectRank = (g: Goal): number =>
+    projectPosition.get(g.project_id) ?? Number.MAX_SAFE_INTEGER;
   const rank = (g: Goal): number => {
     if (g.completed_at !== null) return 3;
     if (g.target_date === null) return 2;
@@ -180,6 +190,9 @@ export function goalsPageOrder(goals: Goal[], today: string): Goal[] {
       if (b.target_date === null) return -1;
       return a.target_date < b.target_date ? -1 : 1;
     }
+    const pa = projectRank(a);
+    const pb = projectRank(b);
+    if (pa !== pb) return pa - pb;
     if (a.position !== b.position) return a.position - b.position;
     return a.id - b.id;
   });

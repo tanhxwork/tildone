@@ -572,18 +572,61 @@ const TASK_COLUMNS = new Set([
   "unseen_at",
 ]);
 
-export async function updateTask(
-  id: number,
-  patch: Partial<Omit<Task, "id" | "tag_ids" | "created_at">>,
-): Promise<void> {
-  // A task's goal must belong to the task's own project (migration 025). Moving
-  // the task therefore clears the goal — unless the same patch names a new one,
-  // which is how "move project and regoal in one write" stays possible. Enforced
-  // at this boundary rather than at each call site, so no caller can forget.
-  const moved = "project_id" in patch && !("goal_id" in patch);
-  const effective = moved ? { ...patch, goal_id: null } : patch;
+type TaskPatch = Partial<Omit<Task, "id" | "tag_ids" | "created_at">>;
+
+/**
+ * The patch that will actually be written, after invariant 2 (a task's goal
+ * always belongs to the task's own project — migration 025).
+ *
+ * Separate and returned, rather than applied invisibly inside the UPDATE,
+ * because the store mirrors what it writes into Zustand: when the clearing was
+ * hidden in here, SQLite dropped the goal and the in-memory task kept it until
+ * the next reload. Callers spread the return value, not their own patch.
+ *
+ * Two rules, matching `apply_task_update` in agent.rs exactly — the two enforcers
+ * previously disagreed, one keying on the key being present and the other on the
+ * value actually changing:
+ *
+ *   - a goal named in the patch must belong to the destination project, or it is
+ *     dropped. Naming a goal is not a licence to break the invariant.
+ *   - moving to a *different* project clears a goal that cannot follow. Re-stating
+ *     the same project is not a move and keeps the goal.
+ */
+async function effectiveTaskPatch(id: number, patch: TaskPatch): Promise<TaskPatch> {
+  if (!("project_id" in patch) && !("goal_id" in patch)) return patch;
+  const d = await getDb();
+  const rows = await d.select<{ project_id: number | null; goal_id: number | null }[]>(
+    "SELECT project_id, goal_id FROM tasks WHERE id = $1",
+    [id],
+  );
+  const current = rows[0];
+  if (!current) return patch;
+  const destProject =
+    "project_id" in patch ? (patch.project_id ?? null) : current.project_id;
+
+  if (patch.goal_id != null) {
+    // An Inbox task (destProject null) can never carry a goal, and a goal from
+    // another project is not this task's to hold.
+    const owner = await d.select<{ project_id: number }[]>(
+      "SELECT project_id FROM goals WHERE id = $1",
+      [patch.goal_id],
+    );
+    const ok = destProject !== null && owner[0]?.project_id === destProject;
+    return ok ? patch : { ...patch, goal_id: null };
+  }
+
+  if (destProject !== current.project_id && current.goal_id !== null) {
+    return { ...patch, goal_id: null };
+  }
+  return patch;
+}
+
+/** Returns the patch actually written — spread THIS into local state, not the
+ *  patch you passed, or state and database drift apart (see effectiveTaskPatch). */
+export async function updateTask(id: number, patch: TaskPatch): Promise<TaskPatch> {
+  const effective = await effectiveTaskPatch(id, patch);
   const entries = Object.entries(effective).filter(([key]) => TASK_COLUMNS.has(key));
-  if (entries.length === 0) return;
+  if (entries.length === 0) return effective;
   const d = await getDb();
   const sets = entries.map(([key], i) => `${key} = $${i + 1}`).join(", ");
   const values = entries.map(([, value]) => value);
@@ -591,6 +634,7 @@ export async function updateTask(
     ...values,
     id,
   ]);
+  return effective;
 }
 
 export async function deleteTask(id: number): Promise<void> {

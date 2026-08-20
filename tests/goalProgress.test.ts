@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { goalProgress, goalsPageOrder, tasksForSelection, ungoaledOpenCount } from "../src/selectors";
-import type { Goal, Task } from "../src/types";
+import type { Goal, Project, Task } from "../src/types";
 
 // A goal's progress is derived on every read and never stored (migration 025),
 // so the bar cannot drift from the tasks it describes. These are the rules that
@@ -111,14 +111,26 @@ describe("tasksForSelection with a goal", () => {
   });
 });
 
+function project(id: number, position: number): Project {
+  return {
+    id,
+    name: `p${id}`,
+    color: "#5645d4",
+    position,
+    folder_path: null,
+    code: `P${id}`,
+  };
+}
+
 describe("goalsPageOrder", () => {
   const TODAY = "2026-08-20";
+  const PROJECTS = [project(1, 0), project(2, 1)];
 
   it("leads with overdue goals, soonest first", () => {
     const late = goal({ target_date: "2026-08-15" });
     const later = goal({ target_date: "2026-08-01" });
     const soon = goal({ target_date: "2026-09-01" });
-    const order = goalsPageOrder([soon, late, later], TODAY);
+    const order = goalsPageOrder([soon, late, later], PROJECTS, TODAY);
     expect(order.map((g) => g.target_date)).toEqual([
       "2026-08-01",
       "2026-08-15",
@@ -130,7 +142,7 @@ describe("goalsPageOrder", () => {
     const undated = goal({ target_date: null });
     const dated = goal({ target_date: "2026-09-01" });
     const closed = goal({ target_date: "2026-08-01", completed_at: "2026-08-19T00:00:00.000Z" });
-    const order = goalsPageOrder([undated, closed, dated], TODAY);
+    const order = goalsPageOrder([undated, closed, dated], PROJECTS, TODAY);
     expect(order[0]).toBe(dated);
     expect(order[1]).toBe(undated);
     expect(order[2]).toBe(closed);
@@ -140,7 +152,7 @@ describe("goalsPageOrder", () => {
     const a = goal({ position: 1 });
     const b = goal({ position: 0 });
     const input = [a, b];
-    const order = goalsPageOrder(input, TODAY);
+    const order = goalsPageOrder(input, PROJECTS, TODAY);
     expect(order.map((g) => g.position)).toEqual([0, 1]);
     expect(input).toEqual([a, b]);
   });
@@ -148,6 +160,23 @@ describe("goalsPageOrder", () => {
   it("treats a goal due today as on time, not overdue", () => {
     const today = goal({ target_date: TODAY });
     const yesterday = goal({ target_date: "2026-08-19" });
-    expect(goalsPageOrder([today, yesterday], TODAY)[0]).toBe(yesterday);
+    expect(goalsPageOrder([today, yesterday], PROJECTS, TODAY)[0]).toBe(yesterday);
+  });
+
+  it("breaks ties on project position before the goal's own position", () => {
+    // Regression, Codex verify TIL-204 finding 3: ordering fell straight through
+    // to goal.position, so a goal sitting late inside the FIRST project lost to a
+    // goal sitting first inside the SECOND one, interleaving the two projects.
+    const inFirstProject = goal({ project_id: 1, position: 5, target_date: null });
+    const inSecondProject = goal({ project_id: 2, position: 0, target_date: null });
+    const order = goalsPageOrder([inSecondProject, inFirstProject], PROJECTS, TODAY);
+    expect(order[0]).toBe(inFirstProject);
+    expect(order[1]).toBe(inSecondProject);
+  });
+
+  it("sorts a goal whose project is missing last, not first", () => {
+    const orphan = goal({ project_id: 999, position: 0, target_date: null });
+    const real = goal({ project_id: 2, position: 9, target_date: null });
+    expect(goalsPageOrder([orphan, real], PROJECTS, TODAY)[0]).toBe(real);
   });
 });

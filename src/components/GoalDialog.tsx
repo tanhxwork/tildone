@@ -72,9 +72,24 @@ export function GoalDialog({
             autoFocus
             value={name}
             placeholder="Goal name"
-            onChange={(e) => setName(e.target.value)}
+            aria-invalid={error !== null}
+            aria-describedby={error ? "goal-name-error" : undefined}
+            onChange={(e) => {
+              setName(e.target.value);
+              // Clear as they retype: a duplicate-name error is about the value
+              // that was submitted, and leaving it under a changed field accuses
+              // the wrong text.
+              if (error) setError(null);
+            }}
             onKeyDown={(e) => e.key === "Enter" && save()}
           />
+          {/* Against the field it is about, not at the foot of the modal — the
+              only rejection here is the name, and the fix is in this input. */}
+          {error && (
+            <p className="field-error" id="goal-name-error" role="alert">
+              {error}
+            </p>
+          )}
         </label>
 
         <label className="field">
@@ -117,8 +132,6 @@ export function GoalDialog({
             ))}
           </div>
         </div>
-
-        {error && <p className="field-error">{error}</p>}
 
         <div className="modal-footer">
           {goal && (

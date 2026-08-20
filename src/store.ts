@@ -445,6 +445,17 @@ export const useStore = create<Store>()((set, get) => ({
   reload: async () => {
     const data = await db.fetchAll();
     set({ ...data });
+    // An agent can delete the very goal or project being looked at (delete_goal is
+    // in the MCP surface), and this reload is how that arrives. `init` validates a
+    // restored selection; without the same guard here the sidebar entry vanishes
+    // while the view stays pointed at it, rendering an empty board with no band.
+    const sel = get().selection;
+    if (sel.type === "goal" && !data.goals.some((g) => g.id === sel.goalId)) {
+      set({ selection: { type: "today" } });
+    }
+    if (sel.type === "project" && !data.projects.some((p) => p.id === sel.projectId)) {
+      set({ selection: { type: "today" } });
+    }
     void get().loadProjectIcons();
     // fetchAll has no activity or comment bodies in it, so an open task's log and
     // thread would sit frozen while an agent writes to them — the one place the user
@@ -718,9 +729,9 @@ export const useStore = create<Store>()((set, get) => ({
         return;
       }
     }
-    await db.updateTask(taskId, { goal_id: goalId });
+    const written = await db.updateTask(taskId, { goal_id: goalId });
     set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, goal_id: goalId } : t)),
+      tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, ...written } : t)),
     }));
   },
 
@@ -804,9 +815,12 @@ export const useStore = create<Store>()((set, get) => ({
     if (destStatus !== current.status || destProject !== current.project_id) {
       full.position = groupSlot(get().tasks, destProject, destStatus);
     }
-    await db.updateTask(id, full);
+    // Spread what the DB actually wrote, not what we asked it to: moving a task
+    // between projects also clears its goal (invariant 2), and merging our own
+    // patch here left Zustand holding a goal SQLite had already dropped.
+    const written = await db.updateTask(id, full);
     set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...full } : t)),
+      tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...written } : t)),
     }));
 
     if (patch.status === "done" && current.status !== "done") {

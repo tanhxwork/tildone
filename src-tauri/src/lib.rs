@@ -201,6 +201,12 @@ pub fn run() {
             sql: include_str!("../migrations/025_goals.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 26,
+            description: "goal_name_unique",
+            sql: include_str!("../migrations/026_goal_name_unique.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()

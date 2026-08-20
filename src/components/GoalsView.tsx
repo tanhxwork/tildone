@@ -25,8 +25,8 @@ export function GoalsView() {
 
   const visible = useMemo(() => {
     const base = filter === "open" ? goals.filter((g) => g.completed_at === null) : goals;
-    return goalsPageOrder(base, today);
-  }, [goals, filter, today]);
+    return goalsPageOrder(base, projects, today);
+  }, [goals, projects, filter, today]);
 
   return (
     <div className="goals-view">
