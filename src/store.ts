@@ -759,7 +759,9 @@ export const useStore = create<Store>()((set, get) => ({
       sel.type === "goal" ? get().goals.find((g) => g.id === sel.goalId) : undefined;
     const goal_id =
       openGoal && openGoal.project_id === project_id ? openGoal.id : null;
-    const { id, number, ref } = await db.insertTask({
+    // written.goal_id, not the local one: insertTask drops a goal that does not
+    // belong to the destination project.
+    const { id, number, ref, goal_id: written } = await db.insertTask({
       project_id,
       goal_id,
       title,
@@ -774,7 +776,7 @@ export const useStore = create<Store>()((set, get) => ({
     const task: Task = {
       id,
       project_id,
-      goal_id,
+      goal_id: written,
       title,
       notes: "",
       status: "todo",

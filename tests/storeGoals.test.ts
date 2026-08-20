@@ -248,6 +248,34 @@ describe("regressions from the Codex verify pass on TIL-204", () => {
   });
 });
 
+describe("a foreign goal cannot be smuggled in at insert", () => {
+  it("drops a goal from another project when the task is created", async () => {
+    // Codex round 2: insertTask took goal_id straight from its caller with no
+    // ownership check. Migration 027 heals it in the database; this keeps the
+    // in-memory task honest about what was actually written.
+    db.insertTask.mockImplementation(
+      async (t: { project_id: number | null; goal_id?: number | null }) => ({
+        id: 500,
+        number: 500,
+        ref: "T-500",
+        goal_id: t.project_id === 7 ? (t.goal_id ?? null) : null,
+      }),
+    );
+    useStore.setState({
+      goals: [goal({ id: 100, project_id: 7 })],
+      selection: { type: "goal", goalId: 100 },
+    });
+    await useStore.getState().addTask({
+      title: "smuggler",
+      project_id: 8,
+      due_date: null,
+      priority: 0,
+      tag_ids: [],
+    });
+    expect(useStore.getState().tasks.find((t) => t.id === 500)?.goal_id).toBeNull();
+  });
+});
+
 describe("removeGoal", () => {
   it("deletes the goal but keeps its tasks, returned to No goal", async () => {
     useStore.setState({

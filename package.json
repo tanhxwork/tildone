@@ -13,7 +13,7 @@
     "lint": "oxlint src",
     "lint:strict": "oxlint src --deny-warnings",
     "check:fast": "tsgo --noEmit",
-    "test": "bun test .test.ts",
+    "test": "bun test .test.ts && bun test .test.tsx",
     "preview": "vite preview",
     "tauri": "./scripts/tauri.sh",
     "dev:clean": "./scripts/dev-clean.sh",

@@ -136,9 +136,11 @@ const DEFAULTS = {
   updateGoalPositions: async (..._a: unknown[]): Promise<void> => {},
   deleteGoal: async (_id: number): Promise<void> => {},
 
-  insertTask: async (_task: unknown): Promise<{ id: number; number: number; ref: string }> => {
+  insertTask: async (
+    task: { goal_id?: number | null },
+  ): Promise<{ id: number; number: number; ref: string; goal_id: number | null }> => {
     const id = nextId();
-    return { id, number: id, ref: `T-${id}` };
+    return { id, number: id, ref: `T-${id}`, goal_id: task.goal_id ?? null };
   },
   backfillRefs: async (): Promise<void> => {},
   // Returns the patch it was given: the real one returns the patch it ACTUALLY

@@ -439,8 +439,22 @@ export async function insertTask(task: {
   notes?: string;
   completed_at?: string | null;
   created_at: string;
-}): Promise<{ id: number; number: number; ref: string }> {
+}): Promise<{ id: number; number: number; ref: string; goal_id: number | null }> {
   const d = await getDb();
+  // Invariant 2 at the insert boundary too. Migration 027 heals a bad pairing in
+  // the database, but the caller builds its in-memory task from what it passed —
+  // so without checking here, state would claim a goal the trigger just dropped.
+  // Same divergence class as the update path, one table over.
+  let goal_id = task.goal_id ?? null;
+  if (goal_id !== null) {
+    const owner = await d.select<{ project_id: number }[]>(
+      "SELECT project_id FROM goals WHERE id = $1",
+      [goal_id],
+    );
+    if (task.project_id === null || owner[0]?.project_id !== task.project_id) {
+      goal_id = null;
+    }
+  }
   const code = await codeForProject(d, task.project_id);
   const number = await nextTaskNumber(d, code);
   const ref = formatRef(code, number);
@@ -448,7 +462,7 @@ export async function insertTask(task: {
     "INSERT INTO tasks (project_id, goal_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     [
       task.project_id,
-      task.goal_id ?? null,
+      goal_id,
       task.title,
       task.due_date,
       task.status,
@@ -461,7 +475,7 @@ export async function insertTask(task: {
       ref,
     ],
   );
-  return { id: result.lastInsertId ?? 0, number, ref };
+  return { id: result.lastInsertId ?? 0, number, ref, goal_id };
 }
 
 /** The code that mints refs for a task in `project_id` (INBOX_CODE for the Inbox).
