@@ -3824,6 +3824,11 @@ impl ServerHandler for TildoneAgent {
              Tasks: status todo/doing/done, optional project (otherwise the Inbox), tags \
              (unknown names auto-created), priority 0 none – 3 high, due date YYYY-MM-DD. \
              Refer to projects and tags by name; task ids are numbers or refs like \"TIL-3\". \
+             Between a project and its tasks sits the goal: a named outcome inside one \
+             project, owning tasks (at most one goal per task) and tracking done/total. \
+             Address a goal by name within its project; unlike a tag, an unknown goal name \
+             is an error, never auto-created. Several tasks serving one outcome belong in a \
+             goal rather than a parent task with children. \
              On update, \"\" clears the due date, 0 clears priority, \"inbox\" clears the \
              project; provided fields replace wholesale (notes and tags included — prefer \
              append_note over rewriting notes). A task has three surfaces: subtasks are the \
@@ -7474,6 +7479,25 @@ mod tests {
 
         // An explicit override to some *other* port means we aren't on 11502 at all.
         assert!(!should_warn_port_squat(false, 11599, Some(11599), false));
+    }
+
+    /// The connect briefing must name every level of the model, not just the two
+    /// it launched with. Goals shipped with a full tool surface (TIL-204) while
+    /// this string still described a world of projects and tasks — so an agent
+    /// that read the briefing and never scanned the tool list never learned the
+    /// level existed. Tool descriptions carry the detail; the briefing has to
+    /// carry the fact.
+    #[test]
+    fn instructions_describe_every_level_of_the_model() {
+        let info = test_agent().get_info();
+        let text = info.instructions.expect("server must ship instructions");
+        for level in ["project", "goal", "task", "tag"] {
+            assert!(
+                text.contains(level),
+                "the connect briefing never mentions {level:?}; an agent that reads \
+                 only the briefing cannot use what it does not know exists"
+            );
+        }
     }
 
     /// We shipped `tools: {}` for months, which tells every client "my tool list
