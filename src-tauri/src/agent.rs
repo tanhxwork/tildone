@@ -1579,7 +1579,28 @@ impl TildoneAgent {
                 })?;
             if let Some(name) = name {
                 let (done, total) = Self::goal_progress(conn, gid)?;
-                task["goal"] = json!({"name": name, "done": done, "total": total});
+                // The other live tasks the goal owns, so a session picking up
+                // this card sees what else must land before the goal is real —
+                // "2 / 5" alone tells it a fraction is missing, not what.
+                let mut stmt = conn.prepare(
+                    "SELECT ref, title, status FROM tasks
+                     WHERE goal_id = ?1 AND deleted_at IS NULL AND id <> ?2
+                     ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, position, id",
+                )?;
+                let siblings: Vec<Value> = stmt
+                    .query_map(rusqlite::params![gid, id], |r| {
+                        Ok(json!({
+                            "ref": r.get::<_, Option<String>>(0)?,
+                            "title": r.get::<_, String>(1)?,
+                            "status": r.get::<_, String>(2)?,
+                        }))
+                    })?
+                    .collect::<Result<_, _>>()?;
+                let mut goal = json!({"name": name, "done": done, "total": total});
+                if !siblings.is_empty() {
+                    goal["siblings"] = json!(siblings);
+                }
+                task["goal"] = goal;
             }
         }
         Ok(Some(task))
@@ -2213,7 +2234,7 @@ struct CreateTaskParams {
     #[schemars(description = "Tag names; unknown tags are created automatically")]
     tags: Option<Vec<String>>,
     #[schemars(
-        description = "Name of a goal in the task's project. Unlike tags, an unknown goal name is an error (lists the project's goals) — never auto-created. A goal requires a project; omit for an Inbox task."
+        description = "Name of a goal in the task's project. Unlike tags, an unknown goal name is an error (lists the project's goals) — never auto-created. A goal requires a project; omit for an Inbox task. If this task is the second one serving an outcome an earlier task also serves, create_goal now and put both under it."
     )]
     goal: Option<String>,
     #[schemars(description = "todo (default), doing or done")]
@@ -2596,7 +2617,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Create a goal — a named outcome inside a project that owns tasks and tracks progress toward it. A goal always lives inside a project; there is no Inbox goal."
+        description = "Create a goal — a named outcome inside a project that owns tasks and tracks progress toward it. A goal always lives inside a project; there is no Inbox goal. It earns its place only when two or more tasks serve the same outcome; one deliverable is one task, not a goal of its own. Call list_goals first and adopt an existing goal instead of creating a near-duplicate."
     )]
     fn create_goal(
         &self,
@@ -2732,7 +2753,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Close a goal (sets its completion date). Its tasks' statuses are untouched — closing is a manual, independent action. To reopen a closed goal, call update_goal with completed: false."
+        description = "Close a goal (sets its completion date). Its tasks' statuses are untouched — closing is a manual, independent action. To reopen a closed goal, call update_goal with completed: false. Closing is the user's call: an agent should report the goal at n/n and leave it open, not close a goal it did not create."
     )]
     fn complete_goal(
         &self,
@@ -2849,7 +2870,8 @@ impl TildoneAgent {
             "SELECT t.id, t.title, t.status, t.priority, t.due_date, t.completed_at, p.name,
                     (SELECT GROUP_CONCAT(tg.name, ', ') FROM tags tg
                      JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id),
-                    {RANK_SQL}, t.ref
+                    {RANK_SQL}, t.ref,
+                    (SELECT gl.name FROM goals gl WHERE gl.id = t.goal_id)
              FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
              WHERE {}
              ORDER BY p.position, t.position, t.id",
@@ -2869,6 +2891,7 @@ impl TildoneAgent {
                     "project": r.get::<_, Option<String>>(6)?,
                     "tags": r.get::<_, Option<String>>(7)?,
                     "rank": r.get::<_, i64>(8)?,
+                    "goal": r.get::<_, Option<String>>(10)?,
                 }))
             })
             .map_err(db_err)?
@@ -3838,8 +3861,10 @@ impl ServerHandler for TildoneAgent {
              a receipt {id, ref, status}, not the row — get_task when you need full state. \
              Null fields are omitted from all responses. When blocked: add_comment your \
              question, tag the task blocked, park list_changes — the user's reply wakes you. \
-             Start with list_projects/list_tasks to see what exists; deleting a project is \
-             irreversible, deleted tasks go to a restorable trash.",
+             Start with list_projects/list_goals/list_tasks to see what exists — the goals \
+             before the tasks, so an outcome already in flight is visible before you mint \
+             cards under it; deleting a project is irreversible, deleted tasks go to a \
+             restorable trash.",
         )
     }
 
@@ -10560,6 +10585,51 @@ mod tests {
         assert_eq!(found.as_array().unwrap().len(), 1);
         assert_eq!(found[0]["name"], "Launch");
         assert_eq!(found[0]["completed"], true, "an id lookup must not hide a completed goal");
+    }
+
+    /// list_tasks rows match get_task/create_task: a goaled task carries the
+    /// goal's name, an un-goaled one carries no `goal` key at all.
+    #[test]
+    fn list_tasks_carries_goal_on_a_goaled_row_and_omits_it_otherwise() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        task_with_goal(&agent, "Work", "Launch", "goaled");
+        a_task(&agent, "bare");
+
+        let (_, out) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        let tasks = out["tasks"].as_array().unwrap();
+        let goaled = tasks.iter().find(|t| t["title"] == "goaled").unwrap();
+        let bare = tasks.iter().find(|t| t["title"] == "bare").unwrap();
+        assert_eq!(goaled["goal"], "Launch");
+        assert!(bare.get("goal").is_none(), "an un-goaled task must carry no goal key");
+    }
+
+    /// get_task's goal block names what else must land before the goal is
+    /// real, not just the fraction — siblings excludes the task itself and
+    /// surfaces live work (doing, todo) ahead of what's already done.
+    #[test]
+    fn get_task_lists_goal_siblings_excluding_itself_doing_first() {
+        let agent = test_agent();
+        new_project(&agent, "Work");
+        new_goal(&agent, "Work", "Launch");
+        let this = task_with_goal(&agent, "Work", "Launch", "this")["id"].as_i64().unwrap();
+        let done = task_with_goal(&agent, "Work", "Launch", "done")["id"].as_i64().unwrap();
+        let doing = task_with_goal(&agent, "Work", "Launch", "doing")["id"].as_i64().unwrap();
+        let _todo = task_with_goal(&agent, "Work", "Launch", "todo")["id"].as_i64().unwrap();
+        extract(&agent.complete_task_as(TaskIdParams { id: done.into() }, None).unwrap());
+        work_on(&agent, doing, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: this.into() })).unwrap());
+        let siblings = task["goal"]["siblings"].as_array().unwrap();
+        let titles: Vec<&str> = siblings.iter().map(|s| s["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, vec!["doing", "todo", "done"], "doing before todo before done, self excluded");
+
+        // A task alone in its goal has nothing to report — no empty array.
+        new_goal(&agent, "Work", "Solo");
+        let lone = task_with_goal(&agent, "Work", "Solo", "lone")["id"].as_i64().unwrap();
+        let (_, lone_task) = extract(&agent.get_task(Parameters(TaskIdParams { id: lone.into() })).unwrap());
+        assert!(lone_task["goal"].get("siblings").is_none(), "a lone task in a goal must carry no siblings key");
     }
 }
 
