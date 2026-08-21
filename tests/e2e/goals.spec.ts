@@ -457,4 +457,23 @@ describe("goals", () => {
     expect(await $(".task-title*=E2E shot task a").isExisting()).toBe(false);
     await shot("goals-no-goal-row.png");
   });
+
+  // Found by the Codex verify pass on the first landing: the row counts only
+  // OPEN un-goaled tasks, so finishing the last one used to take the row away
+  // while the selection still pointed at it — an empty board with nothing
+  // selected in the sidebar.
+  it("keeps the No goal row while it is the selection, even at zero", async () => {
+    // Finish every un-goaled open task in the project, from the row itself.
+    while ((await $$(".task-row")).length > 0) {
+      await $$(".task-row")[0].$(".task-check").click();
+      await browser.pause(150);
+    }
+
+    await browser.waitUntil(
+      async () => (await $(".nav-goal-none").isExisting()) === true,
+      { timeout: 10000, timeoutMsg: "the No goal row vanished under its own selection" },
+    );
+    await expect($(".nav-goal-none")).toHaveElementClass("active");
+    await expect($(".view-title-sub")).toHaveText("No goal");
+  });
 });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { goalProgress, goalsPageOrder, tasksForSelection, ungoaledOpenCount } from "../src/selectors";
+import {
+  goalProgress,
+  goalsPageOrder,
+  prunedGoalDismissals,
+  tasksForSelection,
+  ungoaledOpenCount,
+} from "../src/selectors";
 import type { Goal, Project, Task } from "../src/types";
 
 // A goal's progress is derived on every read and never stored (migration 025),
@@ -206,5 +212,20 @@ describe("goalsPageOrder", () => {
     const orphan = goal({ project_id: 999, position: 0, target_date: null });
     const real = goal({ project_id: 2, position: 9, target_date: null });
     expect(goalsPageOrder([orphan, real], PROJECTS, TODAY)[0]).toBe(real);
+  });
+});
+
+describe("prunedGoalDismissals", () => {
+  it("drops dismissals for goals that no longer exist, and keeps the live ones", () => {
+    expect(prunedGoalDismissals({ 1: 3, 2: 5 }, [2])).toEqual({ 2: 5 });
+  });
+
+  it("returns null when nothing is stale, so settings are never rewritten needlessly", () => {
+    expect(prunedGoalDismissals({ 7: 2 }, [7, 9])).toBeNull();
+    expect(prunedGoalDismissals({}, [])).toBeNull();
+  });
+
+  it("clears everything when every goal is gone", () => {
+    expect(prunedGoalDismissals({ 1: 1, 2: 2 }, [])).toEqual({});
   });
 });

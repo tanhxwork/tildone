@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { prunedGoalDismissals } from "./selectors";
 
 export type Theme = "auto" | "light" | "dark";
 export type WeekStart = "monday" | "sunday";
@@ -31,6 +32,8 @@ interface SettingsState {
   setTagsCollapsed: (collapsed: boolean) => void;
   setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
   dismissGoalClose: (goalId: number, total: number) => void;
+  /** Drop dismissals for goals that no longer exist. */
+  pruneGoalCloseDismissed: (liveGoalIds: number[]) => void;
   openSettings: () => void;
   closeSettings: () => void;
 }
@@ -153,6 +156,14 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   },
   dismissGoalClose: (goalId, total) => {
     set((s) => ({ goalCloseDismissed: { ...s.goalCloseDismissed, [goalId]: total } }));
+    persist(get());
+  },
+  // Called on every board load, so it catches a goal deleted here, in another
+  // window, or by an agent — one place instead of a hook in each delete path.
+  pruneGoalCloseDismissed: (liveGoalIds) => {
+    const next = prunedGoalDismissals(get().goalCloseDismissed, liveGoalIds);
+    if (next === null) return;
+    set({ goalCloseDismissed: next });
     persist(get());
   },
   openSettings: () => set({ settingsOpen: true }),

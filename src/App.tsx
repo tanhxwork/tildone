@@ -106,6 +106,16 @@ function App() {
     void init();
   }, [init]);
 
+  // Forget "Not yet" dismissals for goals that are gone — deleted here, in
+  // another window, or by an agent (found by the Codex verify pass: nothing
+  // ever removed one, so the ids accumulated forever). Lives here rather than
+  // in the store because store.ts must not import the settings module: that
+  // would drag window.matchMedia into every test importing the store.
+  const goals = useStore((s) => s.goals);
+  useEffect(() => {
+    useSettings.getState().pruneGoalCloseDismissed(goals.map((g) => g.id));
+  }, [goals]);
+
   useEffect(() => {
     // Warm the built-in engine on launch when the user opted in for chat.
     const ai = useAI.getState();

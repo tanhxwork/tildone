@@ -177,8 +177,18 @@ export function Sidebar() {
           const projectGoals = goals.filter((g) => g.project_id === project.id);
           const openGoals = projectGoals.filter((g) => g.completed_at === null);
           const hasOpenGoals = openGoals.length > 0;
-          const expanded = hasOpenGoals && projectGoalsCollapsed[project.id] !== true;
-          const noGoalCount = hasOpenGoals ? ungoaledOpenCount(tasks, project.id) : 0;
+          // A selected row must never vanish under the selection. Finishing the
+          // last un-goaled task drops the count to zero, and closing the last
+          // goal drops hasOpenGoals — either one used to take the "No goal" row
+          // (and the whole nested section) away while the view was still
+          // pointed at it, leaving an empty board with nothing selected in the
+          // sidebar. Selection wins over both, and over the collapse state.
+          const onNoGoal =
+            selection.type === "ungoaled" && selection.projectId === project.id;
+          const expanded =
+            onNoGoal || (hasOpenGoals && projectGoalsCollapsed[project.id] !== true);
+          const noGoalCount =
+            hasOpenGoals || onNoGoal ? ungoaledOpenCount(tasks, project.id) : 0;
           return (
             <div key={project.id}>
               <div
@@ -251,7 +261,7 @@ export function Sidebar() {
                       </div>
                     );
                   })}
-                  {noGoalCount > 0 && (() => {
+                  {(noGoalCount > 0 || onNoGoal) && (() => {
                     // A real selection, like every other nav row: this is the
                     // one view that answers "what in this project is still
                     // unattached", and it used to be the only row in the app

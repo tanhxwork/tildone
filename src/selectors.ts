@@ -150,6 +150,25 @@ export function goalProgress(tasks: Task[], goalId: number): GoalProgress {
   return { done, total, open: total - done };
 }
 
+/**
+ * Drop "Not yet" dismissals whose goal no longer exists, returning null when
+ * nothing is stale so the caller can skip a needless write. Pure, and separate
+ * from the settings store because that module touches localStorage and
+ * matchMedia at import time — this rule is the part worth testing.
+ *
+ * Found by the Codex verify pass on the first landing: nothing ever removed an
+ * entry, so every deleted goal's id stayed in settings forever.
+ */
+export function prunedGoalDismissals(
+  current: Record<number, number>,
+  liveGoalIds: number[],
+): Record<number, number> | null {
+  const live = new Set(liveGoalIds);
+  const kept = Object.entries(current).filter(([id]) => live.has(Number(id)));
+  if (kept.length === Object.keys(current).length) return null;
+  return Object.fromEntries(kept.map(([id, total]) => [Number(id), total]));
+}
+
 /** Open tasks in `projectId` carrying no goal — the sidebar's "No goal" row. */
 export function ungoaledOpenCount(tasks: Task[], projectId: number): number {
   return tasks.filter(
