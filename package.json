@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "oxlint src && tsc && vite build",
+    "build": "BUILD_INPUT=$(./scripts/record-build-green.sh begin); oxlint src && tsc && vite build && ./scripts/record-build-green.sh finish \"$BUILD_INPUT\"",
     "lint": "oxlint src",
     "lint:strict": "oxlint src --deny-warnings",
     "check:fast": "tsgo --noEmit",

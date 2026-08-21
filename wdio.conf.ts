@@ -165,10 +165,19 @@ const WATCHED = [
   "./index.html",
   "./vite.config.ts",
   "./package.json",
+  "./bun.lock",
+  "./tsconfig.json",
+  "./tsconfig.node.json",
   "./src-tauri/src",
   "./src-tauri/migrations",
+  "./src-tauri/capabilities",
+  "./src-tauri/icons",
+  "./src-tauri/build.rs",
   "./src-tauri/Cargo.toml",
+  "./src-tauri/Cargo.lock",
   "./src-tauri/tauri.conf.json",
+  "./src-tauri/tauri.dev.conf.json",
+  "./src-tauri/Info.plist",
 ];
 
 function newestSourceMtime(): { path: string; mtimeMs: number } {
