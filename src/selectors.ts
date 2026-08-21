@@ -112,6 +112,10 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
       return live.filter((t) => t.project_id === selection.projectId);
     case "goal":
       return live.filter((t) => t.goal_id === selection.goalId);
+    case "ungoaled":
+      return live.filter(
+        (t) => t.project_id === selection.projectId && t.goal_id === null,
+      );
   }
 }
 

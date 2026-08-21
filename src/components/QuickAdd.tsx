@@ -104,7 +104,9 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       p?.projectId ??
       (selection.type === "project"
         ? selection.projectId
-        : (goalProjectId ?? defaultProjectId));
+        : selection.type === "ungoaled"
+          ? selection.projectId
+          : (goalProjectId ?? defaultProjectId));
     const due_date =
       p?.dueDate ??
       (selection.type === "today" || selection.type === "week"
@@ -152,9 +154,11 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
           ? "in this project"
           : selection.type === "goal"
             ? "in this goal"
-            : defaultProject
-              ? `to ${defaultProject.name}`
-              : "to inbox";
+            : selection.type === "ungoaled"
+              ? "in this project, no goal"
+              : defaultProject
+                ? `to ${defaultProject.name}`
+                : "to inbox";
 
   return (
     <>

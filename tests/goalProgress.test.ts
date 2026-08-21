@@ -111,6 +111,34 @@ describe("tasksForSelection with a goal", () => {
   });
 });
 
+describe("tasksForSelection with the No-goal row", () => {
+  it("returns one project's un-goaled live tasks, and nothing from another", () => {
+    const tasks = [
+      task({ project_id: 1, goal_id: null }),
+      task({ project_id: 1, goal_id: 5 }),
+      task({ project_id: 1, goal_id: null, deleted_at: "2026-08-02T00:00:00.000Z" }),
+      task({ project_id: 2, goal_id: null }),
+      task({ project_id: null, goal_id: null }),
+    ];
+    const got = tasksForSelection(tasks, { type: "ungoaled", projectId: 1 });
+    expect(got).toHaveLength(1);
+    expect(got[0].project_id).toBe(1);
+    expect(got[0].goal_id).toBeNull();
+  });
+
+  it("counts done tasks too — the row is a slice of the project, not a to-do list", () => {
+    // ungoaledOpenCount drives the sidebar badge (open only); the selection
+    // itself must still show the finished ones, or the board's Done column
+    // empties the moment you click into it.
+    const tasks = [
+      task({ project_id: 1, goal_id: null, status: "done" }),
+      task({ project_id: 1, goal_id: null, status: "todo" }),
+    ];
+    expect(tasksForSelection(tasks, { type: "ungoaled", projectId: 1 })).toHaveLength(2);
+    expect(ungoaledOpenCount(tasks, 1)).toBe(1);
+  });
+});
+
 function project(id: number, position: number): Project {
   return {
     id,

@@ -78,6 +78,14 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
       headerGoalName = goal?.name ?? "Goal";
       break;
     }
+    // Reads as a sibling of a goal, because that is what it is: the same
+    // project, sliced by the absence of one.
+    case "ungoaled": {
+      headerProject = projects.find((p) => p.id === selection.projectId);
+      title = headerProject?.name ?? "Project";
+      headerGoalName = "No goal";
+      break;
+    }
   }
 
   const isPage = isPageSelection(selection);

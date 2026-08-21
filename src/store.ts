@@ -249,6 +249,7 @@ const SELECTION_TYPES: Selection["type"][] = [
   "goals",
   "project",
   "goal",
+  "ungoaled",
 ];
 
 function loadNav(): { selection: Selection; viewMode: ViewMode } {
@@ -267,6 +268,9 @@ function loadNav(): { selection: Selection; viewMode: ViewMode } {
         if (typeof sel.projectId === "number") selection = { type: "project", projectId: sel.projectId };
       } else if (sel.type === "goal") {
         if (typeof sel.goalId === "number") selection = { type: "goal", goalId: sel.goalId };
+      } else if (sel.type === "ungoaled") {
+        if (typeof sel.projectId === "number")
+          selection = { type: "ungoaled", projectId: sel.projectId };
       } else {
         selection = { type: sel.type };
       }
@@ -417,6 +421,12 @@ export const useStore = create<Store>()((set, get) => ({
         ) {
           set({ selection: { type: "today" } });
         }
+        if (
+          selection.type === "ungoaled" &&
+          !data.projects.some((p) => p.id === selection.projectId)
+        ) {
+          set({ selection: { type: "today" } });
+        }
         // Icons resolve async off the main load — the dot shows until they land.
         void get().loadProjectIcons();
         return;
@@ -454,6 +464,9 @@ export const useStore = create<Store>()((set, get) => ({
       set({ selection: { type: "today" } });
     }
     if (sel.type === "project" && !data.projects.some((p) => p.id === sel.projectId)) {
+      set({ selection: { type: "today" } });
+    }
+    if (sel.type === "ungoaled" && !data.projects.some((p) => p.id === sel.projectId)) {
       set({ selection: { type: "today" } });
     }
     void get().loadProjectIcons();
@@ -596,6 +609,7 @@ export const useStore = create<Store>()((set, get) => ({
       );
       const selection =
         (s.selection.type === "project" && s.selection.projectId === id) ||
+        (s.selection.type === "ungoaled" && s.selection.projectId === id) ||
         (s.selection.type === "goal" && removedGoalIds.has(s.selection.goalId))
           ? ({ type: "today" } as Selection)
           : s.selection;

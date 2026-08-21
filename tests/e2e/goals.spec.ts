@@ -52,6 +52,7 @@ const INBOX_TASK = "E2E inbox task";
 const OVERDUE_GOAL = "E2E overdue";
 const FUTURE_GOAL = "E2E future";
 const SHOT_GOAL = "E2E launch";
+const FINALE = "E2E finale";
 const SHOT_OUTCOME = "Every surface in this pass ships behind a flag, no exceptions.";
 
 async function createProject(name: string) {
@@ -330,5 +331,130 @@ describe("goals", () => {
     await $(".goals-view").waitForExist();
     await $(`.goal-row-name*=${SHOT_GOAL}`).waitForExist({ timeout: 10000 });
     await shot("goals-page.png");
+  });
+
+  // The closing moment. Everything below is one continuous story on a single
+  // fixture goal: finish it, decline, grow it, finish it again, close it.
+  it("offers the completion strip only when every task is done", async () => {
+    const projectAId = projectIdByName(PROJECT_A);
+    const now = new Date().toISOString();
+    sql(
+      `INSERT INTO goals (project_id, name, created_at)
+       VALUES (${projectAId}, ${q(FINALE)}, datetime('now'));`,
+    );
+    const finaleId = Number(sql(`SELECT id FROM goals WHERE name = ${q(FINALE)};`));
+    sql(
+      `INSERT INTO tasks (project_id, goal_id, title, status, position, priority, notes, completed_at, created_at)
+       VALUES (${projectAId}, ${finaleId}, ${q("E2E finale done")}, 'done', 20, 0, '', ${q(now)}, ${q(now)});`,
+    );
+    sql(
+      `INSERT INTO tasks (project_id, goal_id, title, status, position, priority, notes, created_at)
+       VALUES (${projectAId}, ${finaleId}, ${q("E2E finale open")}, 'todo', 21, 0, '', ${q(now)});`,
+    );
+    await announceDbChange();
+
+    await $(`.nav-project*=${PROJECT_A}`).click();
+    await $(`.nav-goal*=${FINALE}`).click();
+    await $(".goal-band").waitForExist({ timeout: 10000 });
+    await expect($(".goal-band-count")).toHaveText("1 / 2");
+    // Half done is not done: no strip yet.
+    expect(await $(".goal-close-strip").isExisting()).toBe(false);
+
+    await $(".task-row*=E2E finale open").$(".task-check").click();
+    await $(".goal-close-strip").waitForExist({ timeout: 10000 });
+    await expect($(".goal-band-count")).toHaveText("2 / 2");
+    expect(await $(".goal-close-strip").getText()).toContain("Every task in this goal is done");
+    // The bar turns from accent to --success at the same moment.
+    await expect($(".goal-band-bar-fill")).toHaveElementClass("complete");
+    // Past the 200ms fill transition, so the artifact shows the settled state
+    // rather than a frame mid-animation.
+    await browser.pause(300);
+    await shot("goals-close-strip.png");
+  });
+
+  it("takes Not yet for an answer, and remembers it against the total", async () => {
+    await $(".goal-close-strip").$("button*=Not yet").click();
+    await $(".goal-close-strip").waitForExist({ reverse: true, timeout: 10000 });
+
+    // Persisted, so it survives a relaunch — and keyed to the total it was
+    // dismissed at, which is what lets it re-arm later.
+    const finaleId = Number(sql(`SELECT id FROM goals WHERE name = ${q(FINALE)};`));
+    const raw = await browser.execute(() => localStorage.getItem("tildone-settings"));
+    const dismissed = JSON.parse(String(raw)).goalCloseDismissed;
+    expect(dismissed[String(finaleId)]).toBe(2);
+  });
+
+  it("re-arms when the goal grows and is finished again", async () => {
+    const projectAId = projectIdByName(PROJECT_A);
+    const finaleId = Number(sql(`SELECT id FROM goals WHERE name = ${q(FINALE)};`));
+    sql(
+      `INSERT INTO tasks (project_id, goal_id, title, status, position, priority, notes, created_at)
+       VALUES (${projectAId}, ${finaleId}, ${q("E2E finale extra")}, 'todo', 22, 0, '', ${q(new Date().toISOString())});`,
+    );
+    await announceDbChange();
+
+    await browser.waitUntil(
+      async () => (await $(".goal-band-count").getText()) === "2 / 3",
+      { timeout: 10000, timeoutMsg: "band never picked up the third task" },
+    );
+    // Still dismissed at 2, and the goal is no longer finished — nothing to show.
+    expect(await $(".goal-close-strip").isExisting()).toBe(false);
+
+    await $(".task-row*=E2E finale extra").$(".task-check").click();
+    // 3 !== the dismissed 2, so this is a new completion moment.
+    await $(".goal-close-strip").waitForExist({ timeout: 10000 });
+    await expect($(".goal-band-count")).toHaveText("3 / 3");
+  });
+
+  it("closes the goal from the strip, leaving its tasks alone", async () => {
+    const finaleId = Number(sql(`SELECT id FROM goals WHERE name = ${q(FINALE)};`));
+    await $(".goal-close-strip").$("button*=Close goal").click();
+
+    // Closing steps back to the project (a closed goal leaves the sidebar).
+    await $(".goal-band").waitForExist({ reverse: true, timeout: 10000 });
+    await expect($$(`.nav-goal*=${FINALE}`)).toBeElementsArrayOfSize(0);
+
+    expect(sql(`SELECT completed_at IS NOT NULL FROM goals WHERE id = ${finaleId};`)).toBe("1");
+    // Its tasks are untouched — closing a goal is independent of them.
+    expect(
+      Number(sql(`SELECT COUNT(*) FROM tasks WHERE goal_id = ${finaleId} AND deleted_at IS NULL;`)),
+    ).toBe(3);
+  });
+
+  it("creates a goal from the Goals page, picking the project there", async () => {
+    await $(".nav-item*=Goals").click();
+    await $(".goals-view").waitForExist();
+    await $(".goals-new").click();
+
+    const nameField = $('.modal input[placeholder="Goal name"]');
+    await nameField.waitForDisplayed({ timeout: 10000 });
+    // The one place with no project in context, so the dialog asks for one.
+    await $('.modal select').waitForExist();
+    await nameField.setValue("E2E from the page");
+    await $(".modal-footer button.btn.primary").click();
+
+    // addGoal selects the new goal, so the band comes up on the chosen project.
+    await $(".goal-band").waitForExist({ timeout: 10000 });
+    expect(await $(".goal-band-name").getText()).toContain("E2E from the page");
+    expect(Number(sql(`SELECT COUNT(*) FROM goals WHERE name = ${q("E2E from the page")} AND project_id IS NOT NULL;`))).toBe(1);
+  });
+
+  it("selects the project's un-goaled tasks from the No goal row", async () => {
+    await $(`.nav-project*=${PROJECT_A}`).click();
+    const noGoal = $(".nav-goal-none");
+    await noGoal.waitForExist({ timeout: 10000 });
+    await noGoal.click();
+
+    // A real selection now, not a label: the header names it and the list is
+    // exactly the project's un-goaled open tasks.
+    await browser.waitUntil(
+      async () => (await $(".view-title-sub").getText()) === "No goal",
+      { timeout: 10000, timeoutMsg: "header never showed the No goal selection" },
+    );
+    await expect($(".nav-goal-none")).toHaveElementClass("active");
+    // The un-goaled task is here; the one sitting in a goal is not.
+    await $(".task-title*=E2E shot task d").waitForExist({ timeout: 10000 });
+    expect(await $(".task-title*=E2E shot task a").isExisting()).toBe(false);
+    await shot("goals-no-goal-row.png");
   });
 });

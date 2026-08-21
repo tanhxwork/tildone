@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { visibleTasks } from "../selectors";
 import { useStore } from "../store";
+import { isSingleProjectSelection } from "../types";
 import type { Task } from "../types";
 import { compareTasks, dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
@@ -93,7 +94,7 @@ export function TaskList() {
   }, [tasks, projects, selection, search, activeTagIds, priorityFilter, showCompleted]);
 
   const isEmpty = groups.every((g) => g.tasks.length === 0);
-  const showProject = selection.type !== "project" && selection.type !== "inbox";
+  const showProject = !isSingleProjectSelection(selection);
 
   if (isEmpty) {
     return (

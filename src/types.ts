@@ -216,7 +216,23 @@ export type Selection =
   | { type: "completed" }
   | { type: "goals" }
   | { type: "project"; projectId: number }
-  | { type: "goal"; goalId: number };
+  | { type: "goal"; goalId: number }
+  /** The open tasks in one project carrying no goal — the sidebar's "No goal"
+   *  row. A filter like `goal`, not a page: every view mode renders it. */
+  | { type: "ungoaled"; projectId: number };
+
+/** Views where every task shares one project (or has none), so a per-card project
+ *  chip repeats the header on every row. A goal and its No-goal sibling qualify:
+ *  a task's goal must belong to the task's project (invariant 2), so a goal view
+ *  is single-project by construction. */
+export function isSingleProjectSelection(selection: Selection): boolean {
+  return (
+    selection.type === "project" ||
+    selection.type === "inbox" ||
+    selection.type === "goal" ||
+    selection.type === "ungoaled"
+  );
+}
 
 /** Pages render their own layout; view mode, filters and quick add only apply to task lists. */
 export function isPageSelection(selection: Selection): boolean {

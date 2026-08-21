@@ -16,6 +16,11 @@ interface SettingsState {
    * means expanded — same "true = collapsed" convention as tagsCollapsed, keyed
    * by project id since each project's goal list collapses independently. */
   projectGoalsCollapsed: Record<number, boolean>;
+  /** "Not yet" on a goal's completion strip, keyed by goal id and remembering
+   * the task total it was dismissed at. Keying on the total is what re-arms it:
+   * dismiss at 3/3, add a fourth task, and finishing that one is a new
+   * completion moment rather than a strip the user already said no to. */
+  goalCloseDismissed: Record<number, number>;
   settingsOpen: boolean;
 
   setTheme: (theme: Theme) => void;
@@ -25,6 +30,7 @@ interface SettingsState {
   setAgentNotify: (enabled: boolean) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
   setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
+  dismissGoalClose: (goalId: number, total: number) => void;
   openSettings: () => void;
   closeSettings: () => void;
 }
@@ -40,6 +46,7 @@ function loadPersisted(): Pick<
   | "agentNotify"
   | "tagsCollapsed"
   | "projectGoalsCollapsed"
+  | "goalCloseDismissed"
 > {
   const defaults = {
     theme: "auto" as Theme,
@@ -49,11 +56,21 @@ function loadPersisted(): Pick<
     agentNotify: true,
     tagsCollapsed: false,
     projectGoalsCollapsed: {} as Record<number, boolean>,
+    goalCloseDismissed: {} as Record<number, number>,
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
+    const goalCloseDismissed: Record<number, number> = {};
+    if (parsed.goalCloseDismissed && typeof parsed.goalCloseDismissed === "object") {
+      for (const [key, value] of Object.entries(parsed.goalCloseDismissed)) {
+        const id = Number(key);
+        if (Number.isFinite(id) && typeof value === "number" && Number.isFinite(value)) {
+          goalCloseDismissed[id] = value;
+        }
+      }
+    }
     const projectGoalsCollapsed: Record<number, boolean> = {};
     if (parsed.projectGoalsCollapsed && typeof parsed.projectGoalsCollapsed === "object") {
       for (const [key, value] of Object.entries(parsed.projectGoalsCollapsed)) {
@@ -73,6 +90,7 @@ function loadPersisted(): Pick<
       agentNotify: parsed.agentNotify !== false,
       tagsCollapsed: parsed.tagsCollapsed === true,
       projectGoalsCollapsed,
+      goalCloseDismissed,
     };
   } catch {
     return defaults;
@@ -90,6 +108,7 @@ function persist(state: SettingsState) {
       agentNotify: state.agentNotify,
       tagsCollapsed: state.tagsCollapsed,
       projectGoalsCollapsed: state.projectGoalsCollapsed,
+      goalCloseDismissed: state.goalCloseDismissed,
     }),
   );
 }
@@ -130,6 +149,10 @@ export const useSettings = create<SettingsState>()((set, get) => ({
       else delete next[projectId];
       return { projectGoalsCollapsed: next };
     });
+    persist(get());
+  },
+  dismissGoalClose: (goalId, total) => {
+    set((s) => ({ goalCloseDismissed: { ...s.goalCloseDismissed, [goalId]: total } }));
     persist(get());
   },
   openSettings: () => set({ settingsOpen: true }),

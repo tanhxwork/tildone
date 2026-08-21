@@ -3,6 +3,8 @@ import { goalProgress, goalsPageOrder } from "../selectors";
 import { useStore } from "../store";
 import { dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
+import { GoalDialog } from "./GoalDialog";
+import { IconPlus } from "./Icons";
 
 type Filter = "open" | "all";
 
@@ -19,6 +21,10 @@ export function GoalsView() {
   const tasks = useStore((s) => s.tasks);
   const select = useStore((s) => s.select);
   const [filter, setFilter] = useState<Filter>("open");
+  // The page used to send you back to the sidebar to create a goal — an empty
+  // state whose only instruction is "go somewhere else". GoalDialog picks the
+  // project itself here, since this is the one place with none in context.
+  const [creating, setCreating] = useState(false);
   const today = todayStr();
 
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
@@ -39,13 +45,26 @@ export function GoalsView() {
             All
           </button>
         </div>
+        <button
+          className="btn small primary goals-new"
+          disabled={projects.length === 0}
+          title={projects.length === 0 ? "Create a project first" : "New goal"}
+          onClick={() => setCreating(true)}
+        >
+          <IconPlus size={12} />
+          New goal
+        </button>
       </div>
 
       {visible.length === 0 && (
         <div className="empty-state">
           <TildoneMark width={36} className="empty-mark" />
           <p className="empty-title">{filter === "open" ? "No open goals" : "No goals yet"}</p>
-          <p className="empty-hint">Add one from a project in the sidebar.</p>
+          <p className="empty-hint">
+            {projects.length === 0
+              ? "Create a project first — a goal always lives inside one."
+              : "New goal, or the + on any project in the sidebar."}
+          </p>
         </div>
       )}
 
@@ -100,6 +119,10 @@ export function GoalsView() {
           </div>
         );
       })}
+
+      {creating && (
+        <GoalDialog goal={null} projectId={null} onClose={() => setCreating(false)} />
+      )}
     </div>
   );
 }

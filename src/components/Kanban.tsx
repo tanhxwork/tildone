@@ -33,6 +33,7 @@ import {
   STATUSES,
   STATUS_LABELS,
   asLinkKind,
+  isSingleProjectSelection,
   isVerifyStep,
   verifyStepLabel,
 } from "../types";
@@ -650,7 +651,7 @@ function CardContent({
   const showMark = !overlay && (task.unseen_at !== null || settling);
   // Inside a single-project board (or the Inbox), every card carries the same
   // project — the chip is noise. Match the list view's rule (TaskList.tsx).
-  const showProject = selection.type !== "project" && selection.type !== "inbox";
+  const showProject = !isSingleProjectSelection(selection);
   const project =
     task.project_id !== null ? projects.find((p) => p.id === task.project_id) : undefined;
   // Same suppression rule as TaskMeta's goal chip: noise inside the goal it names.

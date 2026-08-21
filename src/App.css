@@ -455,12 +455,7 @@ textarea:focus-visible,
 }
 
 .nav-goal-none {
-  cursor: default;
   color: var(--text-faint);
-}
-
-.nav-goal-none:hover {
-  background: none;
 }
 
 /* A goal's identity mark — a colour-bordered square, distinct from the round
@@ -472,6 +467,20 @@ textarea:focus-visible,
   height: 9px;
   border: 1.5px solid currentColor;
   flex-shrink: 0;
+  /* Centring puts a 9px square on the line box's middle, which sits below the
+     cap-height middle of the label beside it — the square then reads a pixel
+     high. Set here for the band and the sidebar; .goal-chip-glyph is its own
+     rule (7px) and carries the same correction. */
+  position: relative;
+  top: -1px;
+}
+
+/* "No goal" is an absence, and must not wear the identity mark of a live goal.
+   Same footprint so the labels stay in one column; dashed and faint so it reads
+   as the hole rather than the thing. */
+.goal-glyph-none {
+  border-style: dashed;
+  color: var(--text-faint);
 }
 
 /* ---------- Tags ---------- */
@@ -802,6 +811,38 @@ textarea:focus-visible,
   border-radius: 999px;
   background: var(--accent);
   transform-origin: left center;
+  transition: transform 200ms ease, background 200ms ease;
+}
+
+.goal-band-bar-fill.complete {
+  background: var(--success);
+}
+
+/* The closing moment. Manual completion is the design, so this asks rather than
+   acts, and "Not yet" is a real answer — a goal can be n/n with more still to
+   come. Dismissal is remembered per goal against the total it was made at
+   (settings.goalCloseDismissed), so it never nags and always re-arms. */
+.goal-close-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px -20px -12px;
+  padding: 9px 20px;
+  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--success) 11%, transparent);
+  border-top: 1px solid var(--border);
+}
+
+.goal-close-strip > svg {
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+.goal-close-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
 }
 
 /* ---------- Quick add ---------- */
@@ -1142,6 +1183,9 @@ textarea:focus-visible,
   height: 7px;
   border: 1.5px solid currentColor;
   flex-shrink: 0;
+  /* Same cap-height correction as .goal-glyph. */
+  position: relative;
+  top: -1px;
 }
 
 .goal-chip-label {
@@ -3199,7 +3243,14 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 10px;
   margin-bottom: 8px;
+}
+
+.goals-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .goal-row {

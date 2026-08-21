@@ -38,6 +38,9 @@ function isSelected(a: Selection, b: Selection): boolean {
   if (a.type === "goal" && b.type === "goal") {
     return a.goalId === b.goalId;
   }
+  if (a.type === "ungoaled" && b.type === "ungoaled") {
+    return a.projectId === b.projectId;
+  }
   return true;
 }
 
@@ -248,17 +251,28 @@ export function Sidebar() {
                       </div>
                     );
                   })}
-                  {noGoalCount > 0 && (
-                    // Not yet clickable — moving a task off a goal happens from
-                    // the task editor's goal picker for this pass; this row is
-                    // only the count (spec surface A, "out of scope unless
-                    // cheap").
-                    <div className="nav-item nav-goal nav-goal-none">
-                      <span className="goal-glyph" aria-hidden="true" />
-                      <span className="nav-label">No goal</span>
-                      <span className="nav-count">{noGoalCount}</span>
-                    </div>
-                  )}
+                  {noGoalCount > 0 && (() => {
+                    // A real selection, like every other nav row: this is the
+                    // one view that answers "what in this project is still
+                    // unattached", and it used to be the only row in the app
+                    // that did nothing. Its glyph is dashed and faint — an
+                    // absence must not wear .goal-glyph, the identity mark of a
+                    // live goal.
+                    const usel: Selection = { type: "ungoaled", projectId: project.id };
+                    return (
+                      <div
+                        className={`nav-item nav-goal nav-goal-none ${isSelected(selection, usel) ? "active" : ""}`}
+                        onClick={() => select(usel)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === "Enter" && select(usel)}
+                      >
+                        <span className="goal-glyph goal-glyph-none" aria-hidden="true" />
+                        <span className="nav-label">No goal</span>
+                        <span className="nav-count">{noGoalCount}</span>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

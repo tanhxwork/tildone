@@ -23,6 +23,7 @@ export function TableView() {
   const {
     tasks,
     projects,
+    goals,
     selection,
     search,
     activeTagIds,
@@ -83,10 +84,19 @@ export function TableView() {
   async function submitNewRow() {
     const title = newTitle.trim();
     if (!title) return;
+    // Same rule as QuickAdd: a project-shaped view targets its own project, so
+    // a row added inside a goal lands in that goal (store.addTask attaches it
+    // when the project matches) instead of in the default project.
+    const goalProjectId =
+      selection.type === "goal"
+        ? (goals.find((g) => g.id === selection.goalId)?.project_id ?? null)
+        : null;
     await addTask({
       title,
       project_id:
-        selection.type === "project" ? selection.projectId : defaultProjectId,
+        selection.type === "project" || selection.type === "ungoaled"
+          ? selection.projectId
+          : (goalProjectId ?? defaultProjectId),
       due_date: null,
     });
     setNewTitle("");
