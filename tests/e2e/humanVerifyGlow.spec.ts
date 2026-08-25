@@ -90,7 +90,9 @@ describe("human-verify done glow", () => {
     const pinned = $(".board-card.state-human-verify");
     await pinned.waitForExist();
     expect(await pinned.getText()).toContain(PINNED);
-    expect(await pinned.$(".card-verify-count").getText()).toContain("0/1");
+    // A count of steps, not a fraction: nothing here ticks, so a numerator
+    // would sit at 0 forever and read as work the agent abandoned.
+    expect(await pinned.$(".card-verify-count").getText()).toContain("1 step");
 
     // The untagged done card is on the board but not pinned and not glowing:
     // the queue counts exactly one card, and that card is the tagged one.
@@ -107,24 +109,30 @@ describe("human-verify done glow", () => {
     await browser.saveScreenshot("./tests/e2e/artifacts/human-verify-glow-pinned.png");
   });
 
-  it("ticking the last verify step retires the tag and drops the pin", async () => {
+  it("shows the steps as numbered instructions that cannot be ticked", async () => {
     expect(pinnedTagCount()).toBe(1);
 
-    // Tick in place through the card's popover — the user's gesture.
     await $(".board-card.state-human-verify .card-verify-count").click();
     const step = $(".verify-popover .verify-item");
     await step.waitForExist();
-    await step.click();
 
-    // The last tick retires the tag in the same gesture (store.toggleSubtask)…
-    await browser.waitUntil(() => pinnedTagCount() === 0, {
-      timeout: 5000,
-      timeoutMsg: "human-verify tag was not retired by the last verify tick",
-    });
-    // …and the queue empties: no divider, no glow, the card settles into Today.
-    await $(".col-divider.verify-queue").waitForExist({ reverse: true });
-    await expect($(".board-card.state-human-verify")).not.toBeExisting();
-    await expect($(`.board-card*=${PINNED}`)).toBeExisting();
+    // The marker is a number, and there is no box anywhere to tick. This is the
+    // whole point of the surface: the steps are instructions the user carries
+    // out elsewhere, so the card must never imply a control it doesn't have.
+    expect(await $(".verify-popover .verify-num").getText()).toBe("1");
+    await expect($(".verify-popover .verify-box")).not.toBeExisting();
+
+    // Clicking a step is inert — it must not tick the subtask, and above all it
+    // must not retire the tag and drop the card off the queue behind the user's
+    // back (the retire-on-last-tick path this replaced).
+    await step.click();
+    await browser.pause(300);
+    expect(pinnedTagCount()).toBe(1);
+    expect(
+      Number(sql(`SELECT COUNT(*) FROM subtasks WHERE done = 1 AND title LIKE 'verify:%';`)),
+    ).toBe(0);
+    await expect($(".board-card.state-human-verify")).toBeExisting();
+    await expect($(".col-divider.verify-queue")).toBeExisting();
 
     mkdirSync("./tests/e2e/artifacts", { recursive: true });
     await browser.saveScreenshot("./tests/e2e/artifacts/human-verify-glow.png");

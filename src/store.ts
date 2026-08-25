@@ -20,7 +20,6 @@ import type {
 import {
   COLOR_CHOICES,
   DONE_CLEARED_TAGS,
-  isVerifyStep,
   PRIORITY_LABELS,
   STATUS_LABELS,
 } from "./types";
@@ -1034,28 +1033,11 @@ export const useStore = create<Store>()((set, get) => ({
     set((s) => ({
       subtasks: s.subtasks.map((x) => (x.id === id ? { ...x, done: nowDone } : x)),
     }));
-    // Ticking the last `verify:` step on a done human-verify card is the user
-    // saying "checked" — retire the tag in the same gesture, so the card stops
-    // glowing without a second trip to the tag list (spec
-    // 2026-07-21-human-verify-done-glow). Only this direction: unticking never
-    // re-adds the tag.
-    if (!nowDone || !isVerifyStep(sub)) return;
-    const { tasks, tags, subtasks } = get();
-    const task = tasks.find((t) => t.id === sub.task_id);
-    if (!task || task.status !== "done") return;
-    const hv = tags.find(
-      (t) => t.name.toLowerCase() === "human-verify" && task.tag_ids.includes(t.id),
-    );
-    if (!hv) return;
-    const allTicked = subtasks
-      .filter((s) => s.task_id === task.id && isVerifyStep(s))
-      .every((s) => s.done);
-    if (!allTicked) return;
-    const kept = task.tag_ids.filter((x) => x !== hv.id);
-    await db.setTaskTags(task.id, kept);
-    set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === task.id ? { ...t, tag_ids: kept } : t)),
-    }));
+    // No verify-step branch here any more. Verify steps render as instructions
+    // rather than a checklist, so nothing in the UI can tick one — the tag comes
+    // off when the user removes it, not as a side effect of a tick that can no
+    // longer happen (supersedes spec 2026-07-21-human-verify-done-glow's
+    // retire-on-last-tick).
   },
 
   renameSubtask: async (id, title) => {

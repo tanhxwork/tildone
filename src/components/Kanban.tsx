@@ -48,7 +48,7 @@ import { CompletionFlourish, UnseenMark } from "./Brand";
 import {
   IconAlert,
   IconCheck,
-  IconChecklist,
+  IconList,
   IconMessage,
   IconTerminal,
   LinkKindIcon,
@@ -529,7 +529,6 @@ function VerifyPopover({
   prLink: TaskLink | null;
   onClose: () => void;
 }) {
-  const toggleSubtask = useStore((s) => s.toggleSubtask);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // The counter button stops its own pointerdown, so a click on it never
@@ -549,7 +548,6 @@ function VerifyPopover({
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);
-  const done = steps.filter((s) => s.done).length;
   // Same review-door as the card strip, so a stamped PR carries its merge badge
   // here too (TIL-88).
   const pr = prLink ? prChip(prLink) : null;
@@ -561,25 +559,17 @@ function VerifyPopover({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="verify-popover-head">
-        Verify
-        <span className="verify-popover-count">
-          {done} of {steps.length}
-        </span>
+        Steps for human verify
+        <span className="verify-popover-count">{steps.length}</span>
       </div>
-      <ul className="verify-list">
-        {steps.map((s) => (
-          <li key={s.id}>
-            <button
-              type="button"
-              className={`verify-item ${s.done ? "done" : ""}`}
-              onClick={() => void toggleSubtask(s.id)}
-            >
-              <span className="verify-box">{s.done && <IconCheck size={10} />}</span>
-              <span className="verify-text">{verifyStepLabel(s)}</span>
-            </button>
+      <ol className="verify-list">
+        {steps.map((s, i) => (
+          <li key={s.id} className="verify-item">
+            <span className="verify-num">{i + 1}</span>
+            <span className="verify-text">{verifyStepLabel(s)}</span>
           </li>
         ))}
-      </ul>
+      </ol>
       {prLink && (
         <button
           type="button"
@@ -638,7 +628,6 @@ function CardContent({
   const verifySteps = inReview ? mine.filter(isVerifyStep) : [];
   const build = inReview ? mine.filter((s) => !isVerifyStep(s)) : mine;
   const done = build.filter((s) => s.done).length;
-  const verifyDone = verifySteps.filter((s) => s.done).length;
   const prLink =
     latestLinkPerKind(cardLinks).find(({ link }) => asLinkKind(link.kind) === "pr")?.link ??
     null;
@@ -760,13 +749,15 @@ function CardContent({
           )}
           {verifySteps.length > 0 && (
             // The card's whole verify surface: how much checking awaits, and the
-            // door to it. stopPropagation twins card-link's — the counter must
-            // neither start a drag nor open the editor.
+            // door to it. A count of steps, not a fraction — nothing here ticks,
+            // so a numerator would sit at 0 forever and read as work abandoned.
+            // stopPropagation twins card-link's — the counter must neither start
+            // a drag nor open the editor.
             <span className="card-verify-anchor">
               <button
                 type="button"
                 className="card-verify-count"
-                title={`${verifyDone} of ${verifySteps.length} verify steps checked`}
+                title={`${verifySteps.length} step${verifySteps.length === 1 ? "" : "s"} for you to verify`}
                 aria-expanded={verifyOpen}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -774,8 +765,8 @@ function CardContent({
                   setVerifyOpen((v) => !v);
                 }}
               >
-                <IconChecklist size={12} />
-                {verifyDone}/{verifySteps.length}
+                <IconList size={12} />
+                {verifySteps.length} step{verifySteps.length === 1 ? "" : "s"}
               </button>
               {verifyOpen && !overlay && (
                 <VerifyPopover
