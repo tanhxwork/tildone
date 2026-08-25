@@ -1075,9 +1075,7 @@ export function TaskEditor() {
               )}
               {verifySteps.length > 0 && (
                 <>
-                  <p className="review-band-sub">
-                    Verify · {verifySteps.filter((s) => s.done).length} of {verifySteps.length}
-                  </p>
+                  <p className="review-band-sub">Steps for human verify</p>
                   <ul className="verify-list">
                     {verifySteps.map((sub) => (
                       // The step text must stay selectable/copyable, and WebKit
