@@ -279,7 +279,11 @@ export function AISettings() {
                           <button
                             className="btn small primary"
                             disabled={
-                              starting || (engine?.backend === "omlx" && !engine.runtime_installed)
+                              starting ||
+                              // No status yet (or the probe failed) reads as
+                              // "not startable" — never as "oMLX is there".
+                              !engine ||
+                              (engine.backend === "omlx" && !engine.runtime_installed)
                             }
                             onClick={() => void useTier(tier.id)}
                           >

@@ -305,8 +305,9 @@ export const useAI = create<AIStore>()((set, get) => ({
       return invoke<string>("ai_chat", {
         baseUrl: `http://127.0.0.1:${port}`,
         // llama.cpp ignores the id; oMLX serves every downloaded tier and
-        // routes on it, so send the one engine_status reported.
-        model: get().engine?.model ?? "local",
+        // routes on it, so send the one engine_status reported — re-probing
+        // if the post-start probe failed and left the store empty.
+        model: (get().engine ?? (await get().refreshEngine()))?.model ?? "local",
         system,
         prompt,
         // Built-in Qwen3.5 defaults to thinking mode, which leaves the reply

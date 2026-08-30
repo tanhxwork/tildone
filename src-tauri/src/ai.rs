@@ -373,11 +373,24 @@ async fn health_ok() -> bool {
 }
 
 #[tauri::command]
-pub async fn engine_status(app: AppHandle, model: String) -> Result<EngineStatus, String> {
+pub async fn engine_status(
+    app: AppHandle,
+    state: State<'_, EngineProcess>,
+    model: String,
+) -> Result<EngineStatus, String> {
     let spec = model_spec(&model)?;
     let runtime = runtime_installed(&app)?;
     let installed = runtime && model_installed(&app, spec)?;
-    let running = health_ok().await;
+    // "Running" means running *for this tier*. A managed child serving a
+    // different tier is not: oMLX only discovers models at startup, so a
+    // tier downloaded while another runs is invisible until a restart —
+    // reporting it as running would let the secretary be pointed at a
+    // model id the live process has never seen. An unmanaged server on the
+    // port (no child of ours) is trusted as-is, as before.
+    let ours_other_tier = running_model_file(&state)
+        .map(|serving| serving != served_name(spec))
+        .unwrap_or(false);
+    let running = !ours_other_tier && health_ok().await;
     Ok(EngineStatus {
         installed,
         running,
@@ -481,6 +494,10 @@ async fn download_snapshot(
         .iter()
         .filter(|f| f["type"].as_str() == Some("file"))
         .filter_map(|f| Some((f["path"].as_str()?.to_string(), f["size"].as_u64().unwrap_or(0))))
+        // Repo paths are flat for these models; drop dotfiles and anything
+        // that would escape the snapshot directory rather than reproduce a
+        // tree. Filtered here so the progress total is over what is fetched.
+        .filter(|(p, _)| !p.contains('/') && !p.starts_with('.'))
         .collect();
     if !files.iter().any(|(p, _)| p == "config.json") {
         return Err(format!("{repo} does not look like an MLX model (no config.json)"));
@@ -496,11 +513,6 @@ async fn download_snapshot(
 
     let mut done_before = 0u64;
     for (path, _) in &files {
-        // Repo paths are flat for these models; refuse anything that would
-        // escape the snapshot directory rather than reproduce a tree.
-        if path.contains('/') || path.starts_with('.') {
-            continue;
-        }
         let url = format!("https://huggingface.co/{repo}/resolve/main/{path}");
         let file_dest = part_dir.join(path);
         done_before += download(
@@ -824,6 +836,9 @@ fn disk_models(dir: &Path) -> Vec<(String, u64)> {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if name.ends_with(".part") {
+                continue;
+            }
             let is_gguf = path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("gguf");
             let is_snapshot = path.is_dir() && path.join("config.json").is_file();
             if is_gguf {
