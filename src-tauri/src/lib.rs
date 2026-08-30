@@ -277,6 +277,7 @@ pub fn run() {
             artifacts::init(app.handle());
             // The board secretary: parked until the frontend pushes a config
             // (secretary_configure), so a disabled setting costs nothing.
+            ai::purge_llama_leftovers(app.handle());
             secretary::init(app.handle());
             // Restart survival (F3): load what the previous run left behind
             // before any UI asks for resumables.
