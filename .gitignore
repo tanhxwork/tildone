@@ -28,6 +28,7 @@ dist-ssr
 CLAUDE.md
 .claude/
 docs/
+.harness/
 .gitprivate/
 .impeccable/
 
