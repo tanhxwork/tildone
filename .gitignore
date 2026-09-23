@@ -41,3 +41,6 @@ src-tauri/icons-dev/*/
 ds-bundle/
 tests/e2e/artifacts/
 AGENTS.md
+# >>> codemap (managed by ai-native-sdlc sync.py) >>>
+docs/plans/_context/_map.md
+# <<< codemap <<<
