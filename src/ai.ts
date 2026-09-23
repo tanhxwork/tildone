@@ -9,14 +9,17 @@ export interface ModelTier {
   id: EngineModelId;
   label: string;
   detail: string;
+  /** Download size of the GGUF (llama.cpp) … */
   sizeGB: number;
+  /** … and of the MLX 4-bit snapshot (oMLX, Apple silicon). */
+  mlxSizeGB: number;
   minRamGB: number;
 }
 
 export const MODEL_TIERS: ModelTier[] = [
-  { id: "small", label: "Small", detail: "Qwen3.5 0.8B — fastest", sizeGB: 0.5, minRamGB: 0 },
-  { id: "default", label: "Default", detail: "Qwen3.5 2B — balanced", sizeGB: 1.3, minRamGB: 8 },
-  { id: "better", label: "Better", detail: "Qwen3.5 4B — best quality", sizeGB: 2.7, minRamGB: 16 },
+  { id: "small", label: "Small", detail: "Qwen3.5 0.8B — fastest", sizeGB: 0.5, mlxSizeGB: 0.7, minRamGB: 0 },
+  { id: "default", label: "Default", detail: "Qwen3.5 2B — balanced", sizeGB: 1.3, mlxSizeGB: 1.7, minRamGB: 8 },
+  { id: "better", label: "Better", detail: "Qwen3.5 4B — best quality", sizeGB: 2.7, mlxSizeGB: 3.1, minRamGB: 16 },
 ];
 
 /** Highest tier whose RAM floor this machine clears. */
@@ -49,10 +52,16 @@ export interface DetectedServer {
 }
 
 export interface EngineStatus {
+  /** Runtime present and the tier's model on disk — the engine can start. */
   installed: boolean;
   running: boolean;
   port: number;
+  /** The model id chat requests must send (oMLX routes on it). */
   model: string;
+  /** Which runtime this build spawns: oMLX on Apple silicon, llama.cpp elsewhere. */
+  backend: "omlx" | "llamacpp";
+  /** False on oMLX means "install oMLX", not "click Download". */
+  runtime_installed: boolean;
 }
 
 export interface EngineProgress {
@@ -295,7 +304,10 @@ export const useAI = create<AIStore>()((set, get) => ({
       const port = get().engine?.port ?? 11500;
       return invoke<string>("ai_chat", {
         baseUrl: `http://127.0.0.1:${port}`,
-        model: "local",
+        // llama.cpp ignores the id; oMLX serves every downloaded tier and
+        // routes on it, so send the one engine_status reported — re-probing
+        // if the post-start probe failed and left the store empty.
+        model: (get().engine ?? (await get().refreshEngine()))?.model ?? "local",
         system,
         prompt,
         // Built-in Qwen3.5 defaults to thinking mode, which leaves the reply
@@ -362,7 +374,7 @@ export const useAI = create<AIStore>()((set, get) => ({
       await invoke("secretary_configure", {
         enabled,
         baseUrl: pinBuiltin ? `http://127.0.0.1:${port}` : config.baseUrl,
-        model: pinBuiltin ? "local" : config.model,
+        model: pinBuiltin ? (engine?.model ?? "local") : config.model,
         disableThinking: pinBuiltin,
       });
     } catch {

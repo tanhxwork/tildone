@@ -1811,9 +1811,10 @@ textarea:focus-visible,
   letter-spacing: normal;
 }
 
-/* The verify checklist, shared between the popover and the editor's review
-   band. Ticks land in --success: verify is the user's confirmation, a different
-   act (and colour) from the accent-checked build subtasks. */
+/* The verify steps, shared between the popover and the editor's review band.
+   Instructions the user carries out, not a checklist they tick: an ordered list
+   with a numbered marker, no box and no done state. The number sits in the
+   14px slot the checkbox used to hold, so the text keeps its hanging indent. */
 .verify-list {
   margin: 0;
   padding: 0;
@@ -1833,33 +1834,15 @@ textarea:focus-visible,
   color: var(--text);
 }
 
-.verify-box {
+.verify-num {
   flex: none;
   width: 14px;
-  height: 14px;
-  padding: 0;
-  margin-top: 2px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-main);
-  color: var(--accent-contrast);
-}
-
-.verify-item:hover .verify-box {
-  border-color: var(--success);
-}
-
-.verify-item.done .verify-box {
-  background: var(--success);
-  border-color: var(--success);
-}
-
-.verify-item.done .verify-text {
-  color: var(--text-faint);
-  text-decoration: line-through;
+  margin-top: 1px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--review);
 }
 
 /* A card that asked for review and brought nothing to review — the protocol

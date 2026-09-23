@@ -1075,41 +1075,19 @@ export function TaskEditor() {
               )}
               {verifySteps.length > 0 && (
                 <>
-                  <p className="review-band-sub">
-                    Verify · {verifySteps.filter((s) => s.done).length} of {verifySteps.length}
-                  </p>
-                  <ul className="verify-list">
-                    {verifySteps.map((sub) => (
-                      // The step text must stay selectable/copyable, and WebKit
-                      // refuses to drag-select text inside a <button> — so the
-                      // button is only the checkbox, and the text is a sibling.
-                      <li key={sub.id} className={`verify-item ${sub.done ? "done" : ""}`}>
-                        <button
-                          type="button"
-                          className="verify-box"
-                          aria-label={`${sub.done ? "Untick" : "Tick"} ${verifyStepLabel(sub)}`}
-                          onClick={() => void toggleSubtask(sub.id)}
-                        >
-                          {sub.done && <IconCheck size={10} />}
-                        </button>
-                        <span
-                          className="verify-text"
-                          onClick={(e) => {
-                            // Clicking the label still toggles, but a click that
-                            // ends a drag-select over this text must not — only
-                            // a selection inside this step blocks the toggle.
-                            const sel = window.getSelection();
-                            if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) {
-                              return;
-                            }
-                            void toggleSubtask(sub.id);
-                          }}
-                        >
-                          {verifyStepLabel(sub)}
-                        </span>
+                  <p className="review-band-sub">Steps for human verify</p>
+                  <ol className="verify-list">
+                    {verifySteps.map((sub, i) => (
+                      // Instructions, not a checklist: nothing here ticks. The
+                      // number takes the box's 14px slot so the text keeps its
+                      // hanging indent, and the whole step stays selectable —
+                      // these are commands the user copies into a terminal.
+                      <li key={sub.id} className="verify-item">
+                        <span className="verify-num">{i + 1}</span>
+                        <span className="verify-text">{verifyStepLabel(sub)}</span>
                       </li>
                     ))}
-                  </ul>
+                  </ol>
                 </>
               )}
               {!prLink && verifySteps.length === 0 && (

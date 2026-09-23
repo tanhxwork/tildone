@@ -3181,7 +3181,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes. Title one \"verify: <step>\" to make it a review step: when the task is tagged needs-review (in progress) or human-verify (completed, awaiting the user's check) these render as the user's verify checklist instead of build progress, and only the user can tick them — add them whenever you hand a task off for review. Completing a task with unticked verify steps: tag it human-verify so it stays pinned on the board until the user has checked."
+        description = "Add a subtask to a task. Subtasks are the task's checklist and the board card renders them as a live progress bar, so prefer these over a checklist written inside notes. Title one \"verify: <step>\" to make it a review step: when the task is tagged needs-review (in progress) or human-verify (completed, awaiting the user's check) these render as numbered instructions for the user instead of build progress — nobody ticks them, not even the user, so write each one as an action they can carry out (where to go, what to click, what they should see). Add them whenever you hand a task off for review. Completing a task with verify steps: tag it human-verify so it stays pinned on the board until the user removes the tag."
     )]
     fn add_subtask(
         &self,

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   MODEL_TIERS,
   aiReady,
@@ -204,6 +205,21 @@ export function AISettings() {
               <div className="ai-panel-header">
                 <span>Secretary engine</span>
               </div>
+              {engine?.backend === "omlx" && !engine.runtime_installed && (
+                <p className="ai-model-warn">
+                  oMLX runs the engine on Apple silicon and is not installed — get it from{" "}
+                  <a
+                    href="https://omlx.ai"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      void openUrl("https://omlx.ai");
+                    }}
+                  >
+                    omlx.ai
+                  </a>
+                  . Models can be downloaded meanwhile.
+                </p>
+              )}
               <div className="ai-models">
                 {MODEL_TIERS.map((tier) => {
                 const onDisk = diskModels.find((m) => m.tier === tier.id);
@@ -226,7 +242,9 @@ export function AISettings() {
                       )}
                     </div>
                     <span className="ai-model-size">
-                      {onDisk ? formatGB(onDisk.size_bytes) : `~${tier.sizeGB} GB`}
+                      {onDisk
+                        ? formatGB(onDisk.size_bytes)
+                        : `~${engine?.backend === "omlx" ? tier.mlxSizeGB : tier.sizeGB} GB`}
                     </span>
                     <span className={`ai-model-state ${state}`}>
                       {state === "active"
@@ -260,7 +278,13 @@ export function AISettings() {
                         <>
                           <button
                             className="btn small primary"
-                            disabled={starting}
+                            disabled={
+                              starting ||
+                              // No status yet (or the probe failed) reads as
+                              // "not startable" — never as "oMLX is there".
+                              !engine ||
+                              (engine.backend === "omlx" && !engine.runtime_installed)
+                            }
                             onClick={() => void useTier(tier.id)}
                           >
                             {starting ? "Starting…" : "Use"}
