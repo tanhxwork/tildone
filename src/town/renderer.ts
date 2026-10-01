@@ -134,6 +134,20 @@ function ease(x: number): number {
   return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
 }
 
+/** Where a building's card anchors: the top centre of its screen box. */
+function buildingAnchor([x0, y0, x1]: Rect): { x: number; y: number } {
+  return { x: (x0 + x1) / 2, y: y0 };
+}
+
+/** Every agent drawn inside a building, by task, mapped to the building's project. */
+function agentBuildings(scene: TownScene): Map<number, number> {
+  const byTask = new Map<number, number>();
+  for (const b of scene.buildings) {
+    for (const item of b.contents.flat()) if (item.kind === "agent") byTask.set(item.character.taskId, b.projectId);
+  }
+  return byTask;
+}
+
 function targetKey(target: TownTarget | null): string {
   if (!target) return "";
   return target.kind === "agent" ? `agent:${target.taskId}` : `${target.kind}:${target.projectId}`;
@@ -164,6 +178,8 @@ export class TownRenderer {
   private palette: Palette = townPalette(false);
   private scene: TownScene;
   private readonly buildingStates = new Map<number, BuildingState>();
+  /** taskId -> projectId for agents inside a building, so a hidden one anchors there. */
+  private agentBuildings = new Map<number, number>();
 
   private width = 0;
   private height = 0;
@@ -206,6 +222,7 @@ export class TownRenderer {
     this.ctx = ctx;
     this.shadowCtx = shadowCtx;
     this.scene = buildScene(this.model, this.palette);
+    this.agentBuildings = agentBuildings(this.scene);
 
     const r = rng(hash("town-sky"));
     this.clouds = Array.from({ length: 7 }, () => ({ x: r(), y: 0.06 + r() * 0.42, size: 0.6 + r() * 0.8, speed: 0.4 + r() * 0.8 }));
@@ -268,10 +285,15 @@ export class TownRenderer {
   }
 
   /** Where an agent is drawn now (CSS px, canvas-relative), for showing its card
-   *  from the keyboard; null when the agent is not in the scene. */
+   *  from the keyboard. An agent hidden inside a closed building (not at one of
+   *  its window silhouettes) anchors where its building's hover does; null when
+   *  the agent is not in the scene. */
   agentAnchor(taskId: number): { x: number; y: number } | null {
     const hit = this.hits.find((h) => h.taskId === taskId);
-    return hit ? { x: hit.x, y: hit.y } : null;
+    if (hit) return { x: hit.x, y: hit.y };
+    const projectId = this.agentBuildings.get(taskId);
+    const building = this.buildingRects.find((b) => b.projectId === projectId);
+    return building ? buildingAnchor(building.rect) : null;
   }
 
   /** Stops the loop and disconnects observers and listeners. */
@@ -311,6 +333,7 @@ export class TownRenderer {
   private rebuild(): void {
     this.palette = townPalette(this.dark);
     this.scene = buildScene(this.model, this.palette);
+    this.agentBuildings = agentBuildings(this.scene);
     const live = new Set(this.scene.buildings.map((b) => b.projectId));
     for (const id of this.buildingStates.keys()) if (!live.has(id)) this.buildingStates.delete(id);
     if (this.width) {
@@ -428,7 +451,7 @@ export class TownRenderer {
     if (label) return { target: { kind: "label", projectId: label.projectId }, x: (label.rect[0] + label.rect[2]) / 2, y: label.rect[1] };
     for (let i = this.buildingRects.length - 1; i >= 0; i--) {
       const b = this.buildingRects[i];
-      if (inside(b.rect)) return { target: { kind: "building", projectId: b.projectId }, x: (b.rect[0] + b.rect[2]) / 2, y: b.rect[1] };
+      if (inside(b.rect)) return { target: { kind: "building", projectId: b.projectId }, ...buildingAnchor(b.rect) };
     }
     return null;
   }

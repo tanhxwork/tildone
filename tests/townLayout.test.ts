@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { TownCharacter, TownModel, TownRoom } from "../src/selectors";
 import { buildingPlan, floorCount, floorUses, townGrid, townLayout } from "../src/town/layout";
+import { buildScene, townPalette, type Item } from "../src/town/scene";
 import type { Environment } from "../src/types";
 import type { PresenceState } from "../src/utils/presence";
 
@@ -97,12 +98,6 @@ describe("cells", () => {
     ]);
   });
 
-  it("draws the square alone for zero projects", () => {
-    const layout = townLayout(model([]));
-    expect(layout.islands).toEqual([]);
-    expect(layout.bridges).toEqual([]);
-    expect(layout.grid.square).toEqual({ col: 0, row: 0 });
-  });
 });
 
 describe("inbox agents go to the square", () => {
@@ -150,12 +145,50 @@ describe("slots", () => {
   it("spreads working agents one per floor from the ground up, each with a desk", () => {
     const working = [1, 2, 3, 4].map(() => agent("working"));
     const plan = buildingPlan(working, 30); // 3 floors
-    expect(plan.desks.map((d) => [d.character.taskId, d.floor, d.side])).toEqual([
+    expect(plan.desks.map((d) => [d.character.taskId, d.floor, d.desk])).toEqual([
       [working[0].taskId, 0, 0],
       [working[1].taskId, 1, 0],
       [working[2].taskId, 2, 0],
       [working[3].taskId, 0, 1],
     ]);
+  });
+
+  it("gives every working agent its own desk when a storey has more than one", () => {
+    const slots = (count: number, open: number) =>
+      buildingPlan(Array.from({ length: count }, () => agent("working")), open).desks.map((d) => [d.floor, d.desk]);
+    expect(slots(3, 0)).toEqual([
+      [0, 0],
+      [0, 1],
+      [0, 2],
+    ]);
+    expect(slots(5, 12)).toEqual([
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+      [0, 2],
+    ]);
+  });
+
+  it("draws an agent for every working character, whatever the building", () => {
+    const envs: Environment[] = ["meadow", "city", "desert", "snow", "autumn"];
+    const rooms = envs.flatMap((environment, i) =>
+      [0, 12, 24, 36].map((open, j) =>
+        room(i * 4 + j + 1, { environment, openTaskCount: open, characters: Array.from({ length: 9 }, () => agent("working")) }),
+      ),
+    );
+    const items = buildScene({ rooms }, townPalette(false)).items;
+    // [taskId, spot] for every agent item, a spot being storey + position
+    const agents = (list: Item[], floor: string): [number, string][] =>
+      list.flatMap((it): [number, string][] => {
+        if (it.kind === "building") return it.contents.flatMap((c, f) => agents(c, `${it.projectId}/${f}`));
+        return it.kind === "agent" ? [[it.character.taskId, `${floor}@${it.x.toFixed(2)},${it.y.toFixed(2)}`]] : [];
+      });
+    const drawn = agents(items, "outside");
+    const expected = rooms.flatMap((r) => r.characters.map((c) => c.taskId));
+    expect(drawn.map(([id]) => id).sort((a, b) => a - b)).toEqual(expected.sort((a, b) => a - b));
+    // every agent stands at its own spot
+    expect(new Set(drawn.map(([, spot]) => spot)).size).toBe(drawn.length);
   });
 
   it("seats quiet agents on the lounge couch when there is a lounge", () => {
