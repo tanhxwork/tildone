@@ -186,7 +186,7 @@ describe("task owner", () => {
   });
 
   it("opens Mine on a fresh install", async () => {
-    // The per-spec reset pins Today for the other specs; with no saved nav at
+    // The per-spec reset pins All Tasks for the other specs; with no saved nav at
     // all, the app must fall back to Mine.
     await remount(() => localStorage.removeItem("tildone-nav"));
     await expect($('[data-nav="mine"]')).toHaveElementClass("active");
