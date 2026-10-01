@@ -9,13 +9,13 @@ import { STATUSES } from "./types";
 //
 // The store holds the whole task set, so we can always reconstruct the full group and
 // keep hidden cards' order intact. Two regimes:
-//   - single-group views (project, inbox): merge the visible reorder back into the
+//   - single-group views (project, goal): merge the visible reorder back into the
 //     full group and dense-renumber — a precise reorder that survives filters.
-//   - mixed views (all, today, upcoming): a column interleaves projects and has no
+//   - mixed views (all): a column interleaves projects and has no
 //     single manual order, so only the dragged card moves — to the top or bottom of
 //     its own group by which half of the column it was dropped in.
 
-const MIXED_VIEWS = new Set<Selection["type"]>(["all", "today", "upcoming"]);
+const MIXED_VIEWS = new Set<Selection["type"]>(["all"]);
 
 /** A column in these views interleaves projects; a single manual order is undefined. */
 export function isMixedView(selection: Selection): boolean {

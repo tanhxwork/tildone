@@ -12,21 +12,17 @@ import { TildoneMark } from "./Brand";
 import { GoalDialog } from "./GoalDialog";
 import {
   IconArchive,
-  IconCalendar,
   IconChart,
   IconChecklist,
   IconChevronDown,
   IconChevronRight,
-  IconColumns,
   IconEye,
   IconFlag,
-  IconInbox,
   IconLayers,
   IconPencil,
   IconPlus,
   IconSettings,
   IconSparkles,
-  IconStar,
   IconTag,
   IconX,
 } from "./Icons";
@@ -105,9 +101,6 @@ export function Sidebar() {
     return {
       mine: mine.needsAnswer.length + mine.toVerify.length + mine.myTodos.length,
       queue: mine.queueCounts.todo + mine.queueCounts.doing + mine.queueCounts.needsApproval,
-      today: open.filter((t) => t.due_date !== null && t.due_date <= today).length,
-      upcoming: open.filter((t) => t.due_date !== null && t.due_date > today).length,
-      inbox: open.filter((t) => t.project_id === null).length,
       all: open.length,
       observeDue: observe.due,
       observeWaiting: observe.waiting,
@@ -139,15 +132,11 @@ export function Sidebar() {
       count: counts.observeWaiting,
       due: counts.observeDue,
     },
-    { sel: { type: "today" }, label: "Today", icon: <IconStar />, count: counts.today },
-    { sel: { type: "upcoming" }, label: "Upcoming", icon: <IconCalendar />, count: counts.upcoming },
-    { sel: { type: "inbox" }, label: "Inbox", icon: <IconInbox />, count: counts.inbox },
     { sel: { type: "all" }, label: "All Tasks", icon: <IconLayers />, count: counts.all },
   ];
 
   const pages: { sel: Selection; label: string; icon: ReactNode }[] = [
     { sel: { type: "goals" }, label: "Goals", icon: <IconFlag /> },
-    { sel: { type: "week" }, label: "My Week", icon: <IconColumns /> },
     { sel: { type: "review" }, label: "Review", icon: <IconChart /> },
     { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
   ];

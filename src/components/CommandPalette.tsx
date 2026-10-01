@@ -53,14 +53,9 @@ export function CommandPalette() {
 
   const actions = useMemo<Command[]>(() => {
     const list: Command[] = [
-      { id: "go-today", label: "Go to Today", keywords: "go today", icon: "go", run: goto({ type: "today" }) },
-      { id: "go-upcoming", label: "Go to Upcoming", keywords: "go upcoming", icon: "go", run: goto({ type: "upcoming" }) },
-      { id: "go-inbox", label: "Go to Inbox", keywords: "go inbox", icon: "go", run: goto({ type: "inbox" }) },
       { id: "go-all", label: "Go to All Tasks", keywords: "go all tasks", icon: "go", run: goto({ type: "all" }) },
-      { id: "go-week", label: "Go to My Week", keywords: "go my week plan", icon: "go", run: goto({ type: "week" }) },
       { id: "go-review", label: "Go to Review", keywords: "go review dashboard stats", icon: "go", run: goto({ type: "review" }) },
       { id: "go-completed", label: "Go to Completed & Trash", keywords: "go completed trash history archive", icon: "go", run: goto({ type: "completed" }) },
-      { id: "view-calendar", label: "Open Calendar view", keywords: "calendar month view", icon: "go", run: goto({ type: "all" }, "calendar") },
       { id: "view-table", label: "Open Table view", keywords: "table spreadsheet view", icon: "go", run: goto({ type: "all" }, "table") },
       { id: "view-board", label: "Open Board view", keywords: "board kanban view", icon: "go", run: goto({ type: "all" }, "board") },
       {

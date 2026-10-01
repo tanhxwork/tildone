@@ -6,7 +6,6 @@ import { useAI } from "./ai";
 import { useFileDropListener } from "./fileDrop";
 import { AISettings } from "./components/AISettings";
 import { TildoneMark } from "./components/Brand";
-import { CalendarView } from "./components/CalendarView";
 import { CommandPalette } from "./components/CommandPalette";
 import { Lightbox } from "./components/Lightbox";
 import { CompletedView } from "./components/CompletedView";
@@ -29,7 +28,6 @@ import { switchToSession } from "./components/useSwitcher";
 import { switcherSessions, nextSessionId } from "./utils/sessions";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
-import { WeekView } from "./components/WeekView";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
@@ -185,14 +183,12 @@ function App() {
       const sel = st.selection;
       const alreadyThere =
         sel.type === "all" ||
-        (task.project_id !== null
-          ? sel.type === "project" && sel.projectId === task.project_id
-          : sel.type === "inbox");
+        (task.project_id !== null && sel.type === "project" && sel.projectId === task.project_id);
       if (!alreadyThere) {
         st.select(
           task.project_id !== null
             ? { type: "project", projectId: task.project_id }
-            : { type: "inbox" },
+            : { type: "all" },
         );
       }
       useStore.getState().openEditor(task.id);
@@ -378,8 +374,6 @@ function App() {
     content = <AgentQueueView />;
   } else if (selection.type === "observe") {
     content = <ObserveView />;
-  } else if (selection.type === "week") {
-    content = <WeekView />;
   } else if (selection.type === "review") {
     content = <ReviewView />;
   } else if (selection.type === "completed") {
@@ -390,8 +384,6 @@ function App() {
     content = <Kanban />;
   } else if (viewMode === "table") {
     content = <TableView />;
-  } else if (viewMode === "calendar") {
-    content = <CalendarView />;
   } else if (viewMode === "town") {
     content = (
       <Suspense fallback={null}>
@@ -408,7 +400,7 @@ function App() {
       <main className="main">
         <Header searchRef={searchRef} />
         {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
-        {!paneActive && (!isPage || selection.type === "week" || selection.type === "mine") && (
+        {!paneActive && (!isPage || selection.type === "mine") && (
           <QuickAdd inputRef={quickAddRef} />
         )}
         <div className="content">{content}</div>
