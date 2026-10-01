@@ -506,6 +506,28 @@ interface Footprint {
   floors: number;
 }
 
+/** Desk spots on a storey, front row first: two desks by the window wall on every
+ *  storey, and on the desks floor a second row behind them when the building is
+ *  deep enough to clear the bookshelf, plant and board along the back wall. Upper
+ *  storeys keep their back half for the room's own furniture. */
+function deskSpots(b: Footprint, use: FloorUse): Spot[] {
+  const front = b.y + b.d - 1.25;
+  const columns = (row: number) => [
+    { x: b.x + 0.45, y: row },
+    { x: b.x + b.w - 1.75, y: row },
+  ];
+  // a desk row is 1.15 deep chair to desk edge; the back row's chair must clear y + 0.62
+  const backRow = front - 1.15;
+  return use === "desks" && backRow - 0.55 >= b.y + 0.62 ? [...columns(front), ...columns(backRow)] : columns(front);
+}
+
+/** Where a working agent past a storey's last desk stands: a row along the front
+ *  of the storey, then rows stepping back, one distinct spot each. */
+function overflowSpot(b: Footprint, index: number): Spot {
+  const perRow = Math.max(1, Math.floor((b.w - 0.9) / 0.6) + 1);
+  return { x: b.x + 0.45 + (index % perRow) * 0.6, y: b.y + b.d - 0.3 - Math.floor(index / perRow) * 0.6 };
+}
+
 /** What stands on one storey of a building, by the storey's use. */
 function floorContents(b: Footprint, floor: number, use: FloorUse, plan: BuildingPlan, color: string, seedName: string, p: Palette): Item[] {
   const list: Item[] = [];
@@ -523,13 +545,19 @@ function floorContents(b: Footprint, floor: number, use: FloorUse, plan: Buildin
     phase: (floor * 0.37 + x * 0.13) % 1,
     layer: 1,
   });
-  if (use !== "desks") for (const s of desks) workDesk(list, s.side ? x1 - 1.75 : x + 0.45, y1 - 1.25, s.character, color, p);
+  const spots = deskSpots(b, use);
+  for (const s of desks) {
+    const spot = spots[s.desk];
+    if (spot) workDesk(list, spot.x, spot.y, s.character, color, p);
+    else {
+      const standing = overflowSpot(b, s.desk - spots.length);
+      add(list, { kind: "agent", x: standing.x, y: standing.y, z: 0, character: s.character, pose: "stand", color, layer: 1 });
+    }
+  }
   if (use === "desks") {
     box(list, { x: x + 0.3, y: y1 - 1.75, w: w - 0.6, d: 1.45, h: 0.02, color: mix(p.rug, color, 0.22), flat: true, layer: 0.4 });
-    for (const side of [0, 1]) {
-      const slot = desks.find((s) => s.side === side);
-      workDesk(list, side ? x1 - 1.75 : x + 0.45, y1 - 1.25, slot?.character ?? null, color, p);
-    }
+    // the front pair is always furnished, staffed or not
+    for (const desk of [0, 1]) if (!desks.some((s) => s.desk === desk)) workDesk(list, spots[desk].x, spots[desk].y, null, color, p);
     box(list, {
       x: x + 0.18,
       y: y + 0.16,
@@ -628,7 +656,7 @@ function shellDecos(b: Footprint & { style: BuildingStyle; color: string; name: 
   const { w, d, style } = b;
   const r = rng(seedKey + floor * 17);
   const desks = plan.desks.filter((s) => s.floor === floor);
-  const worker = (side: 0 | 1) => desks.find((s) => s.side === side)?.character ?? null;
+  const worker = (desk: 0 | 1) => desks.find((s) => s.desk === desk)?.character ?? null;
   const lit = () => b.lit && r() < 0.75;
   if (style === "tower") {
     decos.push(

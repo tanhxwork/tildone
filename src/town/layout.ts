@@ -69,11 +69,12 @@ export const ISLAND_STYLES: Record<Environment, IslandStyle> = {
 /** Ground floor first: desks, then meeting, lounge and lab cycling upward. */
 export type FloorUse = "desks" | "meeting" | "lounge" | "lab";
 
-/** A working agent at a desk: which storey, and the left (0) or right (1) desk. */
+/** A working agent at a desk: which storey, and which desk on it (0 front left,
+ *  1 front right, then on back from the window wall; scene.ts places them). */
 export interface DeskSlot {
   character: TownCharacter;
   floor: number;
-  side: 0 | 1;
+  desk: number;
 }
 
 export interface BuildingPlan {
@@ -150,8 +151,8 @@ export function floorUses(floors: number): FloorUse[] {
 
 /**
  * Where a project's agents go, by state: working agents take desks spread one per
- * storey from the ground up (agent i on storey i % floors, second lap on the right
- * desk); quiet agents sit on the lounge couch when there is a lounge, else on the
+ * storey from the ground up (agent i on storey i % floors, at that storey's next
+ * free desk, so every one has its own); quiet agents sit on the lounge couch when there is a lounge, else on the
  * garden bench; blocked agents stand at the front door.
  */
 export function buildingPlan(characters: TownCharacter[], openTaskCount: number): BuildingPlan {
@@ -164,7 +165,7 @@ export function buildingPlan(characters: TownCharacter[], openTaskCount: number)
     (character, i): DeskSlot => ({
       character,
       floor: i % floors,
-      side: Math.floor(i / floors) % 2 === 0 ? 0 : 1,
+      desk: Math.floor(i / floors),
     }),
   );
   const couch = loungeFloor >= 0 ? quiet.slice(0, COUCH_SEATS) : [];
