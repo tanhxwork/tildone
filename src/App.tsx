@@ -32,6 +32,7 @@ import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
+import { ObserveView } from "./components/ObserveView";
 import { QuitWarning } from "./components/QuitWarning";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
@@ -161,8 +162,14 @@ function App() {
     const unlistenOpenTask = listen<string>("open-task-ref", async (event) => {
       const wanted = event.payload.trim().toUpperCase();
       if (!wanted) return;
-      const byRef = () =>
-        useStore.getState().tasks.find((t) => t.ref?.toUpperCase() === wanted);
+      // Observe cards live in their own slice; a live one opens on the Observe page.
+      const byRef = () => {
+        const s = useStore.getState();
+        return (
+          s.tasks.find((t) => t.ref?.toUpperCase() === wanted) ??
+          s.observeCards.find((c) => c.task.ref?.toUpperCase() === wanted)?.task
+        );
+      };
       let task = byRef();
       if (!task) {
         await useStore.getState().reload();
@@ -170,6 +177,11 @@ function App() {
       }
       if (!task) return;
       const st = useStore.getState();
+      if (task.kind === "observe") {
+        // A trashed card stays in Trash; it never opens in the task editor.
+        if (task.deleted_at === null) st.select({ type: "observe", cardId: task.id });
+        return;
+      }
       const sel = st.selection;
       const alreadyThere =
         sel.type === "all" ||
@@ -364,6 +376,8 @@ function App() {
     content = <MineView />;
   } else if (selection.type === "queue") {
     content = <AgentQueueView />;
+  } else if (selection.type === "observe") {
+    content = <ObserveView />;
   } else if (selection.type === "week") {
     content = <WeekView />;
   } else if (selection.type === "review") {

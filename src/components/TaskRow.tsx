@@ -50,7 +50,7 @@ export function TaskMeta({
   /** Visible text beside the ◇ (see OwnerMark). */
   ownerLabel?: string;
 }) {
-  const { projects, tags, goals, tasks, selection, select } = useStore();
+  const { projects, tags, goals, tasks, observeCards, selection, select } = useStore();
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
@@ -67,7 +67,7 @@ export function TaskMeta({
     goal !== undefined && !(selection.type === "goal" && selection.goalId === goal.id);
 
   const showDoing = task.status === "doing" && !hideStatus;
-  const origin = showOwner ? lineageTask(task, tasks) : null;
+  const origin = showOwner ? lineageTask(task, tasks, observeCards) : null;
   const ownerLead = showOwner && (task.owner === "agent" || origin !== null);
   const hasMeta =
     ownerLead ||
@@ -163,7 +163,8 @@ export function useClaimLabel(task: Task): string | null {
  *  there is no lineage or the origin is gone. */
 export function FromRef({ task }: { task: Task }) {
   const tasks = useStore((s) => s.tasks);
-  const origin = lineageTask(task, tasks);
+  const observeCards = useStore((s) => s.observeCards);
+  const origin = lineageTask(task, tasks, observeCards);
   if (!origin) return null;
   return <span className="from-ref">from {origin.ref}</span>;
 }

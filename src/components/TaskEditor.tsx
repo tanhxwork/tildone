@@ -94,6 +94,8 @@ function persistExpanded(expanded: boolean) {
 export function TaskEditor() {
   const {
     tasks,
+    observeCards,
+    select,
     projects,
     goals,
     tags,
@@ -124,7 +126,8 @@ export function TaskEditor() {
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
 
-  const task = tasks.find((t) => t.id === editingTaskId);
+  // An observe card (a trashed one sits in tasks for Trash) never opens here.
+  const task = tasks.find((t) => t.id === editingTaskId && t.kind === "task");
 
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
@@ -228,7 +231,7 @@ export function TaskEditor() {
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.project_id);
-  const origin = lineageTask(task, tasks);
+  const origin = lineageTask(task, tasks, observeCards);
   const taskSubtasks = subtasks.filter((s) => s.task_id === task.id);
   // Verify steps split out of the build checklist only while the task is in
   // review — same rule and reason as the board card (Kanban.tsx): the tag coming
@@ -767,7 +770,15 @@ export function TaskEditor() {
                   type="button"
                   className="from-ref from-ref-link"
                   title={origin.title}
-                  onClick={() => openEditor(origin.id)}
+                  onClick={() => {
+                    // An observe card has no editor; its home is the Observe page.
+                    if (origin.kind === "observe") {
+                      openEditor(null);
+                      select({ type: "observe", cardId: origin.id });
+                    } else {
+                      openEditor(origin.id);
+                    }
+                  }}
                 >
                   from {origin.ref}
                 </button>

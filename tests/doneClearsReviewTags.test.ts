@@ -38,6 +38,7 @@ function task(id: number, over: Partial<Task> = {}): Task {
     unseen_at: null,
     owner: "human",
     from_task_id: null,
+    kind: "task",
     tag_ids: [],
     ...over,
   } as Task;

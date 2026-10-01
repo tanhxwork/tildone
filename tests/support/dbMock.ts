@@ -3,6 +3,8 @@ import type {
   ActivityEntry,
   Comment,
   Goal,
+  ObserveCard,
+  ObserveOption,
   Project,
   Subtask,
   Tag,
@@ -38,6 +40,7 @@ export type Board = {
   links: Record<number, TaskLink[]>;
   images: Record<number, TaskImage[]>;
   commentCounts: Record<number, number>;
+  observeCards: ObserveCard[];
 };
 
 /** A board with nothing on it — the default `fetchAll` result. */
@@ -52,6 +55,7 @@ export function emptyBoard(): Board {
     links: {},
     images: {},
     commentCounts: {},
+    observeCards: [],
   };
 }
 
@@ -143,6 +147,14 @@ const DEFAULTS = {
     return { id, number: id, ref: `T-${id}`, goal_id: task.goal_id ?? null };
   },
   backfillRefs: async (): Promise<void> => {},
+  createObservation: async (_input: {
+    options: ObserveOption[];
+  }): Promise<{ id: number; number: number; ref: string }> => {
+    const id = nextId();
+    return { id, number: id, ref: `T-${id}` };
+  },
+  decideObservation: async (..._a: unknown[]): Promise<void> => {},
+  watchObservation: async (..._a: unknown[]): Promise<void> => {},
   // Returns the patch it was given: the real one returns the patch it ACTUALLY
   // wrote, which may differ (invariant 2 clears goal_id). A test that cares about
   // that divergence overrides this to return the effective patch.

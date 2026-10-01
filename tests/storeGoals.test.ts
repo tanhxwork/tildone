@@ -30,6 +30,7 @@ function task(opts: Partial<Task> = {}): Task {
     unseen_at: null,
     owner: "human",
     from_task_id: null,
+    kind: "task",
     tag_ids: [],
     ...opts,
   };

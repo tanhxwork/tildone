@@ -63,6 +63,7 @@ static NOTIFY_USER_ENABLED: AtomicBool = AtomicBool::new(true);
 /// comparable across projects. Requires the outer query to alias tasks as `t`.
 const RANK_SQL: &str = "(SELECT COUNT(*) FROM tasks x
       WHERE x.deleted_at IS NULL
+        AND x.kind = 'task'
         AND x.status = t.status
         AND x.project_id IS t.project_id
         AND (x.position < t.position
@@ -836,6 +837,47 @@ fn valid_date(s: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
+const OBSERVE_STATES: [&str; 3] = ["due", "waiting", "observed"];
+
+/// An observe card's state, derived and never stored: observed once the user has
+/// decided, due when the log reached trigger_count or `today` (YYYY-MM-DD, local)
+/// reached trigger_date, waiting otherwise.
+fn observe_state(
+    decision: Option<i64>,
+    logged: i64,
+    trigger_count: Option<i64>,
+    trigger_date: Option<&str>,
+    today: &str,
+) -> &'static str {
+    if decision.is_some() {
+        "observed"
+    } else if trigger_count.is_some_and(|n| logged >= n) || trigger_date.is_some_and(|d| today >= d)
+    {
+        "due"
+    } else {
+        "waiting"
+    }
+}
+
+/// The local calendar date, the same "today" the app's date-only fields use.
+/// SQLite's localtime reads the OS zone, so no date crate is needed.
+fn local_today(conn: &Connection) -> Result<String, rusqlite::Error> {
+    conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))
+}
+
+/// observe_log.verdict (1 / 0 / NULL) as the word the tools speak.
+fn verdict_word(verdict: Option<i64>) -> Option<&'static str> {
+    verdict.map(|v| if v == 1 { "yes" } else { "no" })
+}
+
+/// The decided option as {index, label}, or null while undecided.
+fn decision_json(options: &Value, decision: Option<i64>) -> Value {
+    match decision {
+        Some(i) => json!({ "index": i, "label": options[i as usize]["label"] }),
+        None => Value::Null,
+    }
+}
+
 const LINK_KINDS: [&str; 6] = ["pr", "branch", "commit", "worktree", "other", "file"];
 
 /// Extensions a file-evidence link may point at. Kept in lockstep with
@@ -1133,7 +1175,7 @@ impl TildoneAgent {
     fn goal_progress(conn: &Connection, goal_id: i64) -> Result<(i64, i64), rusqlite::Error> {
         conn.query_row(
             "SELECT COUNT(*), SUM(status = 'done')
-             FROM tasks WHERE goal_id = ?1 AND deleted_at IS NULL",
+             FROM tasks WHERE goal_id = ?1 AND deleted_at IS NULL AND kind = 'task'",
             [goal_id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
         )
@@ -1679,7 +1721,67 @@ impl TildoneAgent {
             })?
             .collect::<Result<_, _>>()?;
         task["comments"] = json!(comments);
+        if let Some(observe) = Self::observe_json(conn, id)? {
+            task["observe"] = observe;
+        }
         Ok(Some(task))
+    }
+
+    /// get_task's `observe` block: the card's check, trigger, options, decision,
+    /// derived state and full log. None for a plain task.
+    fn observe_json(conn: &Connection, id: i64) -> Result<Option<Value>, rusqlite::Error> {
+        let card = conn
+            .query_row(
+                "SELECT check_text, trigger_date, trigger_count, trigger_unit, options, decision,
+                        (SELECT COUNT(*) FROM observe_log l WHERE l.task_id = c.task_id)
+                   FROM observe_cards c WHERE c.task_id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, Option<i64>>(5)?,
+                        r.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        let Some((check, trigger_date, trigger_count, trigger_unit, options, decision, logged)) = card
+        else {
+            return Ok(None);
+        };
+        let today = local_today(conn)?;
+        let options: Value = serde_json::from_str(&options).unwrap_or_else(|_| json!([]));
+        let mut stmt = conn.prepare(
+            "SELECT at, session_id, text, verdict FROM observe_log WHERE task_id = ?1 ORDER BY id",
+        )?;
+        let log: Vec<Value> = stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "at": r.get::<_, String>(0)?,
+                    "session_id": r.get::<_, Option<String>>(1)?,
+                    "text": r.get::<_, String>(2)?,
+                    "verdict": verdict_word(r.get::<_, Option<i64>>(3)?),
+                }))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(Some(json!({
+            "check": check,
+            "trigger_date": trigger_date,
+            "trigger_count": trigger_count,
+            "trigger_unit": trigger_unit,
+            "decision": decision_json(&options, decision),
+            "options": options,
+            "state": observe_state(decision, logged, trigger_count, trigger_date.as_deref(), &today),
+            "log": log,
+        })))
     }
 
     /// Shared implementation for update_task / complete_task.
@@ -1711,11 +1813,11 @@ impl TildoneAgent {
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
         };
-        let current: Option<(String, Option<i64>, Option<String>, String, Option<String>)> = conn
+        let current: Option<(String, Option<i64>, Option<String>, String, Option<String>, String)> = conn
             .query_row(
-                "SELECT status, project_id, deleted_at, title, ref FROM tasks WHERE id = ?1",
+                "SELECT status, project_id, deleted_at, title, ref, kind FROM tasks WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .map(Some)
             .or_else(|e| match e {
@@ -1723,9 +1825,14 @@ impl TildoneAgent {
                 other => Err(other),
             })
             .map_err(db_err)?;
-        let Some((old_status, old_project_id, deleted_at, db_title, db_ref)) = current else {
+        let Some((old_status, old_project_id, deleted_at, db_title, db_ref, kind)) = current else {
             return Ok(err(format!("No task with id {id}.")));
         };
+        if kind == "observe" && status.is_some() {
+            return Ok(err(
+                "The decision on an observe card is the user's; they decide it in the Observe page.",
+            ));
+        }
         // The title a notification should name: the new one if this call changes it,
         // otherwise what's on the row.
         let mut notify_title = db_title;
@@ -2349,6 +2456,57 @@ struct CreateTaskParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ObserveOption {
+    #[schemars(description = "Short name of the decision, e.g. \"Keep it\"")]
+    label: String,
+    #[schemars(description = "What choosing it means")]
+    #[serde(default)]
+    detail: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct CreateObservationParams {
+    #[schemars(description = "The question being watched; becomes the card title")]
+    question: String,
+    #[schemars(description = "Project name or id; omit or \"inbox\" for no project")]
+    project: Option<String>,
+    #[schemars(description = "Why it matters; becomes the card notes")]
+    why: Option<String>,
+    #[schemars(description = "What a session does when asked to check it")]
+    check: String,
+    #[schemars(description = "Due on this date (YYYY-MM-DD). Exactly one of trigger_date / trigger_count.")]
+    trigger_date: Option<String>,
+    #[schemars(description = "Due after this many log lines (> 0). Exactly one of trigger_date / trigger_count.")]
+    trigger_count: Option<i64>,
+    #[schemars(description = "What one log line counts, with trigger_count (default \"checks\")")]
+    trigger_unit: Option<String>,
+    #[schemars(description = "2-3 decisions the user picks from once it is due")]
+    options: Vec<ObserveOption>,
+    #[schemars(description = "The task whose work raised the question (id or ref)")]
+    from_task: Option<TaskRef>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct LogObservationParams {
+    #[schemars(description = "Observe card id or ref")]
+    task: TaskRef,
+    #[schemars(description = "What this session saw when it ran the check")]
+    text: String,
+    #[schemars(description = "yes or no, when the check has a yes/no answer")]
+    verdict: Option<String>,
+    #[schemars(description = "Your CLAUDE_CODE_SESSION_ID env var, recorded on the line")]
+    session_id: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema, Default)]
+struct ListObservationsParams {
+    #[schemars(description = "Filter by project name or id, or \"inbox\"")]
+    project: Option<String>,
+    #[schemars(description = "due, waiting or observed; omit for all")]
+    state: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct UpdateTaskParams {
     id: TaskRef,
     title: Option<String>,
@@ -2535,8 +2693,8 @@ impl TildoneAgent {
         let mut stmt = conn
             .prepare(
                 "SELECT p.id, p.name, p.color,
-                    (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.status <> 'done'),
-                    (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.status = 'done')
+                    (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.kind = 'task' AND t.status <> 'done'),
+                    (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.kind = 'task' AND t.status = 'done')
                  FROM projects p ORDER BY p.position, p.id",
             )
             .map_err(db_err)?;
@@ -2687,8 +2845,8 @@ impl TildoneAgent {
             if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
         let sql = format!(
             "SELECT g.id, g.name, p.name, g.notes, g.color, g.target_date, g.completed_at,
-                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL),
-                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.status = 'done')
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.kind = 'task'),
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.kind = 'task' AND t.status = 'done')
              FROM goals g JOIN projects p ON p.id = g.project_id
              {where_sql}
              ORDER BY p.position, p.id, g.position, g.id"
@@ -2908,7 +3066,8 @@ impl TildoneAgent {
         Parameters(p): Parameters<ListTasksParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let conn = self.db.lock().unwrap();
-        let mut wheres = vec!["t.deleted_at IS NULL".to_string()];
+        // Observe cards are task rows but not tasks: list_observations serves them.
+        let mut wheres = vec!["t.deleted_at IS NULL".to_string(), "t.kind = 'task'".to_string()];
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(project) = &p.project {
@@ -3047,7 +3206,7 @@ impl TildoneAgent {
             .query_row(
                 "SELECT t.id FROM tasks t
                   WHERE t.deleted_at IS NULL AND t.status = 'todo' AND t.owner = 'agent'
-                    AND t.project_id IS ?1
+                    AND t.kind = 'task' AND t.project_id IS ?1
                     AND NOT EXISTS (SELECT 1 FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id
                                      WHERE tt.task_id = t.id
                                        AND LOWER(tg.name) IN ('blocked', 'needs-approval'))
@@ -3088,6 +3247,19 @@ impl TildoneAgent {
         p: CreateTaskParams,
         agent: Option<&str>,
     ) -> Result<CallToolResult, ErrorData> {
+        self.create_row(p, "task", agent, |_, _| Ok(()))
+    }
+
+    /// The one creation path for a `tasks` row of either kind: validation, ref,
+    /// position, tags, claim and the created activity, in one transaction. `extra`
+    /// runs inside it once the row exists — create_observation adds its card there.
+    fn create_row(
+        &self,
+        p: CreateTaskParams,
+        kind: &str,
+        agent: Option<&str>,
+        extra: impl FnOnce(&Connection, i64) -> Result<(), rusqlite::Error>,
+    ) -> Result<CallToolResult, ErrorData> {
         let title = p.title.trim().to_string();
         if title.is_empty() {
             return Ok(err("title cannot be empty."));
@@ -3120,6 +3292,8 @@ impl TildoneAgent {
         }
 
         let conn = self.db.lock().unwrap();
+        // Rolls back on any early return below: dropping it uncommitted is a ROLLBACK.
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
         let from_task_id = match &p.from_task {
             None => None,
             Some(r) => match resolve_task_ref(&conn, r).map_err(db_err)? {
@@ -3158,8 +3332,8 @@ impl TildoneAgent {
         let number = next_task_number(&conn, &code).map_err(db_err)?;
         let task_ref = format!("{code}-{number}");
         conn.execute(
-            "INSERT INTO tasks (project_id, goal_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref, owner, from_task_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO tasks (project_id, goal_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref, owner, from_task_id, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 project_id,
                 goal_id,
@@ -3174,14 +3348,17 @@ impl TildoneAgent {
                 number,
                 task_ref,
                 owner,
-                from_task_id
+                from_task_id,
+                kind
             ],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
+        extra(&conn, id).map_err(db_err)?;
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
+        let mut adopt = None;
         if status == "doing" {
             if let Some(session) = claim.session() {
                 Self::record_claim(
@@ -3193,16 +3370,21 @@ impl TildoneAgent {
                     agent,
                     self.beat_pid(session),
                 );
-                // Bind-on-claim (session-first intake): the create-and-claim
-                // in one write — the canonical "card emerges from the
-                // discussion" moment.
-                let pid = self.binding_pid(session);
-                crate::host::try_adopt_claim(session, pid);
+                adopt = Some((session.to_string(), self.binding_pid(session)));
             }
         }
-        Self::record_activity(&conn, id, "Task created", agent);
+        let label = if kind == "observe" { "Observe card created" } else { "Task created" };
+        Self::record_activity(&conn, id, label, agent);
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
         drop(conn);
+        // Bind-on-claim (session-first intake): the create-and-claim in one
+        // write, the canonical "card emerges from the discussion" moment. Host
+        // reads the claim on its own connection, so it runs after the commit
+        // and after the agent's DB lock is released (host.rs lock ordering).
+        if let Some((session, pid)) = adopt {
+            crate::host::try_adopt_claim(&session, pid);
+        }
         self.notify();
         ok_json(&ack)
     }
@@ -3528,6 +3710,213 @@ impl TildoneAgent {
         // A receipt, like every other write: the entry is on screen, echoing it back
         // would only pay for the same bytes twice.
         ok_json(&json!({ "task_id": task_id, "logged": text }))
+    }
+
+    #[tool(
+        description = "Create an observe card: a question checked across many sessions until it is due, then decided by the user. Exactly one trigger: trigger_date, or trigger_count log lines. options are the 2-3 decisions on offer."
+    )]
+    fn create_observation(
+        &self,
+        Parameters(p): Parameters<CreateObservationParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.create_observation_as(p, Self::client_name(&ctx).as_deref())
+    }
+
+    fn create_observation_as(
+        &self,
+        p: CreateObservationParams,
+        agent: Option<&str>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let check = p.check.trim().to_string();
+        if check.is_empty() {
+            return Ok(err("check cannot be empty."));
+        }
+        let trigger_date = p.trigger_date.as_deref().map(str::trim);
+        match (trigger_date, p.trigger_count) {
+            (Some(d), None) if !valid_date(d) => return Ok(err("trigger_date must be YYYY-MM-DD.")),
+            (None, Some(n)) if n <= 0 => return Ok(err("trigger_count must be greater than 0.")),
+            (Some(_), None) | (None, Some(_)) => {}
+            _ => return Ok(err("Give exactly one trigger: trigger_date or trigger_count.")),
+        }
+        if !(2..=3).contains(&p.options.len()) {
+            return Ok(err("options must have 2 or 3 items of {label, detail}."));
+        }
+        if p.options.iter().any(|o| o.label.trim().is_empty()) {
+            return Ok(err("Every option needs a label."));
+        }
+        let options: Vec<Value> = p
+            .options
+            .iter()
+            .map(|o| json!({ "label": o.label.trim(), "detail": o.detail.trim() }))
+            .collect();
+        let options = Value::Array(options).to_string();
+        let trigger_date = trigger_date.map(str::to_string);
+        let trigger_unit = p.trigger_count.map(|_| {
+            p.trigger_unit
+                .as_deref()
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .unwrap_or("checks")
+                .to_string()
+        });
+        let row = CreateTaskParams {
+            title: p.question,
+            project: p.project,
+            notes: p.why,
+            due_date: None,
+            priority: None,
+            tags: None,
+            goal: None,
+            status: None,
+            owner: Some("human".to_string()),
+            from_task: p.from_task,
+            session_id: None,
+            cwd: None,
+            branch: None,
+        };
+        self.create_row(row, "observe", agent, |conn, id| {
+            conn.execute(
+                "INSERT INTO observe_cards (task_id, check_text, trigger_date, trigger_count, trigger_unit, options)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, check, trigger_date, p.trigger_count, trigger_unit, options],
+            )
+            .map(|_| ())
+        })
+    }
+
+    #[tool(
+        description = "Append one line to an observe card's log — what this session saw when it ran the card's check. verdict yes/no when the check has one. Refused once the user has decided the card."
+    )]
+    fn log_observation(
+        &self,
+        Parameters(p): Parameters<LogObservationParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let text = p.text.trim().to_string();
+        if text.is_empty() {
+            return Ok(err("Log text cannot be empty."));
+        }
+        let verdict: Option<i64> = match p.verdict.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(v) if v.eq_ignore_ascii_case("yes") => Some(1),
+            Some(v) if v.eq_ignore_ascii_case("no") => Some(0),
+            Some(_) => return Ok(err("verdict must be yes or no.")),
+        };
+        let task_ref = p.task;
+        let conn = self.db.lock().unwrap();
+        let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
+            return Ok(err(format!("No task with reference {task_ref}.")));
+        };
+        let card: Option<(Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>)> =
+            conn.query_row(
+                "SELECT t.deleted_at, t.ref, c.decision, c.trigger_count, c.trigger_date
+                   FROM tasks t JOIN observe_cards c ON c.task_id = t.id
+                  WHERE t.id = ?1 AND t.kind = 'observe'",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let Some((deleted_at, card_ref, decision, trigger_count, trigger_date)) = card else {
+            return Ok(err(format!(
+                "Task {task_ref} is not an observe card; use log_progress for a task's running log."
+            )));
+        };
+        if deleted_at.is_some() {
+            return Ok(err(format!(
+                "Task {task_ref} is in the trash; it can only be restored from the app."
+            )));
+        }
+        if decision.is_some() {
+            return Ok(err(format!(
+                "Observe card {task_ref} is already observed: the user decided it, so it takes no more log lines."
+            )));
+        }
+        conn.execute(
+            "INSERT INTO observe_log (task_id, at, session_id, text, verdict) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, now_iso(), p.session_id, text, verdict],
+        )
+        .map_err(db_err)?;
+        let logged: i64 = conn
+            .query_row("SELECT COUNT(*) FROM observe_log WHERE task_id = ?1", [id], |r| r.get(0))
+            .map_err(db_err)?;
+        let today = local_today(&conn).map_err(db_err)?;
+        let state = observe_state(None, logged, trigger_count, trigger_date.as_deref(), &today);
+        drop(conn);
+        self.notify();
+        ok_json(&json!({ "id": id, "ref": card_ref, "logged": logged, "state": state }))
+    }
+
+    #[tool(
+        description = "List observe cards (not trashed) with their derived state: due (trigger reached, waiting on the user), waiting, or observed (decided)."
+    )]
+    fn list_observations(
+        &self,
+        Parameters(p): Parameters<ListObservationsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(state) = &p.state {
+            if !OBSERVE_STATES.contains(&state.as_str()) {
+                return Ok(err("state must be one of: due, waiting, observed."));
+            }
+        }
+        let conn = self.db.lock().unwrap();
+        let mut wheres = vec!["t.deleted_at IS NULL".to_string(), "t.kind = 'observe'".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(project) = &p.project {
+            match Self::resolve_project(&conn, project).map_err(db_err)? {
+                Ok(Some(pid)) => {
+                    params.push(Box::new(pid));
+                    wheres.push(format!("t.project_id = ?{}", params.len()));
+                }
+                Ok(None) => wheres.push("t.project_id IS NULL".to_string()),
+                Err(msg) => return Ok(err(msg)),
+            }
+        }
+        let today = local_today(&conn).map_err(db_err)?;
+        let sql = format!(
+            "SELECT t.id, t.ref, t.title, p.name, c.trigger_date, c.trigger_count, c.trigger_unit,
+                    c.options, c.decision,
+                    (SELECT COUNT(*) FROM observe_log l WHERE l.task_id = t.id)
+               FROM tasks t JOIN observe_cards c ON c.task_id = t.id
+               LEFT JOIN projects p ON p.id = t.project_id
+              WHERE {}
+              ORDER BY p.position, t.position, t.id",
+            wheres.join(" AND ")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let cards: Vec<Value> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+                let trigger_date: Option<String> = r.get(4)?;
+                let trigger_count: Option<i64> = r.get(5)?;
+                let options: String = r.get(7)?;
+                let decision: Option<i64> = r.get(8)?;
+                let logged: i64 = r.get(9)?;
+                let options: Value = serde_json::from_str(&options).unwrap_or_else(|_| json!([]));
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "ref": r.get::<_, Option<String>>(1)?,
+                    "question": r.get::<_, String>(2)?,
+                    "project": r.get::<_, Option<String>>(3)?,
+                    "state": observe_state(decision, logged, trigger_count, trigger_date.as_deref(), &today),
+                    "trigger_date": trigger_date,
+                    "trigger_count": trigger_count,
+                    "trigger_unit": r.get::<_, Option<String>>(6)?,
+                    "logged": logged,
+                    "decision": decision_json(&options, decision)["label"],
+                }))
+            })
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        let cards: Vec<Value> = cards
+            .into_iter()
+            .filter(|c| p.state.as_deref().is_none_or(|s| c["state"] == s))
+            .collect();
+        ok_json(&json!({ "count": cards.len(), "observations": cards }))
     }
 
     #[tool(description = "Mark a task as done.")]
@@ -3881,7 +4270,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. entity is task or goal. For entity task, kind is created/status/moved/trashed/restored/edited/link/comment/tag/image — note a task's goal changing is reported as a task edit, not as the goal. For entity goal, kind is created/edited/completed/reopened/deleted. A change says THAT something changed, not what it now is — follow up with get_task(entity_id) or list_goals(id: entity_id)."
+        description = "What changed on the board since a cursor. Call once with no arguments for the current cursor, then pass it back as `since`; with `wait_ms` the call blocks until something changes — park here instead of polling. entity is task or goal. For entity task, kind is created/status/moved/trashed/restored/edited/link/comment/tag/image/observed (an observe card's log grew) — note a task's goal changing is reported as a task edit, not as the goal. For entity goal, kind is created/edited/completed/reopened/deleted. A change says THAT something changed, not what it now is — follow up with get_task(entity_id) or list_goals(id: entity_id)."
     )]
     async fn list_changes(
         &self,
@@ -3981,7 +4370,10 @@ impl ServerHandler for TildoneAgent {
              Start with list_projects/list_goals/list_tasks to see what exists — the goals \
              before the tasks, so an outcome already in flight is visible before you mint \
              cards under it; deleting a project is irreversible, deleted tasks go to a \
-             restorable trash.",
+             restorable trash. An observe card is a question watched across many sessions \
+             (create_observation): when asked to check one, run its check and append what \
+             you saw with log_observation. Only the user decides it, in the app; \
+             list_tasks and next_task never return observe cards — list_observations does.",
         )
     }
 
@@ -5143,6 +5535,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/024_task_cwd_newest.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/025_goals.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/028_task_owner.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/029_observe.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -8333,6 +8726,207 @@ mod tests {
         // notes are byte-identical: the log cost nothing in notes traffic.
         let (_, full) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
         assert_eq!(full["notes"].as_str().unwrap(), CANONICAL_NOTES);
+    }
+
+    // ---- observe cards ----
+
+    fn observe_params(trigger_date: Option<&str>, trigger_count: Option<i64>, options: usize) -> CreateObservationParams {
+        CreateObservationParams {
+            question: "Does the reviewer catch real bugs?".into(),
+            project: None,
+            why: Some("It costs a dispatch per delivery".into()),
+            check: "Count reviewer findings that changed code".into(),
+            trigger_date: trigger_date.map(str::to_string),
+            trigger_count,
+            trigger_unit: None,
+            options: (0..options)
+                .map(|i| ObserveOption { label: format!("Option {i}"), detail: format!("Detail {i}") })
+                .collect(),
+            from_task: None,
+        }
+    }
+
+    fn an_observation(agent: &TildoneAgent, trigger_count: i64) -> i64 {
+        let (is_err, ack) =
+            extract(&agent.create_observation_as(observe_params(None, Some(trigger_count), 2), None).unwrap());
+        assert!(!is_err, "create_observation failed: {ack}");
+        ack["id"].as_i64().unwrap()
+    }
+
+    fn log_line(agent: &TildoneAgent, id: i64, verdict: Option<&str>) -> (bool, Value) {
+        extract(
+            &agent
+                .log_observation(Parameters(LogObservationParams {
+                    task: id.into(),
+                    text: "  saw two real bugs  ".into(),
+                    verdict: verdict.map(str::to_string),
+                    session_id: Some("sess-1".into()),
+                }))
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn create_observation_with_count_trigger_returns_receipt() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, ack) =
+            extract(&agent.create_observation_as(observe_params(None, Some(3), 3), None).unwrap());
+        assert!(!is_err, "create_observation failed: {ack}");
+        assert_eq!(ack["status"], "todo");
+        assert!(ack["ref"].as_str().unwrap().starts_with("INBOX-"), "{ack}");
+        let id = ack["id"].as_i64().unwrap();
+        let conn = db.lock().unwrap();
+        let (kind, owner, notes, unit, options): (String, String, String, String, String) = conn
+            .query_row(
+                "SELECT t.kind, t.owner, t.notes, c.trigger_unit, c.options
+                   FROM tasks t JOIN observe_cards c ON c.task_id = t.id WHERE t.id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), owner.as_str()), ("observe", "human"));
+        assert_eq!(notes, "It costs a dispatch per delivery");
+        assert_eq!(unit, "checks", "trigger_unit defaults with a count trigger");
+        assert_eq!(serde_json::from_str::<Value>(&options).unwrap().as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn create_observation_rejects_bad_trigger_and_option_counts() {
+        let (agent, db) = test_agent_with_db();
+        for p in [
+            observe_params(Some("2026-10-01"), Some(3), 2),
+            observe_params(None, None, 2),
+            observe_params(None, Some(0), 2),
+            observe_params(None, Some(3), 1),
+            observe_params(None, Some(3), 4),
+        ] {
+            let (is_err, out) = extract(&agent.create_observation_as(p, None).unwrap());
+            assert!(is_err, "must be refused: {out}");
+        }
+        let rows: i64 =
+            db.lock().unwrap().query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0, "a refused observation leaves no task row behind");
+    }
+
+    #[test]
+    fn log_observation_appends_and_card_turns_due_at_count() {
+        let agent = test_agent();
+        let id = an_observation(&agent, 2);
+        let (is_err, ack) = log_line(&agent, id, Some("yes"));
+        assert!(!is_err, "log_observation failed: {ack}");
+        assert_eq!((ack["logged"].as_i64(), ack["state"].as_str()), (Some(1), Some("waiting")));
+        let (_, ack) = log_line(&agent, id, None);
+        assert_eq!((ack["logged"].as_i64(), ack["state"].as_str()), (Some(2), Some("due")));
+
+        let (_, due) = extract(
+            &agent
+                .list_observations(Parameters(ListObservationsParams { project: None, state: Some("due".into()) }))
+                .unwrap(),
+        );
+        assert_eq!(due["count"], 1, "{due}");
+        assert_eq!(due["observations"][0]["logged"], 2);
+
+        // A plain task takes no observe lines.
+        let plain = a_task(&agent, "Plain");
+        let (is_err, _) = log_line(&agent, plain, None);
+        assert!(is_err, "log_observation on a plain task must be refused");
+    }
+
+    #[test]
+    fn log_observation_refused_on_decided_card() {
+        let (agent, db) = test_agent_with_db();
+        let id = an_observation(&agent, 5);
+        db.lock()
+            .unwrap()
+            .execute("UPDATE observe_cards SET decision = 1 WHERE task_id = ?1", [id])
+            .unwrap();
+        let (is_err, out) = log_line(&agent, id, None);
+        assert!(is_err, "a decided card takes no more lines");
+        assert!(out.to_string().contains("already observed"), "{out}");
+        let (_, list) = extract(
+            &agent
+                .list_observations(Parameters(ListObservationsParams { project: None, state: Some("observed".into()) }))
+                .unwrap(),
+        );
+        assert_eq!(list["observations"][0]["decision"], "Option 1", "{list}");
+    }
+
+    #[test]
+    fn observe_state_date_trigger_due_from_its_day() {
+        assert_eq!(observe_state(None, 0, None, Some("2026-10-02"), "2026-10-01"), "waiting");
+        assert_eq!(observe_state(None, 0, None, Some("2026-10-01"), "2026-10-01"), "due");
+        assert_eq!(observe_state(None, 0, None, Some("2026-09-30"), "2026-10-01"), "due");
+        assert_eq!(observe_state(Some(0), 0, None, Some("2026-09-30"), "2026-10-01"), "observed");
+    }
+
+    #[test]
+    fn list_tasks_and_next_task_skip_observe_cards() {
+        let (agent, db) = test_agent_with_db();
+        let id = an_observation(&agent, 2);
+        // Even handed to the agent queue, an observe card is never served as work.
+        db.lock().unwrap().execute("UPDATE tasks SET owner = 'agent' WHERE id = ?1", [id]).unwrap();
+        let (_, list) = extract(&agent.list_tasks(Parameters(ListTasksParams::default())).unwrap());
+        assert_eq!(list["count"], 0, "{list}");
+        let (_, next) =
+            extract(&agent.next_task(Parameters(NextTaskParams { project: "inbox".into() })).unwrap());
+        assert!(next.get("reason").is_some(), "next_task must skip the observe card: {next}");
+    }
+
+    #[test]
+    fn complete_and_status_update_refused_on_observe_card() {
+        let agent = test_agent();
+        let id = an_observation(&agent, 2);
+        let (is_err, out) = extract(&agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap());
+        assert!(is_err && out.to_string().contains("user's"), "complete_task must be refused: {out}");
+        let update = |status: Option<&str>, title: Option<&str>| {
+            extract(
+                &agent
+                    .update_task_as(
+                        UpdateTaskParams {
+                            id: id.into(),
+                            title: title.map(str::to_string),
+                            notes: None,
+                            status: status.map(str::to_string),
+                            priority: None,
+                            due_date: None,
+                            project: None,
+                            tags: None,
+                            goal: None,
+                            owner: None,
+                            session_id: None,
+                            cwd: None,
+                            branch: None,
+                        },
+                        None,
+                    )
+                    .unwrap(),
+            )
+        };
+        assert!(update(Some("done"), None).0, "a status write must be refused");
+        let (is_err, ack) = update(None, Some("Reworded question"));
+        assert!(!is_err, "a title edit still works: {ack}");
+        assert_eq!(ack["status"], "todo");
+    }
+
+    #[test]
+    fn get_task_returns_the_observe_block() {
+        let agent = test_agent();
+        let id = an_observation(&agent, 2);
+        log_line(&agent, id, Some("no"));
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap());
+        let obs = &task["observe"];
+        assert_eq!(obs["check"], "Count reviewer findings that changed code");
+        assert_eq!((obs["trigger_count"].as_i64(), obs["trigger_unit"].as_str()), (Some(2), Some("checks")));
+        assert_eq!(obs["options"][1], json!({"label": "Option 1", "detail": "Detail 1"}));
+        assert_eq!(obs["state"], "waiting");
+        assert!(obs.get("decision").is_none(), "undecided: {obs}");
+        let line = &obs["log"][0];
+        assert_eq!((line["text"].as_str(), line["verdict"].as_str()), (Some("saw two real bugs"), Some("no")));
+        assert_eq!(line["session_id"], "sess-1");
+
+        let plain = a_task(&agent, "Plain");
+        let (_, task) = extract(&agent.get_task(Parameters(TaskIdParams { id: plain.into() })).unwrap());
+        assert!(task.get("observe").is_none(), "a plain task has no observe block");
     }
 
     #[test]

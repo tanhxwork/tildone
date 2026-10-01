@@ -6,6 +6,8 @@ import type {
   Comment,
   Goal,
   LinkKind,
+  ObserveCard,
+  ObserveOption,
   Project,
   ProjectIcon,
   Selection,
@@ -25,6 +27,7 @@ import {
 } from "./types";
 import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
+import { watchMoreTrigger } from "./observeViews";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
 import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
@@ -87,6 +90,9 @@ interface Store {
   /** Comment count per task_id, for the card badge. Bodies load only on open
    * (loadComments); this is refreshed by the same reload every agent write triggers. */
   commentCounts: Record<number, number>;
+  /** Observe cards (migration 029): task rows with kind 'observe', kept out of
+   *  `tasks` so no board, list or count shows them. Refreshed by every reload. */
+  observeCards: ObserveCard[];
   /**
    * Newest agent activity per task_id — the FALLBACK half of presence. Derived from
    * task_activity on every load, never stored: a dead session stops writing and its
@@ -182,12 +188,32 @@ interface Store {
     due_date: string | null;
     priority?: number;
     tag_ids?: number[];
+    /** Lineage: the observe card whose decision spawned this task. */
+    from_task_id?: number | null;
   }) => Promise<number>;
   patchTask: (
     id: number,
     patch: Partial<Omit<Task, "id" | "tag_ids" | "created_at">>,
   ) => Promise<void>;
   toggleDone: (id: number) => Promise<void>;
+
+  /** New observe card from the dialog; resolves to its task id. Lands Waiting. */
+  addObservation: (input: {
+    project_id: number | null;
+    question: string;
+    why: string;
+    check_text: string;
+    trigger_date: string | null;
+    trigger_count: number | null;
+    trigger_unit: string | null;
+    options: ObserveOption[];
+  }) => Promise<number>;
+  /** The user's pick on a Due card: moves it to Observed. */
+  decideObservation: (id: number, optionIndex: number) => Promise<void>;
+  /** "Watch 3 more" / "Watch 1 more week": pushes the trigger so the card waits again. */
+  watchMore: (id: number) => Promise<void>;
+  /** Open a human task from an Observed card's decision, with lineage to the card. */
+  openFollowUp: (id: number) => Promise<void>;
   removeTask: (id: number) => Promise<void>;
   restoreTask: (id: number) => Promise<void>;
   /** Owner changes go through patchTask({ owner }). This clears needs-approval
@@ -243,6 +269,7 @@ const VIEW_MODES: ViewMode[] = ["list", "board", "table", "calendar"];
 const SELECTION_TYPES: Selection["type"][] = [
   "mine",
   "queue",
+  "observe",
   "today",
   "upcoming",
   "inbox",
@@ -354,6 +381,7 @@ export const useStore = create<Store>()((set, get) => ({
   reviewFlaggedAt: null,
   comments: [],
   commentCounts: {},
+  observeCards: [],
   presence: {},
   live: {},
 
@@ -765,7 +793,7 @@ export const useStore = create<Store>()((set, get) => ({
     await db.updateProjectPositions(updates);
   },
 
-  addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [] }) => {
+  addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [], from_task_id = null }) => {
     const { tasks } = get();
     const position = groupSlot(tasks, project_id, "todo");
     const created_at = new Date().toISOString();
@@ -788,6 +816,7 @@ export const useStore = create<Store>()((set, get) => ({
       position,
       priority,
       created_at,
+      from_task_id,
     });
     if (tag_ids.length > 0) await db.setTaskTags(id, tag_ids);
     void recordActivity(id, "Task created");
@@ -810,11 +839,83 @@ export const useStore = create<Store>()((set, get) => ({
       // You just typed this task in. There is nothing here you have not seen.
       unseen_at: null,
       owner: "human",
-      from_task_id: null,
+      from_task_id,
+      kind: "task",
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
     return id;
+  },
+
+  addObservation: async (input) => {
+    const created_at = new Date().toISOString();
+    const position = groupSlot(get().tasks, input.project_id, "todo");
+    const { id, number, ref } = await db.createObservation({ ...input, position, created_at });
+    const card: ObserveCard = {
+      task: {
+        id,
+        project_id: input.project_id,
+        goal_id: null,
+        title: input.question,
+        notes: input.why,
+        status: "todo",
+        priority: 0,
+        due_date: null,
+        position,
+        created_at,
+        completed_at: null,
+        deleted_at: null,
+        archived_at: null,
+        number,
+        ref,
+        unseen_at: null,
+        owner: "human",
+        from_task_id: null,
+        kind: "observe",
+        tag_ids: [],
+      },
+      check_text: input.check_text,
+      trigger_date: input.trigger_date,
+      trigger_count: input.trigger_count,
+      trigger_unit: input.trigger_unit,
+      options: input.options,
+      decision: null,
+      log: [],
+    };
+    set((s) => ({ observeCards: [...s.observeCards, card] }));
+    return id;
+  },
+
+  decideObservation: async (id, optionIndex) => {
+    const card = get().observeCards.find((c) => c.task.id === id);
+    if (!card || card.decision !== null || !card.options[optionIndex]) return;
+    const completed_at = new Date().toISOString();
+    await db.decideObservation(id, optionIndex, completed_at);
+    patchObserveCard(id, (c) => ({
+      ...c,
+      decision: optionIndex,
+      task: { ...c.task, status: "done", completed_at },
+    }));
+  },
+
+  watchMore: async (id) => {
+    const card = get().observeCards.find((c) => c.task.id === id);
+    if (!card || card.decision !== null) return;
+    const trigger = watchMoreTrigger(card, todayStr());
+    await db.watchObservation(id, trigger);
+    patchObserveCard(id, (c) => ({ ...c, ...trigger }));
+  },
+
+  openFollowUp: async (id) => {
+    const card = get().observeCards.find((c) => c.task.id === id);
+    const option = card?.decision != null ? card.options[card.decision] : undefined;
+    if (!card || !option) return;
+    await get().addTask({
+      title: `${option.label}: ${card.task.title}`,
+      project_id: card.task.project_id,
+      due_date: null,
+      from_task_id: id,
+    });
   },
 
   patchTask: async (id, patch) => {
@@ -902,6 +1003,8 @@ export const useStore = create<Store>()((set, get) => ({
     // needs a fresh one like any other arrival.
     const position = groupSlot(get().tasks, task.project_id, task.status);
     await db.updateTask(id, { deleted_at: null, position });
+    // A restored observe card belongs in observeCards, which only fetchAll builds.
+    if (task.kind === "observe") return get().reload();
     set((s) => ({
       tasks: s.tasks.map((t) =>
         t.id === id ? { ...t, deleted_at: null, position } : t,
@@ -1291,6 +1394,13 @@ useStore.subscribe((state) => {
     persistNav(state.selection, state.viewMode);
   }
 });
+
+/** Replace one observe card in the slice. */
+function patchObserveCard(id: number, fn: (card: ObserveCard) => ObserveCard): void {
+  useStore.setState((s) => ({
+    observeCards: s.observeCards.map((c) => (c.task.id === id ? fn(c) : c)),
+  }));
+}
 
 /** Persist an activity entry and refresh the log if that task's details are open. */
 async function recordActivity(taskId: number, label: string): Promise<void> {

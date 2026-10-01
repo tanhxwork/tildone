@@ -1,6 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
-import type { ActivityEntry, Comment, Goal, Project, Status, Subtask, Tag, Task, TaskImage, TaskLink } from "./types";
+import type {
+  ActivityEntry,
+  Comment,
+  Goal,
+  ObserveCard,
+  ObserveLogLine,
+  ObserveOption,
+  Project,
+  Status,
+  Subtask,
+  Tag,
+  Task,
+  TaskImage,
+  TaskLink,
+} from "./types";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
 
 /**
@@ -50,7 +64,9 @@ async function getDb(): Promise<Database> {
   return db;
 }
 
-interface TaskRow extends Omit<Task, "tag_ids"> {}
+interface TaskRow extends Omit<Task, "tag_ids"> {
+  kind: "task" | "observe";
+}
 
 export async function fetchAll(): Promise<{
   projects: Project[];
@@ -62,6 +78,7 @@ export async function fetchAll(): Promise<{
   links: Record<number, TaskLink[]>;
   images: Record<number, TaskImage[]>;
   commentCounts: Record<number, number>;
+  observeCards: ObserveCard[];
 }> {
   const d = await getDb();
   const subtaskRows = await d.select<(Omit<Subtask, "done"> & { done: number })[]>(
@@ -78,7 +95,7 @@ export async function fetchAll(): Promise<{
     "SELECT id, name, color FROM tags ORDER BY name",
   );
   const rows = await d.select<TaskRow[]>(
-    "SELECT id, project_id, goal_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref, unseen_at, owner, from_task_id FROM tasks",
+    "SELECT id, project_id, goal_id, title, notes, status, priority, due_date, position, created_at, completed_at, deleted_at, archived_at, number, ref, unseen_at, owner, from_task_id, kind FROM tasks",
   );
   const links = await d.select<{ task_id: number; tag_id: number }[]>(
     "SELECT task_id, tag_id FROM task_tags",
@@ -89,10 +106,16 @@ export async function fetchAll(): Promise<{
     list.push(link.tag_id);
     tagsByTask.set(link.task_id, list);
   }
-  const tasks = rows.map((row) => ({
-    ...row,
-    tag_ids: tagsByTask.get(row.id) ?? [],
-  }));
+  // Observe cards are task rows (migration 029) but never board cards: they go to
+  // their own slice, so no board, list or count has to filter them out.
+  const observeRows = new Map<number, Task>();
+  const tasks: Task[] = [];
+  for (const row of rows) {
+    const task = { ...row, tag_ids: tagsByTask.get(row.id) ?? [] };
+    if (row.kind === "observe" && row.deleted_at === null) observeRows.set(row.id, task);
+    else tasks.push(task);
+  }
+  const observeCards = await fetchObserveCards(d, observeRows);
   const presence = await fetchAgentPresence();
   const linkRows = await d.select<TaskLink[]>(
     "SELECT id, task_id, url, label, kind, pr_state, pr_behind, pr_checks FROM task_links ORDER BY id",
@@ -126,7 +149,127 @@ export async function fetchAll(): Promise<{
     links: linksByTask,
     images: imagesByTask,
     commentCounts,
+    observeCards,
   };
+}
+
+/** The live (untrashed) observe cards among `rows`, with their options parsed and
+ *  their log in insert order. */
+async function fetchObserveCards(d: Database, rows: Map<number, Task>): Promise<ObserveCard[]> {
+  if (rows.size === 0) return [];
+  const cardRows = await d.select<
+    {
+      task_id: number;
+      check_text: string;
+      trigger_date: string | null;
+      trigger_count: number | null;
+      trigger_unit: string | null;
+      options: string;
+      decision: number | null;
+    }[]
+  >(
+    "SELECT task_id, check_text, trigger_date, trigger_count, trigger_unit, options, decision FROM observe_cards",
+  );
+  const logRows = await d.select<(Omit<ObserveLogLine, "verdict"> & { verdict: number | null })[]>(
+    "SELECT id, task_id, at, session_id, text, verdict FROM observe_log ORDER BY id",
+  );
+  const logByTask = new Map<number, ObserveLogLine[]>();
+  for (const row of logRows) {
+    const list = logByTask.get(row.task_id) ?? [];
+    list.push({ ...row, verdict: row.verdict === null ? null : row.verdict !== 0 });
+    logByTask.set(row.task_id, list);
+  }
+  const cards: ObserveCard[] = [];
+  for (const { task_id, options, ...row } of cardRows) {
+    const task = rows.get(task_id);
+    // Only live cards reach `rows`; a trashed card stays in tasks for Trash.
+    if (!task) continue;
+    cards.push({
+      ...row,
+      task,
+      options: JSON.parse(options) as ObserveOption[],
+      log: logByTask.get(task_id) ?? [],
+    });
+  }
+  return cards;
+}
+
+/** Create an observe card: a task row (kind 'observe', owner human, title = the
+ *  question, notes = why) through insertTask, plus its observe_cards row. */
+export async function createObservation(input: {
+  project_id: number | null;
+  question: string;
+  why: string;
+  check_text: string;
+  trigger_date: string | null;
+  trigger_count: number | null;
+  trigger_unit: string | null;
+  options: ObserveOption[];
+  position: number;
+  created_at: string;
+}): Promise<{ id: number; number: number; ref: string }> {
+  const { id, number, ref } = await insertTask({
+    project_id: input.project_id,
+    title: input.question,
+    notes: input.why,
+    due_date: null,
+    status: "todo",
+    position: input.position,
+    priority: 0,
+    created_at: input.created_at,
+    kind: "observe",
+  });
+  const d = await getDb();
+  await d.execute(
+    "INSERT INTO observe_cards (task_id, check_text, trigger_date, trigger_count, trigger_unit, options) VALUES ($1, $2, $3, $4, $5, $6)",
+    [
+      id,
+      input.check_text,
+      input.trigger_date,
+      input.trigger_count,
+      input.trigger_unit,
+      JSON.stringify(input.options),
+    ],
+  );
+  return { id, number, ref };
+}
+
+/** Record the user's decision: the option index on the card, and the task row
+ *  done as of `completed_at`. */
+export async function decideObservation(
+  taskId: number,
+  optionIndex: number,
+  completedAt: string,
+): Promise<void> {
+  const d = await getDb();
+  await d.execute("UPDATE observe_cards SET decision = $1 WHERE task_id = $2", [
+    optionIndex,
+    taskId,
+  ]);
+  await d.execute("UPDATE tasks SET status = 'done', completed_at = $1 WHERE id = $2", [
+    completedAt,
+    taskId,
+  ]);
+}
+
+/** Push a card's trigger out ("Watch 3 more" / "Watch 1 more week"). The caller
+ *  computes the new value (observeViews.watchMoreTrigger); only that column moves. */
+export async function watchObservation(
+  taskId: number,
+  trigger: { trigger_count: number } | { trigger_date: string },
+): Promise<void> {
+  const d = await getDb();
+  if ("trigger_count" in trigger) {
+    await d.execute("UPDATE observe_cards SET trigger_count = $1 WHERE task_id = $2", [
+      trigger.trigger_count,
+      taskId,
+    ]);
+  } else {
+    await d.execute("UPDATE observe_cards SET trigger_date = $1 WHERE task_id = $2", [
+      trigger.trigger_date,
+      taskId,
+    ]);
+  }
 }
 
 export async function insertImage(
@@ -439,6 +582,9 @@ export async function insertTask(task: {
   notes?: string;
   completed_at?: string | null;
   created_at: string;
+  /** The task whose decision spawned this one (an observe card's follow-up). */
+  from_task_id?: number | null;
+  kind?: "task" | "observe";
 }): Promise<{ id: number; number: number; ref: string; goal_id: number | null }> {
   const d = await getDb();
   // Invariant 2 at the insert boundary too. Migration 027 heals a bad pairing in
@@ -459,7 +605,7 @@ export async function insertTask(task: {
   const number = await nextTaskNumber(d, code);
   const ref = formatRef(code, number);
   const result = await d.execute(
-    "INSERT INTO tasks (project_id, goal_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+    "INSERT INTO tasks (project_id, goal_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref, from_task_id, kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     [
       task.project_id,
       goal_id,
@@ -473,6 +619,8 @@ export async function insertTask(task: {
       task.created_at,
       number,
       ref,
+      task.from_task_id ?? null,
+      task.kind ?? "task",
     ],
   );
   return { id: result.lastInsertId ?? 0, number, ref, goal_id };
@@ -584,8 +732,9 @@ const TASK_COLUMNS = new Set([
   // Writable from here so the UI can CLEAR the mark (open a card, archive it).
   // Setting it is the agent server's job alone — see 014_unseen_at.sql.
   "unseen_at",
-  // Take it, Approve-and-drag between lanes. The UI never writes from_task_id:
-  // lineage is set once, by the agent that creates the follow-up.
+  // Take it, Approve-and-drag between lanes. from_task_id is never patched:
+  // lineage is set once, at insert, by the agent that creates the follow-up or by
+  // an observe card's "Open follow-up task" (insertTask).
   "owner",
 ]);
 
