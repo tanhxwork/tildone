@@ -1,3 +1,4 @@
+import { lineageTask } from "../ownerViews";
 import { useStore } from "../store";
 import type { ReservedTag, Tag, Task } from "../types";
 import {
@@ -123,7 +124,37 @@ export function TaskMeta({
   );
 }
 
-export function TaskRow({ task, showProject }: { task: Task; showProject?: boolean }) {
+/** The neutral ◇ an agent-owned task carries on every surface. `label` spells it
+ *  out where the bare glyph would be ambiguous ("done by agent" under To verify). */
+export function OwnerMark({ task, label }: { task: Task; label?: string }) {
+  if (task.owner !== "agent") return null;
+  return (
+    <span className="owner-mark" title="Owned by an agent">
+      <span className="owner-glyph">◇</span>
+      {label}
+    </span>
+  );
+}
+
+/** "from TIL-205": the task whose work spawned this one. Renders nothing when
+ *  there is no lineage or the origin is gone. */
+export function FromRef({ task }: { task: Task }) {
+  const tasks = useStore((s) => s.tasks);
+  const origin = lineageTask(task, tasks);
+  if (!origin) return null;
+  return <span className="from-ref">from {origin.ref}</span>;
+}
+
+export function TaskRow({
+  task,
+  showProject,
+  ownerLabel,
+}: {
+  task: Task;
+  showProject?: boolean;
+  /** Visible text beside the agent marker; the glyph alone otherwise. */
+  ownerLabel?: string;
+}) {
   const { toggleDone, openEditor, editingTaskId } = useStore();
   const done = task.status === "done";
 
@@ -147,6 +178,8 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       </button>
       <span className="task-id" aria-hidden="true">{taskRefLabel(task)}</span>
       <span className="task-title">{task.title}</span>
+      <OwnerMark task={task} label={ownerLabel} />
+      <FromRef task={task} />
       <TaskMeta task={task} showProject={showProject} />
     </div>
   );

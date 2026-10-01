@@ -248,6 +248,8 @@ export function isSingleProjectSelection(selection: Selection): boolean {
 /** Pages render their own layout; view mode, filters and quick add only apply to task lists. */
 export function isPageSelection(selection: Selection): boolean {
   return (
+    selection.type === "mine" ||
+    selection.type === "queue" ||
     selection.type === "week" ||
     selection.type === "review" ||
     selection.type === "completed" ||

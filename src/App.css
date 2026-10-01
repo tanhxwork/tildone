@@ -6970,3 +6970,104 @@ textarea:focus-visible,
     animation: none;
   }
 }
+
+/* ---------- Owner views: Mine, Agent queue (spec 2026-10-01 task owner) ---------- */
+
+/* The neutral diamond on agent-owned work. Never violet: it marks who owns the
+   task, not an action. */
+.owner-glyph {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.owner-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.from-ref {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.from-ref-link {
+  margin-left: 8px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+
+.from-ref-link:hover {
+  color: var(--text);
+}
+
+/* Mine's one-line summary of the agent queue; the whole strip opens it. */
+.queue-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.queue-strip:hover {
+  background: var(--bg-hover);
+}
+
+.queue-strip-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.queue-strip-stat {
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-strip-stat b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.queue-strip-open {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+
+.queue-lede {
+  margin: 0 0 10px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.queue-row .task-title {
+  flex: 1;
+}
+
+.queue-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
