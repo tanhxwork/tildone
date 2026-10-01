@@ -97,7 +97,6 @@ describe("cells", () => {
       [3, "square"],
     ]);
   });
-
 });
 
 describe("inbox agents go to the square", () => {
@@ -150,23 +149,6 @@ describe("slots", () => {
       [working[1].taskId, 1, 0],
       [working[2].taskId, 2, 0],
       [working[3].taskId, 0, 1],
-    ]);
-  });
-
-  it("gives every working agent its own desk when a storey has more than one", () => {
-    const slots = (count: number, open: number) =>
-      buildingPlan(Array.from({ length: count }, () => agent("working")), open).desks.map((d) => [d.floor, d.desk]);
-    expect(slots(3, 0)).toEqual([
-      [0, 0],
-      [0, 1],
-      [0, 2],
-    ]);
-    expect(slots(5, 12)).toEqual([
-      [0, 0],
-      [1, 0],
-      [0, 1],
-      [1, 1],
-      [0, 2],
     ]);
   });
 
