@@ -260,11 +260,16 @@ function App() {
         e.preventDefault();
         openSettings();
       } else if (e.key === "Escape") {
+        // Closing an overlay consumes the Esc, so a page listening after this
+        // one (the Town's zoom-out) leaves it alone.
         if (useStore.getState().paletteOpen) {
+          e.preventDefault();
           setPaletteOpen(false);
         } else if (useStore.getState().tagManagerOpen) {
+          e.preventDefault();
           setTagManagerOpen(false);
         } else if (useSettings.getState().settingsOpen) {
+          e.preventDefault();
           closeSettings();
         } else {
           openEditor(null);
