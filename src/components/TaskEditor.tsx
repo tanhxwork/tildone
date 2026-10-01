@@ -5,7 +5,7 @@ import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { usePaneStore } from "../paneStore";
 import { useStore } from "../store";
-import type { Status, TaskImage, TaskLink } from "../types";
+import type { Owner, Status, TaskImage, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -63,6 +63,7 @@ import { EvidenceNotice } from "./EvidenceNotice";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { lineageTask } from "../ownerViews";
 import { reservedState } from "./TaskRow";
 
 /** Labels the MCP server writes for structural edits (status, subtasks, links,
@@ -227,6 +228,7 @@ export function TaskEditor() {
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.project_id);
+  const origin = lineageTask(task, tasks);
   const taskSubtasks = subtasks.filter((s) => s.task_id === task.id);
   // Verify steps split out of the build checklist only while the task is in
   // review — same rule and reason as the board card (Kanban.tsx): the tag coming
@@ -746,6 +748,31 @@ export function TaskEditor() {
                 </span>
               </>
             )}
+
+            <span className="detail-prop-label">Owner</span>
+            <span>
+              <select
+                className="detail-value-select"
+                value={task.owner}
+                aria-label="Owner"
+                onChange={(e) =>
+                  void patchTask(task.id, { owner: e.target.value as Owner })
+                }
+              >
+                <option value="human">Human</option>
+                <option value="agent">Agent</option>
+              </select>
+              {origin && (
+                <button
+                  type="button"
+                  className="from-ref from-ref-link"
+                  title={origin.title}
+                  onClick={() => openEditor(origin.id)}
+                >
+                  from {origin.ref}
+                </button>
+              )}
+            </span>
 
             <span className="detail-prop-label">Tags</span>
             <span className="detail-tags">

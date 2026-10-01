@@ -101,8 +101,10 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
     case "inbox":
       return live.filter((t) => t.project_id === null);
     case "all":
-    // Pages (week, review, completed, goals) do their own slicing from the full
-    // live set.
+    // Pages (mine, queue, week, review, completed, goals) do their own slicing
+    // from the full live set.
+    case "mine":
+    case "queue":
     case "week":
     case "review":
     case "completed":

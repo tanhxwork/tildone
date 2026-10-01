@@ -30,6 +30,8 @@ import { switcherSessions, nextSessionId } from "./utils/sessions";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
+import { MineView } from "./components/MineView";
+import { AgentQueueView } from "./components/AgentQueueView";
 import { QuitWarning } from "./components/QuitWarning";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
@@ -358,6 +360,10 @@ function App() {
   } else if (paneOpen) {
     // Focus mode: the widened terminal fills the board strip; render nothing behind it.
     content = null;
+  } else if (selection.type === "mine") {
+    content = <MineView />;
+  } else if (selection.type === "queue") {
+    content = <AgentQueueView />;
   } else if (selection.type === "week") {
     content = <WeekView />;
   } else if (selection.type === "review") {
@@ -388,7 +394,7 @@ function App() {
       <main className="main">
         <Header searchRef={searchRef} />
         {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
-        {!paneActive && (!isPage || selection.type === "week") && (
+        {!paneActive && (!isPage || selection.type === "week" || selection.type === "mine") && (
           <QuickAdd inputRef={quickAddRef} />
         )}
         <div className="content">{content}</div>

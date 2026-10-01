@@ -30,6 +30,20 @@ pub const AGENT_PORT: u16 = 11502;
 
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 
+/// Who works a task (migration 028). An MCP create defaults to "agent": the
+/// caller is an agent, and a card it mints for the user must say so explicitly.
+const OWNERS: [&str; 2] = ["human", "agent"];
+
+/// Validate a client-sent owner. `Err` carries the message the tool returns.
+fn parse_owner(owner: &str) -> Result<String, String> {
+    let owner = owner.trim().to_ascii_lowercase();
+    if OWNERS.contains(&owner.as_str()) {
+        Ok(owner)
+    } else {
+        Err(format!("owner must be \"human\" or \"agent\", not \"{owner}\"."))
+    }
+}
+
 /// Whether an agent's complete / blocked / needs-review write raises a native
 /// notification. Written by `agent_set_notify` (the Settings toggle, which the
 /// frontend also replays on startup), read by the notify_user closure per send.
@@ -1524,7 +1538,8 @@ impl TildoneAgent {
                 &format!(
                     "SELECT t.id, t.title, t.notes, t.status, t.priority, t.due_date,
                             t.created_at, t.completed_at, t.deleted_at, t.project_id, p.name,
-                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END, t.ref, t.goal_id
+                            CASE WHEN t.deleted_at IS NULL THEN {RANK_SQL} END, t.ref, t.goal_id,
+                            t.owner, (SELECT f.ref FROM tasks f WHERE f.id = t.from_task_id)
                      FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
                      WHERE t.id = ?1"
                 ),
@@ -1547,6 +1562,8 @@ impl TildoneAgent {
                         },
                         // null for a trashed task — it has no place on the board.
                         "rank": r.get::<_, Option<i64>>(11)?,
+                        "owner": r.get::<_, String>(14)?,
+                        "from_task": r.get::<_, Option<String>>(15)?,
                     }),
                         r.get::<_, Option<i64>>(13)?,
                     ))
@@ -1606,6 +1623,65 @@ impl TildoneAgent {
         Ok(Some(task))
     }
 
+    /// The full row get_task and next_task return: task_json plus subtasks, links
+    /// and comments. None when no task has this id.
+    fn full_task_json(conn: &Connection, id: i64) -> Result<Option<Value>, rusqlite::Error> {
+        let Some(mut task) = Self::task_json(conn, id)? else { return Ok(None) };
+        let mut stmt = conn
+            .prepare("SELECT id, title, done FROM subtasks WHERE task_id = ?1 ORDER BY position, id")?;
+        let subtasks: Vec<Value> = stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "title": r.get::<_, String>(1)?,
+                    "done": r.get::<_, i64>(2)? != 0,
+                }))
+            })?
+            .collect::<Result<_, _>>()?;
+        task["subtasks"] = json!(subtasks);
+        let mut link_stmt = conn
+            .prepare(
+                "SELECT id, url, label, kind, pr_state, pr_behind FROM task_links WHERE task_id = ?1 ORDER BY id",
+            )?;
+        let links: Vec<Value> = link_stmt
+            .query_map([id], |r| {
+                let mut link = json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "url": r.get::<_, String>(1)?,
+                    "label": r.get::<_, String>(2)?,
+                    "kind": r.get::<_, String>(3)?,
+                });
+                // pr_state / pr_behind only exist on PR links the agent has stamped;
+                // omit them when NULL to keep the "null fields are absent" contract.
+                if let Some(state) = r.get::<_, Option<String>>(4)? {
+                    link["pr_state"] = json!(state);
+                }
+                if let Some(behind) = r.get::<_, Option<i64>>(5)? {
+                    link["pr_behind"] = json!(behind);
+                }
+                Ok(link)
+            })?
+            .collect::<Result<_, _>>()?;
+        task["links"] = json!(links);
+        let mut comment_stmt = conn
+            .prepare(
+                "SELECT id, body, actor_kind, actor_name, created_at FROM comments WHERE task_id = ?1 ORDER BY id",
+            )?;
+        let comments: Vec<Value> = comment_stmt
+            .query_map([id], |r| {
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "body": r.get::<_, String>(1)?,
+                    "actor_kind": r.get::<_, String>(2)?,
+                    "actor_name": r.get::<_, Option<String>>(3)?,
+                    "created_at": r.get::<_, String>(4)?,
+                }))
+            })?
+            .collect::<Result<_, _>>()?;
+        task["comments"] = json!(comments);
+        Ok(Some(task))
+    }
+
     /// Shared implementation for update_task / complete_task.
     #[allow(clippy::too_many_arguments)]
     fn apply_task_update(
@@ -1619,6 +1695,7 @@ impl TildoneAgent {
         project: Option<String>,
         tags: Option<Vec<String>>,
         goal: Option<String>,
+        owner: Option<String>,
         agent: Option<&str>,
         claim: ClaimInfo,
     ) -> Result<CallToolResult, ErrorData> {
@@ -1779,6 +1856,14 @@ impl TildoneAgent {
             push(&mut sets, &mut params, "goal_id", Box::new(None::<i64>));
             activity.push("Goal cleared (project changed)".to_string());
         }
+        if let Some(owner) = owner {
+            let owner = match parse_owner(&owner) {
+                Ok(o) => o,
+                Err(msg) => return Ok(err(msg)),
+            };
+            activity.push(format!("Owner set to {owner}"));
+            push(&mut sets, &mut params, "owner", Box::new(owner));
+        }
 
         // A task that changes (project, status) group would otherwise carry its old
         // position into the new one, where it collides with whatever already holds
@@ -1845,8 +1930,8 @@ impl TildoneAgent {
         if let Some(tags) = tags {
             Self::set_tags(&conn, id, &tags).map_err(db_err)?;
         }
-        // Landing in Done retires the review-cycle tags: `blocked` and `needs-review`
-        // are questions to the user, and a completed card asks neither any more —
+        // Landing in Done retires the review-cycle tags: `blocked`, `needs-approval`
+        // and `needs-review` are questions to the user, and a completed card asks neither any more —
         // left alone they sit stale until someone x-es them off by hand.
         // `needs-landing` survives: done-with-an-unmerged-PR is exactly the state it
         // marks (TIL-84). Mirrors tagIdsAfterDone in src/store.ts, the database's
@@ -1857,7 +1942,7 @@ impl TildoneAgent {
         if dest_status.as_deref() == Some("done") {
             conn.execute(
                 "DELETE FROM task_tags WHERE task_id = ?1 AND tag_id IN \
-                 (SELECT id FROM tags WHERE LOWER(name) IN ('blocked', 'needs-review'))",
+                 (SELECT id FROM tags WHERE LOWER(name) IN ('blocked', 'needs-approval', 'needs-review'))",
                 [id],
             )
             .map_err(db_err)?;
@@ -2218,6 +2303,14 @@ struct ListTasksParams {
     search: Option<String>,
     #[schemars(description = "Include completed tasks (default false; ignored when status is \"done\")")]
     include_done: Option<bool>,
+    #[schemars(description = "Filter by owner: human or agent")]
+    owner: Option<String>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct NextTaskParams {
+    #[schemars(description = "Project name or id, or \"inbox\"")]
+    project: String,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -2239,6 +2332,12 @@ struct CreateTaskParams {
     goal: Option<String>,
     #[schemars(description = "todo (default), doing or done")]
     status: Option<String>,
+    #[schemars(
+        description = "human or agent (default agent). agent only when an agent can finish it without asking the user; human when it needs the user's action or decision. A follow-up that changes product behaviour or scope is also tagged needs-approval."
+    )]
+    owner: Option<String>,
+    #[schemars(description = "The task whose work spawned this one (id or ref), shown as lineage")]
+    from_task: Option<TaskRef>,
     #[schemars(
         description = "Your CLAUDE_CODE_SESSION_ID env var — a UUID; never a session_01…/cse_01… id from a Claude-Session URL. Send with status \"doing\" to claim the task. Omit if not a live session."
     )]
@@ -2268,6 +2367,8 @@ struct UpdateTaskParams {
         description = "Name of a goal in the task's project, or \"\" to clear it. Unlike tags, an unknown goal name is an error (lists the project's goals) — never auto-created. Moving the task to a different project clears its goal unless this same call also names a goal in the new project."
     )]
     goal: Option<String>,
+    #[schemars(description = "human or agent: hand a task to the user, or to the agent queue")]
+    owner: Option<String>,
     #[schemars(
         description = "Your CLAUDE_CODE_SESSION_ID env var — a UUID; never a session_01…/cse_01… id from a Claude-Session URL. Send with status \"doing\" to claim the task. Omit if not a live session."
     )]
@@ -2856,6 +2957,13 @@ impl TildoneAgent {
                 params.len()
             ));
         }
+        if let Some(owner) = &p.owner {
+            match parse_owner(owner) {
+                Ok(o) => params.push(Box::new(o)),
+                Err(msg) => return Ok(err(msg)),
+            }
+            wheres.push(format!("t.owner = ?{}", params.len()));
+        }
         if let Some(q) = &p.search {
             params.push(Box::new(format!("%{}%", q.trim())));
             let n = params.len();
@@ -2871,7 +2979,8 @@ impl TildoneAgent {
                     (SELECT GROUP_CONCAT(tg.name, ', ') FROM tags tg
                      JOIN task_tags tt ON tt.tag_id = tg.id WHERE tt.task_id = t.id),
                     {RANK_SQL}, t.ref,
-                    (SELECT gl.name FROM goals gl WHERE gl.id = t.goal_id)
+                    (SELECT gl.name FROM goals gl WHERE gl.id = t.goal_id),
+                    t.owner, (SELECT f.ref FROM tasks f WHERE f.id = t.from_task_id)
              FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
              WHERE {}
              ORDER BY p.position, t.position, t.id",
@@ -2892,6 +3001,8 @@ impl TildoneAgent {
                     "tags": r.get::<_, Option<String>>(7)?,
                     "rank": r.get::<_, i64>(8)?,
                     "goal": r.get::<_, Option<String>>(10)?,
+                    "owner": r.get::<_, String>(11)?,
+                    "from_task": r.get::<_, Option<String>>(12)?,
                 }))
             })
             .map_err(db_err)?
@@ -2909,74 +3020,61 @@ impl TildoneAgent {
         let Some(id) = resolve_task_ref(&conn, &task_ref).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
         };
-        let Some(mut task) = Self::task_json(&conn, id).map_err(db_err)? else {
+        let Some(task) = Self::full_task_json(&conn, id).map_err(db_err)? else {
             return Ok(err(format!("No task with reference {task_ref}.")));
         };
-        let mut stmt = conn
-            .prepare("SELECT id, title, done FROM subtasks WHERE task_id = ?1 ORDER BY position, id")
-            .map_err(db_err)?;
-        let subtasks: Vec<Value> = stmt
-            .query_map([id], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "title": r.get::<_, String>(1)?,
-                    "done": r.get::<_, i64>(2)? != 0,
-                }))
-            })
-            .map_err(db_err)?
-            .collect::<Result<_, _>>()
-            .map_err(db_err)?;
-        task["subtasks"] = json!(subtasks);
-        let mut link_stmt = conn
-            .prepare(
-                "SELECT id, url, label, kind, pr_state, pr_behind FROM task_links WHERE task_id = ?1 ORDER BY id",
-            )
-            .map_err(db_err)?;
-        let links: Vec<Value> = link_stmt
-            .query_map([id], |r| {
-                let mut link = json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "url": r.get::<_, String>(1)?,
-                    "label": r.get::<_, String>(2)?,
-                    "kind": r.get::<_, String>(3)?,
-                });
-                // pr_state / pr_behind only exist on PR links the agent has stamped;
-                // omit them when NULL to keep the "null fields are absent" contract.
-                if let Some(state) = r.get::<_, Option<String>>(4)? {
-                    link["pr_state"] = json!(state);
-                }
-                if let Some(behind) = r.get::<_, Option<i64>>(5)? {
-                    link["pr_behind"] = json!(behind);
-                }
-                Ok(link)
-            })
-            .map_err(db_err)?
-            .collect::<Result<_, _>>()
-            .map_err(db_err)?;
-        task["links"] = json!(links);
-        let mut comment_stmt = conn
-            .prepare(
-                "SELECT id, body, actor_kind, actor_name, created_at FROM comments WHERE task_id = ?1 ORDER BY id",
-            )
-            .map_err(db_err)?;
-        let comments: Vec<Value> = comment_stmt
-            .query_map([id], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "body": r.get::<_, String>(1)?,
-                    "actor_kind": r.get::<_, String>(2)?,
-                    "actor_name": r.get::<_, Option<String>>(3)?,
-                    "created_at": r.get::<_, String>(4)?,
-                }))
-            })
-            .map_err(db_err)?
-            .collect::<Result<_, _>>()
-            .map_err(db_err)?;
-        task["comments"] = json!(comments);
         ok_json(&task)
     }
 
-    #[tool(description = "Create a task. Without a project it goes to the Inbox.")]
+    #[tool(
+        description = "The agent queue's next task in a project: the top agent-owned To Do card (board order) not tagged blocked or needs-approval. Returns the task like get_task, or {reason} when the queue is empty. Does not claim it — claim with update_task (status \"doing\" + session_id)."
+    )]
+    fn next_task(
+        &self,
+        Parameters(p): Parameters<NextTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let conn = self.db.lock().unwrap();
+        let project_id = match Self::resolve_project(&conn, &p.project).map_err(db_err)? {
+            Ok(pid) => pid,
+            Err(msg) => return Ok(err(msg)),
+        };
+        // Board order of the To Do column (position, then id — see RANK_SQL). A
+        // held card is in Doing, so `status = 'todo'` already skips it. A stale
+        // agent_claims row is no filter: claims survive a card moved back to todo
+        // (the agent gave up, or the user dragged it back), and that card must be
+        // served again.
+        let id = conn
+            .query_row(
+                "SELECT t.id FROM tasks t
+                  WHERE t.deleted_at IS NULL AND t.status = 'todo' AND t.owner = 'agent'
+                    AND t.project_id IS ?1
+                    AND NOT EXISTS (SELECT 1 FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id
+                                     WHERE tt.task_id = t.id
+                                       AND LOWER(tg.name) IN ('blocked', 'needs-approval'))
+                  ORDER BY t.position, t.id
+                  LIMIT 1",
+                [project_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(db_err)?;
+        let task = match id {
+            Some(id) => Self::full_task_json(&conn, id).map_err(db_err)?,
+            None => None,
+        };
+        match task {
+            Some(task) => ok_json(&task),
+            None => ok_json(&json!({
+                "reason": format!("No agent todo in {}.", p.project.trim()),
+            })),
+        }
+    }
+
+    #[tool(description = "Create a task. Without a project it goes to the Inbox. Owner defaults to agent: pass owner \"human\" for anything needing the user's action or decision.")]
     fn create_task(
         &self,
         Parameters(p): Parameters<CreateTaskParams>,
@@ -3010,6 +3108,10 @@ impl TildoneAgent {
         // A task created straight into Doing is an agent starting work in one call;
         // the claim rides it exactly as it rides an update — including the TIL-107
         // guard, before the task row exists.
+        let owner = match p.owner.as_deref().map(parse_owner).transpose() {
+            Ok(o) => o.unwrap_or_else(|| "agent".to_string()),
+            Err(msg) => return Ok(err(msg)),
+        };
         let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
         if status == "doing" {
             if let Some(msg) = claim.unmatchable_error() {
@@ -3018,6 +3120,13 @@ impl TildoneAgent {
         }
 
         let conn = self.db.lock().unwrap();
+        let from_task_id = match &p.from_task {
+            None => None,
+            Some(r) => match resolve_task_ref(&conn, r).map_err(db_err)? {
+                Some(fid) => Some(fid),
+                None => return Ok(err(format!("No task with reference {r} (from_task)."))),
+            },
+        };
         let project_id = match &p.project {
             None => None,
             Some(spec) => match Self::resolve_project(&conn, spec).map_err(db_err)? {
@@ -3049,8 +3158,8 @@ impl TildoneAgent {
         let number = next_task_number(&conn, &code).map_err(db_err)?;
         let task_ref = format!("{code}-{number}");
         conn.execute(
-            "INSERT INTO tasks (project_id, goal_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO tasks (project_id, goal_id, title, notes, status, priority, due_date, position, completed_at, created_at, number, ref, owner, from_task_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 project_id,
                 goal_id,
@@ -3063,7 +3172,9 @@ impl TildoneAgent {
                 completed_at,
                 now_iso(),
                 number,
-                task_ref
+                task_ref,
+                owner,
+                from_task_id
             ],
         )
         .map_err(db_err)?;
@@ -3096,7 +3207,7 @@ impl TildoneAgent {
         ok_json(&ack)
     }
 
-    #[tool(description = "Update fields of a task. Only the provided fields change.")]
+    #[tool(description = "Update fields of a task. Only the provided fields change. owner hands it to the user (human) or the agent queue (agent).")]
     fn update_task(
         &self,
         Parameters(p): Parameters<UpdateTaskParams>,
@@ -3113,7 +3224,7 @@ impl TildoneAgent {
         let claim = ClaimInfo { session_id: p.session_id, cwd: p.cwd, branch: p.branch };
         self.apply_task_update(
             p.id, p.title, p.notes, p.status, p.priority, p.due_date, p.project, p.tags, p.goal,
-            agent, claim,
+            p.owner, agent, claim,
         )
     }
 
@@ -3440,6 +3551,7 @@ impl TildoneAgent {
             None,
             None,
             Some("done".to_string()),
+            None,
             None,
             None,
             None,
@@ -3861,6 +3973,11 @@ impl ServerHandler for TildoneAgent {
              a receipt {id, ref, status}, not the row — get_task when you need full state. \
              Null fields are omitted from all responses. When blocked: add_comment your \
              question, tag the task blocked, park list_changes — the user's reply wakes you. \
+             Every task has an owner, human or agent; create_task defaults to agent. Make a \
+             follow-up owner agent only when an agent can finish it without asking the user; \
+             if it changes product behaviour or scope, also tag it needs-approval; anything \
+             needing the user's action or decision is owner human. Set from_task to the task \
+             whose work spawned it. next_task(project) pulls the top agent todo. \
              Start with list_projects/list_goals/list_tasks to see what exists — the goals \
              before the tasks, so an outcome already in flight is visible before you mint \
              cards under it; deleting a project is irreversible, deleted tasks go to a \
@@ -5025,6 +5142,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/023_task_cwd.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/024_task_cwd_newest.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/025_goals.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/028_task_owner.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -5238,6 +5356,8 @@ mod tests {
         let (is_err, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -5270,6 +5390,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -6415,6 +6536,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Born claimed wrong".into(),
                         project: None,
                         notes: None,
@@ -6538,6 +6661,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -6564,11 +6688,219 @@ mod tests {
         // agent sent — so the strip must match case-insensitively.
         let (agent, db) = test_agent_with_db();
         let id = a_task(&agent, "Reviewed work");
-        set_task_tags(&agent, id, &["blocked", "Needs-Review", "needs-landing", "frontend"]);
+        set_task_tags(
+            &agent,
+            id,
+            &["blocked", "Needs-Review", "needs-approval", "needs-landing", "frontend"],
+        );
 
         let _ = agent.complete_task_as(TaskIdParams { id: id.into() }, None).unwrap();
 
         assert_eq!(tag_names(&db, id), vec!["frontend", "needs-landing"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task owner (migration 028): who works a task, lineage, and the agent queue.
+
+    /// Create a task in `project` with an explicit owner / from_task, as an agent.
+    fn an_owned_task(
+        agent: &TildoneAgent,
+        title: &str,
+        project: Option<&str>,
+        owner: Option<&str>,
+        from_task: Option<&str>,
+    ) -> (bool, Value) {
+        extract(
+            &agent
+                .create_task_as(
+                    CreateTaskParams {
+                        title: title.into(),
+                        project: project.map(Into::into),
+                        notes: None,
+                        due_date: None,
+                        priority: None,
+                        tags: None,
+                        goal: None,
+                        status: None,
+                        owner: owner.map(Into::into),
+                        from_task: from_task.map(|r| TaskRef::Ref(r.into())),
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    Some("claude"),
+                )
+                .unwrap(),
+        )
+    }
+
+    fn get(agent: &TildoneAgent, id: i64) -> Value {
+        extract(&agent.get_task(Parameters(TaskIdParams { id: id.into() })).unwrap()).1
+    }
+
+    fn a_project(agent: &TildoneAgent, name: &str) {
+        let (is_err, out) = extract(
+            &agent
+                .create_project(Parameters(CreateProjectParams { name: name.into(), color: None }))
+                .unwrap(),
+        );
+        assert!(!is_err, "create_project failed: {out}");
+    }
+
+    fn set_owner(agent: &TildoneAgent, id: i64, owner: &str) -> (bool, Value) {
+        extract(
+            &agent
+                .update_task_as(
+                    UpdateTaskParams {
+                        id: id.into(),
+                        owner: Some(owner.into()),
+                        title: None,
+                        notes: None,
+                        status: None,
+                        priority: None,
+                        due_date: None,
+                        project: None,
+                        tags: None,
+                        goal: None,
+                        session_id: None,
+                        cwd: None,
+                        branch: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn an_mcp_created_task_is_agent_owned_unless_told_human() {
+        let agent = test_agent();
+        let (_, by_default) = an_owned_task(&agent, "Follow-up", None, None, None);
+        let (_, for_user) = an_owned_task(&agent, "Decide pricing", None, Some("human"), None);
+
+        assert_eq!(get(&agent, by_default["id"].as_i64().unwrap())["owner"], "agent");
+        assert_eq!(get(&agent, for_user["id"].as_i64().unwrap())["owner"], "human");
+    }
+
+    #[test]
+    fn an_unknown_owner_is_rejected_on_create_and_update() {
+        let (agent, db) = test_agent_with_db();
+        let (is_err, msg) = an_owned_task(&agent, "Who?", None, Some("robot"), None);
+        assert!(is_err, "owner robot must fail: {msg}");
+        let count: i64 =
+            db.lock().unwrap().query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+
+        let id = a_task(&agent, "Mine");
+        let (is_err, msg) = set_owner(&agent, id, "everyone");
+        assert!(is_err, "owner everyone must fail: {msg}");
+        assert_eq!(get(&agent, id)["owner"], "agent");
+    }
+
+    #[test]
+    fn update_task_hands_a_task_to_the_user() {
+        let agent = test_agent();
+        let id = a_task(&agent, "Needs a password");
+        let (is_err, out) = set_owner(&agent, id, "human");
+        assert!(!is_err, "{out}");
+        assert_eq!(get(&agent, id)["owner"], "human");
+    }
+
+    #[test]
+    fn from_task_by_ref_is_stored_and_read_back_as_the_parents_ref() {
+        let agent = test_agent();
+        let parent = a_task(&agent, "Parent");
+        let parent_ref = get(&agent, parent)["ref"].as_str().unwrap().to_string();
+
+        let (is_err, child) =
+            an_owned_task(&agent, "Spawned", None, None, Some(&parent_ref.to_lowercase()));
+        assert!(!is_err, "{child}");
+        let child_id = child["id"].as_i64().unwrap();
+        assert_eq!(get(&agent, child_id)["from_task"], parent_ref.as_str());
+        let (_, listed) = extract(
+            &agent
+                .list_tasks(Parameters(ListTasksParams {
+                    owner: Some("agent".into()),
+                    ..Default::default()
+                }))
+                .unwrap(),
+        );
+        let row = listed["tasks"].as_array().unwrap().iter().find(|t| t["id"] == child_id).unwrap();
+        assert_eq!(row["from_task"], parent_ref.as_str());
+        // A parentless task omits the field rather than sending null.
+        assert!(get(&agent, parent).get("from_task").is_none());
+
+        let (is_err, msg) = an_owned_task(&agent, "Orphan", None, None, Some("NOPE-99"));
+        assert!(is_err, "unknown from_task must fail: {msg}");
+    }
+
+    #[test]
+    fn next_task_serves_the_top_unblocked_agent_todo() {
+        let agent = test_agent();
+        a_project(&agent, "Work");
+        a_project(&agent, "Other");
+        let make = |title: &str, owner: &str| {
+            an_owned_task(&agent, title, Some("Work"), Some(owner), None).1["id"].as_i64().unwrap()
+        };
+        // Board order is creation order here; each card above the winner is
+        // disqualified for exactly one reason.
+        make("For the user", "human");
+        let blocked = make("Blocked", "agent");
+        set_task_tags(&agent, blocked, &["Blocked"]);
+        let approval = make("Awaiting approval", "agent");
+        set_task_tags(&agent, approval, &["needs-approval"]);
+        let held = make("Held by a session", "agent");
+        work_on(&agent, held, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
+        let done = make("Finished", "agent");
+        work_on(&agent, done, "done", None, None, None);
+        an_owned_task(&agent, "Elsewhere", Some("Other"), None, None);
+        let first = make("First up", "agent");
+        let second = make("Second", "agent");
+
+        let (is_err, next) =
+            extract(&agent.next_task(Parameters(NextTaskParams { project: "work".into() })).unwrap());
+        assert!(!is_err, "{next}");
+        assert_eq!(next["id"].as_i64(), Some(first));
+        assert!(next["subtasks"].is_array(), "same shape as get_task: {next}");
+        // Pulling is not claiming.
+        assert_eq!(next["status"], "todo");
+
+        // A card moved back to todo keeps its stale claim row; it is up for grabs again.
+        work_on(&agent, held, "todo", None, None, None);
+        work_on(&agent, first, "done", None, None, None);
+        work_on(&agent, second, "done", None, None, None);
+        let (_, next) =
+            extract(&agent.next_task(Parameters(NextTaskParams { project: "Work".into() })).unwrap());
+        assert_eq!(next["id"].as_i64(), Some(held), "{next}");
+    }
+
+    #[test]
+    fn next_task_on_an_empty_queue_says_why() {
+        let agent = test_agent();
+        a_project(&agent, "Work");
+        an_owned_task(&agent, "For the user", Some("Work"), Some("human"), None);
+
+        let (is_err, out) =
+            extract(&agent.next_task(Parameters(NextTaskParams { project: "Work".into() })).unwrap());
+        assert!(!is_err, "an empty queue is not an error: {out}");
+        assert!(out.get("id").is_none());
+        assert_eq!(out["reason"], "No agent todo in Work.");
+    }
+
+    #[test]
+    fn a_row_written_without_an_owner_reads_human() {
+        // Every pre-028 row, and every app-side insert that names no owner.
+        let (agent, db) = test_agent_with_db();
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO tasks (title, notes, status, priority, position, created_at)
+                 VALUES ('Old card', '', 'todo', 0, 0, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let id = db.lock().unwrap().last_insert_rowid();
+        assert_eq!(get(&agent, id)["owner"], "human");
     }
 
     #[test]
@@ -6593,6 +6925,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -6658,6 +6991,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Start immediately".into(),
                         project: None,
                         notes: None,
@@ -6691,6 +7026,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Queued, not started".into(),
                         project: None,
                         notes: None,
@@ -7193,6 +7530,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -7560,6 +7898,8 @@ mod tests {
         extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Ship it".into(),
                     project: Some("Work".into()),
                     notes: None,
@@ -7596,6 +7936,8 @@ mod tests {
         let (_, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Logged work".into(),
                     project: None,
                     notes: Some("Goal: ship it".into()),
@@ -7703,6 +8045,8 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Ship it".into(),
                     project: Some("Work".into()),
                     notes: None,
@@ -7735,6 +8079,8 @@ mod tests {
         let (is_err, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Ship it".into(),
                     project: Some("work".into()), // case-insensitive
                     notes: Some("the big one".into()),
@@ -7766,6 +8112,8 @@ mod tests {
         let (_, inbox_task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Loose end".into(),
                     project: None,
                     notes: None,
@@ -7793,6 +8141,7 @@ mod tests {
                     goal: None,
                     search: None,
                     include_done: None,
+                    owner: None,
                 }))
                 .unwrap(),
         );
@@ -7816,6 +8165,7 @@ mod tests {
                     goal: None,
                     search: None,
                     include_done: None,
+                    owner: None,
                 }))
                 .unwrap(),
         );
@@ -7825,6 +8175,7 @@ mod tests {
         let (_, updated) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
+                    owner: None,
                     id: id.into(),
                     title: None,
                     notes: None,
@@ -7890,6 +8241,8 @@ mod tests {
         let (_, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Logged work".into(),
                     project: None,
                     notes: Some(CANONICAL_NOTES.into()),
@@ -7935,6 +8288,8 @@ mod tests {
         let (_, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Build it".into(),
                     project: None,
                     notes: Some(CANONICAL_NOTES.into()),
@@ -7986,6 +8341,8 @@ mod tests {
         let (_, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Build it".into(),
                     project: None,
                     notes: None,
@@ -8043,6 +8400,8 @@ mod tests {
         let (_, task) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Build it".into(),
                     project: None,
                     notes: None,
@@ -8291,6 +8650,8 @@ mod tests {
         for (title, due) in [("top", "2099-01-01"), ("bottom", "2000-01-01")] {
             agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -8334,6 +8695,8 @@ mod tests {
         for title in ["a", "b", "c"] {
             agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -8378,6 +8741,8 @@ mod tests {
         ] {
             agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: project.map(Into::into),
                     notes: None,
@@ -8409,6 +8774,8 @@ mod tests {
         for title in ["a", "b", "c"] {
             agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -8469,6 +8836,8 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: title.into(),
                     project: None,
                     notes: None,
@@ -8491,6 +8860,7 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
+                    owner: None,
                     id: id.into(),
                     title: None,
                     notes: None,
@@ -8602,6 +8972,8 @@ mod tests {
         let (_, v) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "already in work".into(),
                     project: Some("work".into()),
                     notes: None,
@@ -8621,6 +8993,7 @@ mod tests {
         let (is_err, v) = extract(
             &agent
                 .update_task_as(UpdateTaskParams {
+                    owner: None,
                     id: inbox_task.into(),
                     title: None,
                     notes: None,
@@ -8659,6 +9032,7 @@ mod tests {
         };
         agent
             .update_task_as(UpdateTaskParams {
+                owner: None,
                 id: a.into(),
                 title: Some("renamed".into()),
                 notes: None,
@@ -9455,6 +9829,8 @@ mod tests {
         let (_, created) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "Work".into(),
                     project: None,
                     notes: None,
@@ -9476,6 +9852,7 @@ mod tests {
 
         agent
             .update_task_as(UpdateTaskParams {
+                owner: None,
                 id: id.into(),
                 title: None,
                 notes: None,
@@ -9693,6 +10070,8 @@ mod tests {
         let (is_err, _) = extract(
             &agent
                 .create_task_as(CreateTaskParams {
+                    owner: None,
+                    from_task: None,
                     title: "while you were waiting".into(),
                     project: None,
                     notes: None,
@@ -9741,6 +10120,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Build it".into(),
                         project: None,
                         notes: None,
@@ -9784,6 +10165,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Anon".into(),
                         project: None,
                         notes: None,
@@ -9816,6 +10199,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "Ship".into(),
                         project: None,
                         notes: None,
@@ -9920,6 +10305,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: title.into(),
                         project: project.map(Into::into),
                         notes: None,
@@ -10016,6 +10403,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: a_id.into(),
                         title: None,
                         notes: None,
@@ -10093,6 +10481,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: title.into(),
                         project: Some(project.into()),
                         notes: None,
@@ -10136,6 +10526,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "ghost".into(),
                         project: Some("Work".into()),
                         notes: None,
@@ -10176,6 +10568,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -10213,6 +10606,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -10246,6 +10640,8 @@ mod tests {
             &agent
                 .create_task_as(
                     CreateTaskParams {
+                        owner: None,
+                        from_task: None,
                         title: "loose".into(),
                         project: None,
                         notes: None,
@@ -10404,6 +10800,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: id.into(),
                         title: None,
                         notes: None,
@@ -10528,6 +10925,7 @@ mod tests {
             &agent
                 .update_task_as(
                     UpdateTaskParams {
+                        owner: None,
                         id: task_id.into(),
                         title: None,
                         notes: None,

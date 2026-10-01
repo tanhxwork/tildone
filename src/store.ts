@@ -190,6 +190,9 @@ interface Store {
   toggleDone: (id: number) => Promise<void>;
   removeTask: (id: number) => Promise<void>;
   restoreTask: (id: number) => Promise<void>;
+  /** Owner changes go through patchTask({ owner }). This clears needs-approval
+   * so agents may claim the card (agent queue's Approve). */
+  approveTask: (id: number) => Promise<void>;
   destroyTask: (id: number) => Promise<void>;
   emptyTrash: () => Promise<void>;
   /** Drop every not-today done card out of the board's Done window now, ahead of
@@ -238,6 +241,8 @@ const TRASH_RETENTION_DAYS = 30;
 const NAV_STORAGE_KEY = "tildone-nav";
 const VIEW_MODES: ViewMode[] = ["list", "board", "table", "calendar"];
 const SELECTION_TYPES: Selection["type"][] = [
+  "mine",
+  "queue",
   "today",
   "upcoming",
   "inbox",
@@ -252,7 +257,7 @@ const SELECTION_TYPES: Selection["type"][] = [
 ];
 
 function loadNav(): { selection: Selection; viewMode: ViewMode } {
-  const fallback = { selection: { type: "today" } as Selection, viewMode: "list" as ViewMode };
+  const fallback = { selection: { type: "mine" } as Selection, viewMode: "list" as ViewMode };
   try {
     const raw = localStorage.getItem(NAV_STORAGE_KEY);
     if (!raw) return fallback;
@@ -804,6 +809,8 @@ export const useStore = create<Store>()((set, get) => ({
       ref,
       // You just typed this task in. There is nothing here you have not seen.
       unseen_at: null,
+      owner: "human",
+      from_task_id: null,
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -1181,6 +1188,17 @@ export const useStore = create<Store>()((set, get) => ({
       }),
       activeTagIds: s.activeTagIds.filter((x) => x !== fromId),
     }));
+  },
+
+  approveTask: async (id) => {
+    const { tasks, tags, assignTags } = get();
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    const approval = new Set(
+      tags.filter((t) => t.name.toLowerCase() === "needs-approval").map((t) => t.id),
+    );
+    const kept = task.tag_ids.filter((x) => !approval.has(x));
+    if (kept.length !== task.tag_ids.length) await assignTags(id, kept);
   },
 
   assignTags: async (taskId, tagIds) => {

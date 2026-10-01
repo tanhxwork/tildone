@@ -24,8 +24,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { paneHasFocus, usePaneStore } from "../paneStore";
 import { DONE_WINDOW_LIMIT, doneBoardWindow, visibleTasks } from "../selectors";
 import { useStore } from "../store";
+import { useSettings } from "../settings";
 import { useLightbox } from "../lightbox";
-import type { Project, Status, Tag, Task, TaskImage, TaskLink } from "../types";
+import type { Goal, Project, Selection, Status, Tag, Task, TaskImage, TaskLink } from "../types";
 import {
   LINK_KIND_COLORS,
   LINK_KIND_LABELS,
@@ -48,6 +49,8 @@ import { CompletionFlourish, UnseenMark } from "./Brand";
 import {
   IconAlert,
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconList,
   IconMessage,
   IconTerminal,
@@ -56,8 +59,9 @@ import {
 import { hostedForTask, resumableForTask, useHostStore } from "../hostStore";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
-import { TaskMeta, reservedState } from "./TaskRow";
+import { FromRef, OwnerMark, TaskMeta, reservedState, useClaimLabel } from "./TaskRow";
 import { AgentPresence, SecretaryBadge } from "../agents";
+import "./kanbanLanes.css";
 
 type Columns = Record<Status, number[]>;
 
@@ -72,6 +76,35 @@ interface BoardModel {
   doneTodayCount: number;
   /** Done tasks not on the board — the count behind the "in Completed" link. */
   doneHidden: number;
+}
+
+/** A board row. Single-project boards split into You (`human`) over Agents
+ *  (`agent`); every other board is one `all` row, exactly as before lanes. */
+type Lane = "all" | "human" | "agent";
+type Lanes = Partial<Record<Lane, BoardModel>>;
+
+/** Droppable ids name a lane and a column, e.g. `agent:doing`. */
+const containerId = (lane: Lane, status: Status) => `${lane}:${status}`;
+
+/** The project whose board splits into lanes, or null for a board that stays one
+ *  row (Today, Inbox, Upcoming, All). A goal view keys by its goal's project, so
+ *  the collapse state is shared across the project and its goals. */
+function laneProjectId(selection: Selection, goals: Goal[]): number | null {
+  if (selection.type === "project" || selection.type === "ungoaled") return selection.projectId;
+  if (selection.type === "goal") {
+    return goals.find((g) => g.id === selection.goalId)?.project_id ?? null;
+  }
+  return null;
+}
+
+/** You holds the user's own cards plus agent cards awaiting their check:
+ *  reviewing a human-verify card is the user's job whoever did the work. */
+function laneOf(task: Task, tags: Tag[]): Lane {
+  if (task.owner === "human") return "human";
+  const verify = tags.some(
+    (t) => t.name.toLowerCase() === "human-verify" && task.tag_ids.includes(t.id),
+  );
+  return verify ? "human" : "agent";
 }
 
 const byPosition = (a: Task, b: Task) => a.position - b.position || a.id - b.id;
@@ -152,22 +185,23 @@ export function Kanban() {
 
   const taskById = useMemo(() => new Map(visible.map((t) => [t.id, t])), [visible]);
 
-  const [columns, setColumns] = useState<Columns>({ todo: [], doing: [], done: [] });
-  const [reviewCount, setReviewCount] = useState(0);
-  const [doneMeta, setDoneMeta] = useState<{
-    verify: number;
-    today: number;
-    hidden: number;
-  }>({
-    verify: 0,
-    today: 0,
-    hidden: 0,
-  });
+  const goals = useStore((s) => s.goals);
+  const patchTask = useStore((s) => s.patchTask);
+  const laneProject = laneProjectId(selection, goals);
+  const agentsCollapsed = useSettings(
+    (s) => laneProject !== null && !!s.agentLaneCollapsed[laneProject],
+  );
+  const setAgentLaneCollapsed = useSettings((s) => s.setAgentLaneCollapsed);
+
+  const [lanes, setLanes] = useState<Lanes>({});
   const [activeId, setActiveId] = useState<number | null>(null);
+  // Holds the board still between a cross-lane drop and its owner write, so the
+  // card does not flash back into the lane it left while the two writes land.
+  const [syncing, setSyncing] = useState(false);
   // A card that just landed in Done, to overlay the wave-to-check flourish on.
   // `key` bumps per completion so re-completing the same card replays it.
   const [celebrate, setCelebrate] = useState<{ id: number; key: number } | null>(null);
-  const dragFromStatus = useRef<Status | null>(null);
+  const dragFrom = useRef<{ lane: Lane; status: Status } | null>(null);
   const flourishSeq = useRef(0);
   // A card whose unseen mark is settling into its check, because you just came
   // back from reading it. Same shape as `celebrate`: the store clears the fact
@@ -176,17 +210,27 @@ export function Kanban() {
   const settleSeq = useRef(0);
 
   useEffect(() => {
-    if (activeId === null) {
-      const model = computeColumns(visible, tags, todayStr());
-      setColumns(model.columns);
-      setReviewCount(model.doingReviewCount);
-      setDoneMeta({
-        verify: model.doneVerifyCount,
-        today: model.doneTodayCount,
-        hidden: model.doneHidden,
-      });
+    if (activeId !== null || syncing) return;
+    const today = todayStr();
+    if (laneProject === null) {
+      setLanes({ all: computeColumns(visible, tags, today) });
+      return;
     }
-  }, [visible, tags, activeId]);
+    // Each lane is a whole board model of its own: the review split, the pinned
+    // verify queue and the Done window all apply per lane.
+    setLanes({
+      human: computeColumns(
+        visible.filter((t) => laneOf(t, tags) === "human"),
+        tags,
+        today,
+      ),
+      agent: computeColumns(
+        visible.filter((t) => laneOf(t, tags) === "agent"),
+        tags,
+        today,
+      ),
+    });
+  }, [visible, tags, activeId, syncing, laneProject]);
 
   // Acknowledge on the way out, not on the way in: the editor covers the card,
   // so a mark cleared on open would settle where you cannot see it. Any move off
@@ -208,12 +252,18 @@ export function Kanban() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  function findColumn(id: UniqueIdentifier): Status | null {
-    if (typeof id === "string" && STATUSES.includes(id as Status)) {
-      return id as Status;
+  function findContainer(
+    id: UniqueIdentifier,
+    ls: Lanes = lanes,
+  ): { lane: Lane; status: Status } | null {
+    if (typeof id === "string") {
+      const [lane, status] = id.split(":") as [Lane, Status];
+      return ls[lane] && STATUSES.includes(status) ? { lane, status } : null;
     }
-    for (const status of STATUSES) {
-      if (columns[status].includes(id as number)) return status;
+    for (const [lane, model] of Object.entries(ls) as [Lane, BoardModel][]) {
+      for (const status of STATUSES) {
+        if (model.columns[status].includes(id as number)) return { lane, status };
+      }
     }
     return null;
   }
@@ -221,65 +271,137 @@ export function Kanban() {
   function onDragStart(event: DragStartEvent) {
     const id = event.active.id as number;
     // Remember where the card started so onDragEnd can tell a genuine
-    // completion (moved into Done) from a reorder within Done.
-    dragFromStatus.current = taskById.get(id)?.status ?? null;
+    // completion (moved into Done) from a reorder within Done, and a lane
+    // change from a move within one lane.
+    dragFrom.current = findContainer(id);
     setActiveId(id);
   }
 
   function onDragOver(event: DragOverEvent) {
     const { active, over } = event;
     if (!over) return;
-    const from = findColumn(active.id);
-    const to = findColumn(over.id);
-    if (!from || !to || from === to) return;
+    const from = findContainer(active.id);
+    const to = findContainer(over.id);
+    if (!from || !to || (from.lane === to.lane && from.status === to.status)) return;
 
-    setColumns((cols) => {
-      const fromIds = cols[from].filter((id) => id !== active.id);
-      const toIds = [...cols[to]];
+    setLanes((ls) => {
+      const src = ls[from.lane]!;
+      const next: Lanes = {
+        ...ls,
+        [from.lane]: {
+          ...src,
+          columns: {
+            ...src.columns,
+            [from.status]: src.columns[from.status].filter((id) => id !== active.id),
+          },
+        },
+      };
+      const dst = next[to.lane]!;
+      const toIds = [...dst.columns[to.status]];
       const overIndex = toIds.indexOf(over.id as number);
-      const insertAt = overIndex >= 0 ? overIndex : toIds.length;
-      toIds.splice(insertAt, 0, active.id as number);
-      return { ...cols, [from]: fromIds, [to]: toIds };
+      toIds.splice(overIndex >= 0 ? overIndex : toIds.length, 0, active.id as number);
+      next[to.lane] = { ...dst, columns: { ...dst.columns, [to.status]: toIds } };
+      return next;
     });
   }
 
   function onDragEnd(event: DragEndEvent) {
     const { active, over } = event;
-    let next = columns;
+    const id = active.id as number;
+    let next = lanes;
     if (over) {
-      const from = findColumn(active.id);
-      const to = findColumn(over.id);
-      if (from && to && from === to) {
-        const ids = columns[from];
-        const oldIndex = ids.indexOf(active.id as number);
+      const from = findContainer(id);
+      const to = findContainer(over.id);
+      if (from && to && from.lane === to.lane && from.status === to.status) {
+        const model = lanes[from.lane]!;
+        const ids = model.columns[from.status];
+        const oldIndex = ids.indexOf(id);
         const overIndex = ids.indexOf(over.id as number);
         if (oldIndex >= 0 && overIndex >= 0 && oldIndex !== overIndex) {
-          next = { ...columns, [from]: arrayMove(ids, oldIndex, overIndex) };
-          setColumns(next);
+          next = {
+            ...lanes,
+            [from.lane]: {
+              ...model,
+              columns: { ...model.columns, [from.status]: arrayMove(ids, oldIndex, overIndex) },
+            },
+          };
+          setLanes(next);
         }
       }
     }
+    const start = dragFrom.current;
+    dragFrom.current = null;
+    const landed = findContainer(id, next);
     // Fire the flourish only on a real completion: the card ended in Done and
     // did not start there.
-    const landedId = active.id as number;
-    const landedDone = next.done.includes(landedId);
-    if (landedDone && dragFromStatus.current !== "done") {
+    if (landed?.status === "done" && start?.status !== "done") {
       flourishSeq.current += 1;
-      setCelebrate({ id: landedId, key: flourishSeq.current });
+      setCelebrate({ id, key: flourishSeq.current });
     }
-    dragFromStatus.current = null;
 
     setActiveId(null);
-    void applyDrag(active.id as number, next);
+    if (!landed) return;
+    // The lane's own columns: the reorder anchors to the card above it in the
+    // lane it landed in, and the other lane's cards keep their places.
+    const columns = next[landed.lane]!.columns;
+    // Owner follows the lane only when the card crosses lanes, so an agent's
+    // human-verify card (shown in You) stays agent-owned when moved within You.
+    const owner = landed.lane !== "all" && start && start.lane !== landed.lane ? landed.lane : null;
+    if (owner === null || taskById.get(id)?.owner === owner) {
+      void applyDrag(id, columns);
+      return;
+    }
+    setSyncing(true);
+    void (async () => {
+      try {
+        await applyDrag(id, columns);
+        await patchTask(id, { owner });
+      } finally {
+        setSyncing(false);
+      }
+    })();
   }
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;
   // Keep the drag overlay in the same form as the resting card: the pinned
-  // verify queue and today's done cards (the first `verify + today` in the Done
+  // verify queue and today's done cards (the first `verify + today` in a Done
   // column) drag as full, not compact.
   const activeFull =
     activeId !== null &&
-    columns.done.slice(0, doneMeta.verify + doneMeta.today).includes(activeId);
+    Object.values(lanes).some((m) =>
+      m.columns.done.slice(0, m.doneVerifyCount + m.doneTodayCount).includes(activeId),
+    );
+
+  const column = (lane: Lane, status: Status, showHeader = true) => {
+    const model = lanes[lane];
+    if (!model) return null;
+    return (
+      <Column
+        key={containerId(lane, status)}
+        lane={lane}
+        status={status}
+        showHeader={showHeader}
+        ids={model.columns[status]}
+        taskById={taskById}
+        onOpen={openEditor}
+        celebrate={celebrate}
+        onFlourishDone={() => setCelebrate(null)}
+        settle={settle}
+        onSettleDone={() => setSettle(null)}
+        reviewCount={model.doingReviewCount}
+        doneVerifyCount={model.doneVerifyCount}
+        doneTodayCount={model.doneTodayCount}
+        doneHidden={model.doneHidden}
+        onSeeAll={() => select({ type: "completed" })}
+      />
+    );
+  };
+  // A lane's count is its open work, todo plus doing, like the mockup's lane label.
+  const openCount = (lane: Lane) => {
+    const m = lanes[lane];
+    return m ? m.columns.todo.length + m.columns.doing.length : 0;
+  };
+  const boardClass = paneOpenTaskId !== null ? "board pane-focus" : "board";
 
   return (
     <DndContext
@@ -290,26 +412,39 @@ export function Kanban() {
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
     >
-      <div className={paneOpenTaskId !== null ? "board pane-focus" : "board"}>
-        {STATUSES.map((status) => (
-          <Column
-            key={status}
-            status={status}
-            ids={columns[status]}
-            taskById={taskById}
-            onOpen={openEditor}
-            celebrate={celebrate}
-            onFlourishDone={() => setCelebrate(null)}
-            settle={settle}
-            onSettleDone={() => setSettle(null)}
-            reviewCount={reviewCount}
-            doneVerifyCount={doneMeta.verify}
-            doneTodayCount={doneMeta.today}
-            doneHidden={doneMeta.hidden}
-            onSeeAll={() => select({ type: "completed" })}
-          />
-        ))}
-      </div>
+      {laneProject === null ? (
+        <div className={boardClass}>{STATUSES.map((status) => column("all", status))}</div>
+      ) : (
+        <div className={`${boardClass} board-lanes`}>
+          <div className="lane" data-lane="human">
+            <div className="lane-who">
+              <span className="lane-name">You</span>
+              <span className="lane-count">{openCount("human")}</span>
+            </div>
+            {STATUSES.map((status) => column("human", status))}
+          </div>
+          <div
+            className={agentsCollapsed ? "lane agents collapsed" : "lane agents"}
+            data-lane="agent"
+          >
+            <div className="lane-who">
+              <span className="lane-name">Agents</span>
+              <span className="lane-count">{openCount("agent")}</span>
+              <button
+                type="button"
+                className="lane-toggle"
+                aria-expanded={!agentsCollapsed}
+                aria-label={agentsCollapsed ? "Expand agents lane" : "Collapse agents lane"}
+                onClick={() => setAgentLaneCollapsed(laneProject, !agentsCollapsed)}
+              >
+                {agentsCollapsed ? "expand" : "collapse"}
+                {agentsCollapsed ? <IconChevronRight size={11} /> : <IconChevronDown size={11} />}
+              </button>
+            </div>
+            {!agentsCollapsed && STATUSES.map((status) => column("agent", status, false))}
+          </div>
+        </div>
+      )}
       <DragOverlay>
         {activeTask ? <CardContent task={activeTask} overlay full={activeFull} /> : null}
       </DragOverlay>
@@ -318,7 +453,9 @@ export function Kanban() {
 }
 
 function Column({
+  lane,
   status,
+  showHeader,
   ids,
   taskById,
   onOpen,
@@ -332,7 +469,10 @@ function Column({
   doneHidden,
   onSeeAll,
 }: {
+  lane: Lane;
   status: Status;
+  /** The Agents lane sits under the You lane's headers and repeats none. */
+  showHeader: boolean;
   ids: number[];
   taskById: Map<number, Task>;
   onOpen: (id: number) => void;
@@ -346,7 +486,7 @@ function Column({
   doneHidden: number;
   onSeeAll: () => void;
 }) {
-  const { setNodeRef } = useDroppable({ id: status });
+  const { setNodeRef } = useDroppable({ id: containerId(lane, status) });
   const isDone = status === "done";
   const isDoing = status === "doing";
 
@@ -391,12 +531,17 @@ function Column({
   const holdsPaneSrc = paneTaskId !== null && ids.includes(paneTaskId);
 
   return (
-    <div className={holdsPaneSrc ? "board-column pane-src-col" : "board-column"}>
-      <div className={`column-header ${status}`}>
-        <span className="column-dot" />
-        {STATUS_LABELS[status]}
-        <span className="column-count">{ids.length}</span>
-      </div>
+    <div
+      className={holdsPaneSrc ? "board-column pane-src-col" : "board-column"}
+      data-status={status}
+    >
+      {showHeader && (
+        <div className={`column-header ${status}`}>
+          <span className="column-dot" />
+          {STATUS_LABELS[status]}
+          <span className="column-count">{ids.length}</span>
+        </div>
+      )}
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
         <div ref={setNodeRef} className="column-body">
           {isDone ? (
@@ -619,6 +764,15 @@ function CardContent({
   const cardLinks = links[task.id] ?? [];
   const cardImages = images[task.id] ?? [];
   const state = reservedState(task, tags);
+  // Agent work back for the user's check says so in words, as Mine's To verify
+  // does; a held agent card names the agent holding it, as the queue's Doing row does.
+  const claimLabel = useClaimLabel(task);
+  const ownerLabel =
+    state === "human-verify"
+      ? "done by agent"
+      : task.owner === "agent" && task.status === "doing"
+        ? (claimLabel ?? undefined)
+        : undefined;
   // Verify steps ("verify: …" subtasks) leave the build checklist only while the
   // task is actually in review — the tag coming off mid-flight folds them back
   // into plain subtasks rather than orphaning them out of every count. Both
@@ -692,6 +846,8 @@ function CardContent({
               <ProjectGlyph project={project} size={12} />
             </span>
           )}
+          <OwnerMark task={task} label={ownerLabel} />
+          <FromRef task={task} />
           {time && <span className="done-time">{time}</span>}
         </span>
         {flourishKey !== null && <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />}
@@ -798,7 +954,7 @@ function CardContent({
           {commentCount}
         </span>
       )}
-      <TaskMeta task={task} hideStatus hideState={inSection} />
+      <TaskMeta task={task} hideStatus hideState={inSection} showOwner ownerLabel={ownerLabel} />
       <CardProvenance
         task={task}
         project={showProject ? project : undefined}

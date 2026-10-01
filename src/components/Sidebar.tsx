@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
+import { mineGroups } from "../ownerViews";
 import { goalProgress, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
@@ -12,6 +13,7 @@ import {
   IconArchive,
   IconCalendar,
   IconChart,
+  IconChecklist,
   IconChevronDown,
   IconChevronRight,
   IconColumns,
@@ -95,7 +97,10 @@ export function Sidebar() {
         byTag.set(tagId, (byTag.get(tagId) ?? 0) + 1);
       }
     }
+    const mine = mineGroups(tasks, tags);
     return {
+      mine: mine.needsAnswer.length + mine.toVerify.length + mine.myTodos.length,
+      queue: mine.queueCounts.todo + mine.queueCounts.doing + mine.queueCounts.needsApproval,
       today: open.filter((t) => t.due_date !== null && t.due_date <= today).length,
       upcoming: open.filter((t) => t.due_date !== null && t.due_date > today).length,
       inbox: open.filter((t) => t.project_id === null).length,
@@ -103,9 +108,17 @@ export function Sidebar() {
       byProject,
       byTag,
     };
-  }, [tasks]);
+  }, [tasks, tags]);
 
   const smartLists: { sel: Selection; label: string; icon: ReactNode; count: number }[] = [
+    { sel: { type: "mine" }, label: "Mine", icon: <IconChecklist />, count: counts.mine },
+    {
+      sel: { type: "queue" },
+      label: "Agent queue",
+      // The same neutral diamond that marks an agent-owned card.
+      icon: <span className="owner-glyph nav-owner-glyph" aria-hidden="true">◇</span>,
+      count: counts.queue,
+    },
     { sel: { type: "today" }, label: "Today", icon: <IconStar />, count: counts.today },
     { sel: { type: "upcoming" }, label: "Upcoming", icon: <IconCalendar />, count: counts.upcoming },
     { sel: { type: "inbox" }, label: "Inbox", icon: <IconInbox />, count: counts.inbox },
@@ -132,6 +145,7 @@ export function Sidebar() {
         {smartLists.map((item) => (
           <button
             key={item.label}
+            data-nav={item.sel.type}
             className={`nav-item ${isSelected(selection, item.sel) ? "active" : ""}`}
             onClick={() => select(item.sel)}
           >

@@ -42,6 +42,12 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
   let headerProject: Project | undefined;
   let headerGoalName: string | null = null;
   switch (selection.type) {
+    case "mine":
+      title = "Mine";
+      break;
+    case "queue":
+      title = "Agent queue";
+      break;
     case "today":
       title = "Today";
       break;

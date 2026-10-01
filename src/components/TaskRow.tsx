@@ -1,3 +1,4 @@
+import { lineageTask } from "../ownerViews";
 import { useStore } from "../store";
 import type { ReservedTag, Tag, Task } from "../types";
 import {
@@ -8,6 +9,7 @@ import {
   STATUS_LABELS,
 } from "../types";
 import { dueLabel, isOverdue } from "../utils/dates";
+import { cardPresence } from "../utils/presence";
 import { taskRefLabel } from "../utils/ref";
 import { IconCheck, IconFlag } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
@@ -30,6 +32,8 @@ export function TaskMeta({
   showProject,
   hideStatus,
   hideState,
+  showOwner,
+  ownerLabel,
 }: {
   task: Task;
   showProject?: boolean;
@@ -40,8 +44,13 @@ export function TaskMeta({
    *  (To Do, Done, the list views) leaves this off: there the pill is the only
    *  thing carrying the state. */
   hideState?: boolean;
+  /** Lead the row with the agent ◇ and "from TIL-xxx" — the board card folds
+   *  them into its meta line instead of a line of their own. */
+  showOwner?: boolean;
+  /** Visible text beside the ◇ (see OwnerMark). */
+  ownerLabel?: string;
 }) {
-  const { projects, tags, goals, selection, select } = useStore();
+  const { projects, tags, goals, tasks, selection, select } = useStore();
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
@@ -58,7 +67,10 @@ export function TaskMeta({
     goal !== undefined && !(selection.type === "goal" && selection.goalId === goal.id);
 
   const showDoing = task.status === "doing" && !hideStatus;
+  const origin = showOwner ? lineageTask(task, tasks) : null;
+  const ownerLead = showOwner && (task.owner === "agent" || origin !== null);
   const hasMeta =
+    ownerLead ||
     task.due_date ||
     task.priority > 0 ||
     taskTags.length > 0 ||
@@ -70,6 +82,8 @@ export function TaskMeta({
 
   return (
     <span className="task-meta">
+      {ownerLead && <OwnerMark task={task} label={ownerLabel} />}
+      {origin && <span className="from-ref">from {origin.ref}</span>}
       {state && (
         <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
       )}
@@ -123,13 +137,57 @@ export function TaskMeta({
   );
 }
 
-export function TaskRow({ task, showProject }: { task: Task; showProject?: boolean }) {
+/** The neutral ◇ an agent-owned task carries on every surface. `label` spells it
+ *  out where the bare glyph would be ambiguous ("done by agent" under To verify). */
+export function OwnerMark({ task, label }: { task: Task; label?: string }) {
+  if (task.owner !== "agent") return null;
+  return (
+    <span className="owner-mark" title="Owned by an agent">
+      <span className="owner-glyph">◇</span>
+      {label}
+    </span>
+  );
+}
+
+/** Who holds a doing card: the agent's presence name, else its session id, else
+ *  null. The queue's Doing pill and the board's agent card both say it. */
+export function useClaimLabel(task: Task): string | null {
+  const live = useStore((s) => s.live);
+  const fallback = useStore((s) => s.presence);
+  const entry = cardPresence(task.id, live, fallback);
+  const session = live[task.id]?.session_id;
+  return entry?.name ?? (session ? `session ${session.slice(0, 4)}` : null);
+}
+
+/** "from TIL-205": the task whose work spawned this one. Renders nothing when
+ *  there is no lineage or the origin is gone. */
+export function FromRef({ task }: { task: Task }) {
+  const tasks = useStore((s) => s.tasks);
+  const origin = lineageTask(task, tasks);
+  if (!origin) return null;
+  return <span className="from-ref">from {origin.ref}</span>;
+}
+
+export function TaskRow({
+  task,
+  showProject,
+  ownerLabel,
+  awaitingCheck,
+}: {
+  task: Task;
+  showProject?: boolean;
+  /** Visible text beside the agent marker; the glyph alone otherwise. */
+  ownerLabel?: string;
+  /** Mine's To verify: done work still waiting on the user's check. The title
+   *  stays live (no strikethrough); the checkbox still reflects and toggles done. */
+  awaitingCheck?: boolean;
+}) {
   const { toggleDone, openEditor, editingTaskId } = useStore();
   const done = task.status === "done";
 
   return (
     <div
-      className={`task-row ${done ? "done" : ""} ${editingTaskId === task.id ? "editing" : ""}`}
+      className={`task-row ${done && !awaitingCheck ? "done" : ""} ${editingTaskId === task.id ? "editing" : ""}`}
       onClick={() => openEditor(task.id)}
       role="button"
       tabIndex={0}
@@ -147,6 +205,8 @@ export function TaskRow({ task, showProject }: { task: Task; showProject?: boole
       </button>
       <span className="task-id" aria-hidden="true">{taskRefLabel(task)}</span>
       <span className="task-title">{task.title}</span>
+      <OwnerMark task={task} label={ownerLabel} />
+      <FromRef task={task} />
       <TaskMeta task={task} showProject={showProject} />
     </div>
   );
