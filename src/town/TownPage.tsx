@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { townModel, type TownCharacter, type TownRoom } from "../selectors";
+import { paneHasFocus } from "../paneStore";
 import { useStore } from "../store";
 import { TownRenderer, type TownHover, type TownTarget } from "./renderer";
 
@@ -98,12 +99,22 @@ export function TownPage() {
   useEffect(() => rendererRef.current?.setBots(bots), [bots]);
   useEffect(() => rendererRef.current?.focus(focused), [focused]);
 
-  // Esc zooms back out. Skipped when something else (a dialog, the palette)
-  // already handled the key.
+  // Esc zooms back out, unless the key belongs to something else: the session
+  // terminal, a text field (header search, palette input), or a dialog or the
+  // palette. Judged from the event target, not store flags: App's own Esc
+  // handler may already have closed the palette by the time this one runs.
   useEffect(() => {
     if (focused === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.key !== "Escape" || e.defaultPrevented || paneHasFocus()) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (
+        target?.closest(
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"]), ' +
+            '[role="dialog"], [aria-modal="true"], .modal-overlay, .session-pane',
+        )
+      )
+        return;
       setFocusId(null);
     };
     window.addEventListener("keydown", onKey);
@@ -119,6 +130,12 @@ export function TownPage() {
     });
   }
 
+  // Beside an anchor, kept inside the stage's right edge.
+  const cardAt = (anchor: { x: number; y: number }) => {
+    const width = stageRef.current?.clientWidth ?? 0;
+    return { x: Math.max(8, Math.min(anchor.x + 14, width - CARD_ROOM)), y: anchor.y + 14 };
+  };
+
   // The card: the pointer's agent wins over the keyboard's.
   const cardTaskId =
     hover?.target.kind === "agent" ? hover.target.taskId : keyboardAgent;
@@ -131,10 +148,7 @@ export function TownPage() {
         : (rendererRef.current?.agentAnchor(cardAgent.c.taskId) ?? null);
     // No anchor (the agent is off-scene, or the renderer has none yet): the
     // stage's top-left corner.
-    const width = stageRef.current?.clientWidth ?? 0;
-    card = anchor
-      ? { x: Math.max(8, Math.min(anchor.x + 14, width - CARD_ROOM)), y: anchor.y + 14 }
-      : { x: 12, y: 12 };
+    card = anchor ? cardAt(anchor) : { x: 12, y: 12 };
   }
 
   // Buildings and name chips get a one-line hint instead of the agent card.
@@ -229,7 +243,7 @@ export function TownPage() {
         )}
 
         {!cardAgent && hover && hoverRoom && (
-          <div className="town-card" style={{ left: Math.max(8, hover.x + 14), top: hover.y + 14 }}>
+          <div className="town-card" style={{ left: cardAt(hover).x, top: cardAt(hover).y }}>
             <div className="town-card-name">{hoverRoom.name}</div>
             <div className="town-card-meta">
               {hover.target.kind === "label"
