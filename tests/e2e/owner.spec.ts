@@ -281,4 +281,19 @@ describe("task owner", () => {
     await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-board-lanes-collapsed.png");
   });
+
+  it("collapses a verify card once it has been done a day", async () => {
+    const verify = $(`.board-card*=${AGENT_VERIFY}`);
+    await expect(verify).not.toHaveElementClass("compact");
+    sql(`UPDATE tasks SET completed_at = datetime('now', '-2 days') WHERE id = ${ids.agentVerify};`);
+    await announceDbChange();
+    await browser.waitUntil(async () => (await verify.getAttribute("class")).includes("compact"), {
+      timeout: 10000,
+      timeoutMsg: "verify card done two days ago is still full",
+    });
+    // Still pinned in the verify queue, just one line.
+    await expect($('[data-lane="human"] [data-status="done"]').$(`.board-card*=${AGENT_VERIFY}`)).toBeExisting();
+    await browser.pause(300);
+    await browser.saveScreenshot(".test-artifacts/screenshots/owner-verify-compact.png");
+  });
 });

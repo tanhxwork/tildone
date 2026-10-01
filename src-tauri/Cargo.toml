@@ -63,3 +63,10 @@ mac-notification-sys = "0.6"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
+
+# Build-time crates (proc macros, build scripts) are not stripped. Release's
+# default `strip = "debuginfo"` runs Apple's strip, which on macOS 27 leaves
+# proc-macro dylibs with a mis-aligned LINKEDIT string pool that dyld refuses
+# to load (seen with sqlx-macros, 2026-10-01). The shipped binary is unaffected.
+[profile.release.build-override]
+strip = false

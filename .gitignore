@@ -41,3 +41,6 @@ src-tauri/icons-dev/*/
 ds-bundle/
 tests/e2e/artifacts/
 AGENTS.md
+
+# Test runs: screenshots, spilled tool output. Never committed.
+.test-artifacts/

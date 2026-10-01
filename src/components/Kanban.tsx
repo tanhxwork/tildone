@@ -153,6 +153,14 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
   };
 }
 
+/** A verify card stays full for its first day done, so fresh work shows its
+ *  steps; after that it collapses like any done card and stays in the queue. */
+const VERIFY_FULL_MS = 24 * 60 * 60 * 1000;
+function isFreshVerify(task: Task | undefined): boolean {
+  if (!task?.completed_at) return true;
+  return Date.now() - new Date(task.completed_at).getTime() < VERIFY_FULL_MS;
+}
+
 export function Kanban() {
   // Only narrow the board to the attached card's column while the terminal is
   // actually taking horizontal space. A collapsed pane is just the slim docked
@@ -367,6 +375,7 @@ export function Kanban() {
   // verify queue (the first `verify` in a Done column) drags as full, not compact.
   const activeFull =
     activeId !== null &&
+    isFreshVerify(taskById.get(activeId)) &&
     Object.values(lanes).some((m) =>
       m.columns.done.slice(0, m.doneVerifyCount).includes(activeId),
     );
@@ -420,7 +429,7 @@ export function Kanban() {
               <span className="lane-name">You</span>
               <span className="lane-count">{openCount("human")}</span>
             </div>
-            {STATUSES.map((status) => column("human", status))}
+            <div className="lane-columns">{STATUSES.map((status) => column("human", status))}</div>
           </div>
           <div
             className={agentsCollapsed ? "lane agents collapsed" : "lane agents"}
@@ -440,7 +449,11 @@ export function Kanban() {
                 {agentsCollapsed ? <IconChevronRight size={11} /> : <IconChevronDown size={11} />}
               </button>
             </div>
-            {!agentsCollapsed && STATUSES.map((status) => column("agent", status, false))}
+            {!agentsCollapsed && (
+              <div className="lane-columns">
+                {STATUSES.map((status) => column("agent", status, false))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -490,7 +503,7 @@ function Column({
   const isDoing = status === "doing";
 
   // `full` keeps a done card in its full form instead of collapsing to one line —
-  // used for the verify queue, whose steps the user still has to read.
+  // used for a verify card's first day, while its steps are fresh to read.
   const card = (id: number, full = false, inSection = false) => {
     const task = taskById.get(id);
     return task ? (
@@ -551,7 +564,7 @@ function Column({
               {verifyCount > 0 && (
                 <div className="col-divider verify-queue">Verify · {verifyCount}</div>
               )}
-              {ids.slice(0, verifyCount).map((id) => card(id, true, true))}
+              {ids.slice(0, verifyCount).map((id) => card(id, isFreshVerify(taskById.get(id)), true))}
               {todayCount > 0 && <div className="col-divider">Today</div>}
               {ids.slice(verifyCount, verifyCount + todayCount).map((id) => card(id))}
               {hasEarlier && (
@@ -825,7 +838,7 @@ function CardContent({
               open loop. `needs-landing` (an unmerged PR) earns the one pill the
               compact form otherwise omits, so a done card can't hide a branch
               that never landed (TIL-84). */}
-          {state && (
+          {state && !inSection && (
             <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
           )}
           {showGoalChip && goal && (
