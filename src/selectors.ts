@@ -1,5 +1,5 @@
 import { format } from "date-fns";
-import type { Goal, Project, Selection, Task } from "./types";
+import type { Environment, Goal, Project, Selection, Task } from "./types";
 import {
   cardPresence,
   type FallbackPresence,
@@ -93,7 +93,7 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
   const live = liveTasks(tasks);
   switch (selection.type) {
     case "all":
-    // Pages (mine, queue, observe, review, completed, goals) do their own
+    // Pages (mine, queue, observe, review, completed, goals, town) do their own
     // slicing from the full live set.
     case "mine":
     case "queue":
@@ -101,6 +101,7 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
     case "review":
     case "completed":
     case "goals":
+    case "town":
       return live;
     case "project":
       return live.filter((t) => t.project_id === selection.projectId);
@@ -242,6 +243,10 @@ export interface TownCharacter {
    *  the character came from the activity fallback, which carries no session id. */
   sessionId: string | null;
   agentName: string | null;
+  /** The task's frozen "CODE-N" ref, null on legacy rows. */
+  ref: string | null;
+  /** The task title, shown on the agent card. */
+  title: string;
   state: PresenceState;
   /** The agent's last log line — the "what it's doing" shown on hover. */
   lastLog: string | null;
@@ -257,6 +262,8 @@ export interface TownRoom {
   name: string;
   /** The project's colour dot, for tinting room chrome; null for Inbox. */
   color: string | null;
+  /** The island style; null for Inbox, whose agents stand in the town square. */
+  environment: Environment | null;
   characters: TownCharacter[];
   /** Open (todo/doing, non-deleted) task count in this project — the project's
    *  activity/backlog size. The town scales a building's footprint by it, so a
@@ -295,6 +302,7 @@ export function townModel(
       projectId: p.id,
       name: p.name,
       color: p.color,
+      environment: p.environment,
       characters: [],
       openTaskCount: 0,
     });
@@ -303,6 +311,7 @@ export function townModel(
     projectId: null,
     name: "Inbox",
     color: null,
+    environment: null,
     characters: [],
     openTaskCount: 0,
   };
@@ -320,6 +329,8 @@ export function townModel(
       taskId: t.id,
       sessionId: live[t.id]?.session_id ?? null,
       agentName: presence.name,
+      ref: t.ref,
+      title: t.title,
       state: presence.state,
       lastLog: presence.last_log,
       at: presence.at,

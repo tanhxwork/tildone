@@ -20,6 +20,7 @@ function project(name: string, opts: Partial<Project> = {}): Project {
     position: seq,
     folder_path: null,
     code: null,
+    environment: "meadow",
     ...opts,
   };
 }
@@ -96,9 +97,16 @@ describe("townModel", () => {
     expect(model.rooms.map((r) => r.name)).toEqual(["early", "late", "Inbox"]);
   });
 
-  it("places a live session as a character in its project's room, passing state/log/session through", () => {
+  it("gives each room its project's environment, and the Inbox none", () => {
+    const a = project("alpha", { environment: "desert" });
+    const b = project("beta", { environment: "snow" });
+    const model = townModel([a, b], [], {}, {});
+    expect(model.rooms.map((r) => r.environment)).toEqual(["desert", "snow", null]);
+  });
+
+  it("places a live session as a character in its project's room, passing ref/title/state/log/session through", () => {
     const p = project("alpha");
-    const t = task({ project_id: p.id });
+    const t = task({ project_id: p.id, ref: "ALP-7", title: "Wire the island" });
     const live = liveMap([
       livePresence({ task_id: t.id, state: "working", last_log: "tests written (RED)", agent_name: "claude-code" }),
     ]);
@@ -107,6 +115,8 @@ describe("townModel", () => {
     expect(chars).toHaveLength(1);
     expect(chars[0]).toMatchObject({
       taskId: t.id,
+      ref: "ALP-7",
+      title: "Wire the island",
       sessionId: `sess-${t.id}`,
       agentName: "claude-code",
       state: "working",

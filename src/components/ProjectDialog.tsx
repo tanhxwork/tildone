@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
-import type { Project, ProjectIcon } from "../types";
-import { COLOR_CHOICES } from "../types";
+import type { Environment, Project, ProjectIcon } from "../types";
+import { COLOR_CHOICES, ENVIRONMENT_LABELS, ENVIRONMENTS } from "../types";
+import { nextEnvironment } from "../utils/environment";
 import { IconX } from "./Icons";
 
 function basename(path: string): string {
@@ -17,9 +18,12 @@ export function ProjectDialog({
   project: Project | null;
   onClose: () => void;
 }) {
-  const { addProject, editProject, removeProject } = useStore();
+  const { addProject, editProject, removeProject, projects } = useStore();
   const [name, setName] = useState(project?.name ?? "");
   const [color, setColor] = useState(project?.color ?? COLOR_CHOICES[0]);
+  const [environment, setEnvironment] = useState<Environment>(
+    () => project?.environment ?? nextEnvironment(projects),
+  );
   // Folder override: "" in the DB means "icon off"; we model that as a checkbox.
   const [iconOff, setIconOff] = useState(project?.folder_path === "");
   const [folder, setFolder] = useState(
@@ -59,9 +63,9 @@ export function ProjectDialog({
     if (!trimmed) return;
     if (project) {
       const folderPath = iconOff ? "" : folder.trim() || null;
-      await editProject(project.id, trimmed, color, folderPath);
+      await editProject(project.id, trimmed, color, folderPath, environment);
     } else {
-      await addProject(trimmed, color);
+      await addProject(trimmed, color, environment);
     }
     onClose();
   }
@@ -103,6 +107,23 @@ export function ProjectDialog({
                 aria-label={`Color ${c}`}
                 onClick={() => setColor(c)}
               />
+            ))}
+          </div>
+        </div>
+
+        <div className="field">
+          <span className="field-label">Environment</span>
+          <div className="segmented full" role="radiogroup" aria-label="Environment">
+            {ENVIRONMENTS.map((e) => (
+              <button
+                key={e}
+                role="radio"
+                aria-checked={e === environment}
+                className={e === environment ? "active" : ""}
+                onClick={() => setEnvironment(e)}
+              >
+                {ENVIRONMENT_LABELS[e]}
+              </button>
             ))}
           </div>
         </div>

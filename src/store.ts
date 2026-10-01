@@ -4,6 +4,7 @@ import * as db from "./db";
 import type {
   ActivityEntry,
   Comment,
+  Environment,
   Goal,
   LinkKind,
   ObserveCard,
@@ -29,6 +30,7 @@ import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
 import { watchMoreTrigger } from "./observeViews";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
+import { nextEnvironment } from "./utils/environment";
 import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
@@ -147,12 +149,14 @@ interface Store {
   setPaletteOpen: (open: boolean) => void;
   setTagManagerOpen: (open: boolean) => void;
 
-  addProject: (name: string, color: string) => Promise<void>;
+  /** environment defaults to nextEnvironment(projects). */
+  addProject: (name: string, color: string, environment?: Environment) => Promise<void>;
   editProject: (
     id: number,
     name: string,
     color: string,
     folderPath: string | null,
+    environment: Environment,
   ) => Promise<void>;
   removeProject: (id: number) => Promise<void>;
   moveProject: (id: number, delta: -1 | 1) => Promise<void>;
@@ -567,8 +571,8 @@ export const useStore = create<Store>()((set, get) => ({
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setTagManagerOpen: (tagManagerOpen) => set({ tagManagerOpen }),
 
-  addProject: async (name, color) => {
-    const { id, code } = await db.insertProject(name, color);
+  addProject: async (name, color, environment = nextEnvironment(get().projects)) => {
+    const { id, code } = await db.insertProject(name, color, environment);
     const project: Project = {
       id,
       name,
@@ -576,6 +580,7 @@ export const useStore = create<Store>()((set, get) => ({
       position: get().projects.length,
       folder_path: null,
       code,
+      environment,
     };
     set((s) => ({
       projects: [...s.projects, project],
@@ -584,11 +589,11 @@ export const useStore = create<Store>()((set, get) => ({
     void get().loadProjectIcon(project);
   },
 
-  editProject: async (id, name, color, folderPath) => {
-    await db.updateProject(id, name, color, folderPath);
+  editProject: async (id, name, color, folderPath, environment) => {
+    await db.updateProject(id, name, color, folderPath, environment);
     set((s) => ({
       projects: s.projects.map((p) =>
-        p.id === id ? { ...p, name, color, folder_path: folderPath } : p,
+        p.id === id ? { ...p, name, color, folder_path: folderPath, environment } : p,
       ),
     }));
     const updated = get().projects.find((p) => p.id === id);
@@ -1313,17 +1318,24 @@ export const useStore = create<Store>()((set, get) => ({
     const projectIdByName = new Map(
       state.projects.map((p) => [p.name.toLowerCase(), p.id]),
     );
+    // Imported projects pick environments like new ones, counting each import.
+    const taken = state.projects.map((p) => ({ environment: p.environment }));
+    const insertImported = async (name: string, color: string) => {
+      const environment = nextEnvironment(taken);
+      taken.push({ environment });
+      return db.insertProject(name, color, environment);
+    };
     for (const p of incomingProjects) {
       const key = p.name.trim().toLowerCase();
       if (!key || projectIdByName.has(key)) continue;
-      const { id } = await db.insertProject(p.name.trim(), p.color ?? colorForName(p.name));
+      const { id } = await insertImported(p.name.trim(), p.color ?? colorForName(p.name));
       projectIdByName.set(key, id);
     }
     // Project names referenced only by tasks are created on the fly too.
     for (const t of incomingTasks) {
       const name = t.project?.trim();
       if (name && !projectIdByName.has(name.toLowerCase())) {
-        const { id } = await db.insertProject(name, colorForName(name));
+        const { id } = await insertImported(name, colorForName(name));
         projectIdByName.set(name.toLowerCase(), id);
       }
     }

@@ -20,7 +20,23 @@ export interface Project {
   /** Short unique code for the task reference, e.g. "TIL". Derived from the name
    * at creation; NULL only on legacy rows the backfill hasn't reached yet. */
   code: string | null;
+  /** The island style the Town draws this project with. Picked on create
+   *  (`nextEnvironment`) and editable in the project dialog; migration 030. */
+  environment: Environment;
 }
+
+/** Island styles for the Town, in the order new projects take them. */
+export const ENVIRONMENTS = ["meadow", "city", "desert", "snow", "autumn"] as const;
+
+export type Environment = (typeof ENVIRONMENTS)[number];
+
+export const ENVIRONMENT_LABELS: Record<Environment, string> = {
+  meadow: "Meadow",
+  city: "City",
+  desert: "Desert",
+  snow: "Snow",
+  autumn: "Autumn",
+};
 
 /**
  * A named outcome that owns tasks. Lives inside exactly one project; a task
@@ -260,6 +276,8 @@ export type Selection =
   | { type: "review" }
   | { type: "completed" }
   | { type: "goals" }
+  /** Every project as an island, agents placed by state. */
+  | { type: "town" }
   | { type: "project"; projectId: number }
   | { type: "goal"; goalId: number }
   /** The open tasks in one project carrying no goal — the sidebar's "No goal"
@@ -286,11 +304,12 @@ export function isPageSelection(selection: Selection): boolean {
     selection.type === "observe" ||
     selection.type === "review" ||
     selection.type === "completed" ||
-    selection.type === "goals"
+    selection.type === "goals" ||
+    selection.type === "town"
   );
 }
 
-export type ViewMode = "list" | "board" | "table" | "town";
+export type ViewMode = "list" | "board" | "table";
 
 export const PRIORITY_LABELS: Record<number, string> = {
   0: "None",

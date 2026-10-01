@@ -1,44 +1,71 @@
-import { browser, $, expect } from "@wdio/globals";
+import { browser, $, $$, expect } from "@wdio/globals";
 import { mkdirSync } from "node:fs";
 import { resetAppState } from "./support/reset.js";
 
-// The living town re-renders the board's presence state as characters that walk
-// a tiled overworld. The pixels live on a canvas (not asserted here); every
-// character carries a DOM overlay node (hover/aria/testid) that FOLLOWS its
-// moving sprite — so this drives the real app to prove the view mounts and that
-// an agent-touched task surfaces as a character tagged with its presence state
-// and its building. Positions are dynamic now, so we assert the node's identity
-// and attributes, never a fixed coordinate or canvas pixels. Live presence needs
-// the agent server; the activity *fallback* does not, so we seed a recent agent
-// activity row and let cardPresence resolve a quiet character.
+// The Town page draws every project as an island on a canvas (TownRenderer; its
+// pixels are not asserted here). Everything a test can hold on to is DOM: the
+// toolbar, the focus bar, the agent card, and the visually hidden region that
+// mirrors the canvas for the keyboard — one button per agent, one per building.
+//
+// Agents are seeded the way real ones arrive: projects and tasks through the MCP
+// server, claims through a doing write carrying a session id, and live state
+// through /heartbeat. /heartbeat rejects any request with an Origin header, so a
+// web page cannot fake "working"; the webview always sends one and Node does not,
+// so the beats go from the spec process, exactly as the shell hook sends them.
 
-async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-  return browser.execute(
-    (c, a) =>
-      (
-        window as unknown as {
-          __TAURI__: { core: { invoke: (c: string, a: unknown) => Promise<unknown> } };
-        }
-      ).__TAURI__.core.invoke(c, a) as Promise<T>,
-    cmd,
-    args,
-  );
+const SHOTS = "./.test-artifacts/screenshots";
+const CLIENT = "claude-code";
+const WORKING_SESSION = "3f6c2a10-7b1e-4c2d-9a51-0e2b7d4c1a01";
+const BLOCKED_SESSION = "3f6c2a10-7b1e-4c2d-9a51-0e2b7d4c1a02";
+
+/** The canvas redraws on the next frame and eases camera and cut-aways in, so
+ *  wait for it to settle; the DOM assertions don't need this, the picture does. */
+async function shot(state: string): Promise<void> {
+  await browser.pause(1000);
+  mkdirSync(SHOTS, { recursive: true });
+  await browser.saveScreenshot(`${SHOTS}/town-${state}.png`);
 }
 
-async function exec(query: string, values: unknown[] = []): Promise<void> {
-  await invoke("plugin:sql|execute", { db: "sqlite:tildone.db", query, values });
+/** The agent server's base endpoint; the port is only known after bind. */
+async function endpoint(): Promise<string> {
+  const url = (await browser.executeAsync((done: (v: unknown) => void) => {
+    const tauri = (window as never as { __TAURI__: { core: { invoke: Function } } }).__TAURI__;
+    tauri.core.invoke("agent_server_start").then(done, (e: unknown) => done(`ERR ${e}`));
+  })) as string;
+  expect(url).not.toMatch(/^ERR/);
+  return url.replace(/\/mcp\/?$/, "").replace(/\/$/, "");
 }
 
-async function selectId(query: string): Promise<number> {
-  const rows = await invoke<{ id: number }[]>("plugin:sql|select", {
-    db: "sqlite:tildone.db",
-    query,
-    values: [],
-  });
-  return rows[0].id;
+let mcpSession = "";
+let rpcId = 0;
+/** One JSON-RPC call; the reply is plain JSON or a single SSE `data:` event. */
+async function rpc(url: string, method: string, params: unknown, notify = false) {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  if (mcpSession) headers["mcp-session-id"] = mcpSession;
+  const body: Record<string, unknown> = { jsonrpc: "2.0", method, params };
+  if (!notify) body.id = ++rpcId;
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+  mcpSession = res.headers.get("mcp-session-id") ?? mcpSession;
+  const text = await res.text();
+  if (notify) return null;
+  const data = text.trim().startsWith("{")
+    ? text
+    : text.split("\n").filter((l) => l.startsWith("data:")).pop()!.slice(5);
+  return JSON.parse(data);
 }
 
-/** Nudge the store to reload from the DB, the same event every agent write fires. */
+/** Call a tool and return its JSON payload; a tool error fails the spec. */
+async function tool(url: string, name: string, args: Record<string, unknown>) {
+  const out = await rpc(url, "tools/call", { name, arguments: args });
+  const text = out.result?.content?.[0]?.text ?? "";
+  if (out.error || out.result?.isError) throw new Error(`${name}: ${JSON.stringify(out)}`);
+  return JSON.parse(text);
+}
+
+/** Nudge the store to reload (and re-read presence), as every agent write does. */
 async function nudge(): Promise<void> {
   await browser.execute(() =>
     (
@@ -47,424 +74,187 @@ async function nudge(): Promise<void> {
   );
 }
 
-describe("town view", () => {
+async function beat(base: string, session: string, state: "working" | "blocked") {
+  const res = await fetch(`${base}/heartbeat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: session, state }),
+  });
+  expect(res.status).toBe(200);
+}
+
+/** A toolbar or focus-bar button by its text. */
+const seg = (group: string, label: string) =>
+  $(`.town-toolbar [aria-label="${group}"]`).$(`button=${label}`);
+const chip = (label: string) => $(".town-focusbar").$(`button*=${label}`);
+const pressed = (el: ReturnType<typeof $>) => el.getAttribute("aria-pressed");
+
+describe("town page", () => {
+  const seeded: Record<string, { id: number; ref: string }> = {};
+  let base = "";
+
   before(async () => {
     await resetAppState();
   });
 
-  it("mounts the living town and shows a character tagged with its state and building for an agent-touched task", async () => {
-    await exec(
-      "INSERT INTO projects (name, color, position, created_at, code) VALUES ($1,$2,$3,$4,$5)",
-      ["Townproj", "#5645d4", 0, "2026-01-01T00:00:00Z", "TWN"],
-    );
-    const pid = await selectId("SELECT id FROM projects WHERE name = 'Townproj'");
+  // First, while the board is still empty after the reset.
+  it("shows the square with a hint when there are no projects", async () => {
+    await $('[data-nav="town"]').click();
+    await expect($(".view-title")).toHaveText("Town");
+    await expect($(".town-empty")).toHaveText("Create a project to build its island");
+    // Only "All projects" in the focus bar.
+    await expect($$(".town-focusbar button")).toBeElementsArrayOfSize(1);
+    await shot("empty");
+  });
 
-    await exec(
-      "INSERT INTO tasks (project_id, title, status, position, priority, notes, created_at) VALUES ($1,$2,'doing',0,0,'',$3)",
-      [pid, "Town task", "2026-01-01T00:00:00Z"],
-    );
-    const tid = await selectId("SELECT id FROM tasks WHERE title = 'Town task'");
+  it("opens from the sidebar with a live count", async () => {
+    base = await endpoint();
+    const url = `${base}/mcp`;
+    await rpc(url, "initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: CLIENT, version: "1" },
+    });
+    await rpc(url, "notifications/initialized", {}, true);
 
-    // Recent agent activity → cardPresence resolves a quiet character via the
-    // fallback (within the 12h presence window), no live server needed.
-    const recent = new Date(Date.now() - 60_000).toISOString();
-    await exec(
-      "INSERT INTO task_activity (task_id, label, created_at, actor_kind, actor_name) VALUES ($1,$2,$3,'agent','claude-code')",
-      [tid, "working", recent],
-    );
+    await tool(url, "create_project", { name: "Harbor" });
+    await tool(url, "create_project", { name: "Atlas" });
+    const task = async (key: string, project: string, title: string) => {
+      const r = await tool(url, "create_task", { title, project });
+      seeded[key] = { id: r.id, ref: r.ref };
+    };
+    await task("working", "Harbor", "Ship the island renderer");
+    await task("blocked", "Atlas", "Pick the bridge colour");
+    await task("quiet", "Atlas", "Draft the release note");
+
+    await tool(url, "update_task", { id: seeded.working.id, status: "doing", session_id: WORKING_SESSION });
+    await tool(url, "update_task", { id: seeded.blocked.id, status: "doing", session_id: BLOCKED_SESSION });
+    await tool(url, "log_progress", { task_id: seeded.working.id, text: "drawing the town square" });
+    await tool(url, "log_progress", { task_id: seeded.blocked.id, text: "waiting on a colour" });
+    // No claim and no beat: the activity fallback places it, quiet and not live.
+    await tool(url, "log_progress", { task_id: seeded.quiet.id, text: "outline written" });
+    await beat(base, WORKING_SESSION, "working");
+    await beat(base, BLOCKED_SESSION, "blocked");
     await nudge();
 
-    // Open the town from the header view toggle. Clear the first-open hint's
-    // seen-flag first so it shows on this open (a prior run may have set it).
-    const townButton = $('button[aria-label="Town view"]');
-    await townButton.waitForExist();
-    await browser.execute(() => localStorage.removeItem("tildone-town-hint-seen"));
-    await townButton.click();
-
-    await $(".town").waitForExist();
-    // First open → the discoverability hint bar teaches the controls. Pump a few
-    // frames first so the canvas renders behind it for the artifact screenshot.
-    await expect($('[data-testid="town-hint"]')).toBeExisting();
-    await browser.execute(() => {
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 40; i++) step?.(16);
-    });
-    mkdirSync("./tests/e2e/artifacts", { recursive: true });
-    await browser.saveScreenshot("./tests/e2e/artifacts/town-hint.png");
-    // The DOM overlay carries hover/aria/hit-testing: the agent-touched task must
-    // appear as a character node, proving the model → roster → character path.
-    const char = $(`[data-testid="town-char-${tid}"]`);
-    await char.waitForExist();
-    // The node is tagged with its presence state (the fallback resolves quiet)
-    // and the index of its building (its only project → building 0).
-    await expect(char).toHaveAttribute("data-state", "quiet");
-    await expect(char).toHaveAttribute("data-building", "0");
-
-    // The Pixi canvas must actually mount. It silently fell back to "overlay
-    // only" (TownView's catch) because Pixi's `Assets.load` rejects under
-    // Tauri's `tauri://localhost` protocol — so the town rendered blank in the
-    // app for months while this overlay-only assertion stayed green. Loading the
-    // PNGs via <img> fixed it; assert the canvas so the regression can't hide
-    // behind the overlay again.
-    const canvasMounted = await browser.execute(() => {
-      const c = document.querySelector(".town-canvas canvas") as HTMLCanvasElement | null;
-      return !!c && c.width > 0 && c.height > 0;
-    });
-    expect(canvasMounted).toBe(true);
-
-    // v3 has a camera: the canvas is sized to the VIEWPORT, not the whole world
-    // (under v2 it was world-sized and the frame scrolled). So the canvas width
-    // tracks its host, proving the world is scrolled by a camera rather than laid
-    // out flat at full size.
-    const viewportSized = await browser.execute(() => {
-      const host = document.querySelector(".town") as HTMLElement | null;
-      const canvas = document.querySelector(".town-canvas canvas") as HTMLCanvasElement | null;
-      if (!host || !canvas) return false;
-      return Math.abs(canvas.clientWidth - host.clientWidth) < 4;
-    });
-    expect(viewportSized).toBe(true);
-
-    // Clicking a character makes the camera follow it — the node gains the
-    // `following` class (React-driven; independent of the animation frame).
-    await char.click();
-    await expect(char).toHaveElementClass("following", { containing: true });
-    // Clicking a character is a "first interaction" → the hint retires for good.
-    await expect($('[data-testid="town-hint"]')).not.toBeExisting();
-
-    // This automated webview is never composited, so requestAnimationFrame (and
-    // therefore Pixi's ticker) never fires — the world would stay unrendered.
-    // Pump the sim+camera+render loop manually so the pipeline runs end to end
-    // and the screenshot shows the real living town.
-    await browser.execute(() => {
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 150; i++) step?.(16);
-    });
-
-    // The overlay node now carries a real pixel offset set by the frame loop —
-    // proof the sim → camera → render pipeline ran (a black/blank canvas would
-    // leave it unpositioned). The camera also followed it after the click.
-    const positioned = await browser.execute(() => {
-      const n = document.querySelector(".town-char") as HTMLElement | null;
-      return /^-?\d/.test(n?.style.top ?? "") && /^-?\d/.test(n?.style.left ?? "");
-    });
-    expect(positioned).toBe(true);
-
-    mkdirSync("./tests/e2e/artifacts", { recursive: true });
-    await browser.saveScreenshot("./tests/e2e/artifacts/town.png");
-
-    // Zoom all the way out and capture the whole town. The close shot above only
-    // ever shows one house, so nothing in this spec used to exercise — or let a
-    // reviewer see — the commons, the street lattice or the lots together.
-    await browser.execute(() => {
-      const wrap = document.querySelector(".town-canvas") as HTMLElement | null;
-      for (let i = 0; i < 6; i++) {
-        wrap?.dispatchEvent(
-          new WheelEvent("wheel", { deltaY: 120, clientX: 400, clientY: 300, bubbles: true, cancelable: true }),
-        );
-      }
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 60; i++) step?.(16);
-    });
-    await browser.saveScreenshot("./tests/e2e/artifacts/town-wide.png");
-
-    // A session with no heartbeat is quiet-and-NOT-live, and it must not look
-    // like a working one. Until TIL-198 both resolved to the same intent, the
-    // same desk seat and the same animation, so this character — an agent that
-    // touched the card once and left — sat at a desk indistinguishable from one
-    // grinding. It now goes home to the sofa (or, after dark, to bed), which is
-    // the whole point: presence.ts refuses to *say* "working" without a
-    // heartbeat, and the town must not draw it either.
-    await browser.execute(() => {
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 600; i++) step?.(16);
-    });
-    // Captured *after* it has settled, which the earlier shots never were: the
-    // activity badge only appears once a character stops walking, so every
-    // screenshot this spec used to take showed a town with no badges in it. A
-    // green spec proving nothing about how it looked is how three defects
-    // shipped through TIL-189.
-    await browser.saveScreenshot("./tests/e2e/artifacts/town-settled.png");
-    // What it is doing depends on the wall clock and on where it is in its
-    // evening, and the spec must not care which: asserting "on the sofa" would
-    // fail every evening, and asserting it *only* ever rests would fail as soon
-    // as it got up to put the kettle on (TIL-199).
-    const HOME_LIFE = [
-      "resting",
-      "sleeping",
-      "walking",
-      "watching",
-      "music",
-      "cooking",
-      "eating",
-      "reading",
-      "coffee",
-      "washing",
-      // TIL-200 widened the evening: a game, the exercise mat, the plants.
-      "gaming",
-      "exercising",
-      "gardening",
-    ];
-    const activity = await char.getAttribute("data-activity");
-    expect(HOME_LIFE).toContain(activity);
-    // …and it is *sitting* on the sofa (or lying in the bed) rather than standing
-    // beside it playing the walk cycle on the spot, which is what every settled
-    // character in the town used to do (TIL-200). Standing is legitimate only
-    // while it is up doing something.
-    const posture = await char.getAttribute("data-posture");
-    expect(["stand", "sit", "lie"]).toContain(posture);
-    if (activity === "resting") expect(posture).toBe("sit");
-    if (activity === "sleeping") expect(posture).toBe("lie");
-    if (activity === "walking") expect(posture).toBe("stand");
-    const restingWhere = await char.getAttribute("data-where");
-    // Somewhere in its own house, and never back at a desk.
-    expect(restingWhere).toContain("house");
-    expect(restingWhere).not.toContain("in the workroom");
-    // The tooltip says it in words — the user's decision was a glyph in the
-    // world and the name on hover, so the words have to actually be there. These
-    // are the phrases, not the activity names: "resting" reads as "on the sofa".
-    expect(await char.getAttribute("title")).toMatch(
-      /sitting|asleep|walking|watching television|playing music|cooking|eating|reading|making coffee|washing up|playing a game|exercising|watering the plants/,
-    );
-
-    // An evening is a *routine*, not a pose: over the next minute of simulated
-    // time this character must be seen doing more than one thing. The old
-    // picture — a quiet agent parked on a sofa for as long as you watched —
-    // passed every assertion above and was the deadest thing in the town.
-    const seen = new Set<string>([activity ?? ""]);
-    for (let i = 0; i < 12; i++) {
-      await browser.execute(() => {
-        const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-        for (let n = 0; n < 300; n++) step?.(16);
-      });
-      seen.add((await char.getAttribute("data-activity")) ?? "");
+    // Two sessions beat; the fallback agent is present but not live.
+    const row = $('[data-nav="town"]');
+    await expect(row.$(".nav-count")).toHaveText("2 live");
+    await $('[data-nav="all"]').click();
+    await row.click();
+    await expect($(".view-title")).toHaveText("Town");
+    await expect($(".town-empty")).not.toBeExisting();
+    await expect($$(".town-focusbar button")).toBeElementsArrayOfSize(3);
+    for (const key of ["working", "blocked", "quiet"]) {
+      await expect($(`[data-testid="town-agent-${seeded[key].id}"]`)).toBeExisting();
     }
-    expect([...seen].every((a) => HOME_LIFE.includes(a))).toBe(true);
-    expect(seen.size).toBeGreaterThan(1);
 
-    // Escape releases the follow (spec: cleared by background click / Escape).
     await browser.execute(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 5; i++) step?.(16);
+      document.documentElement.dataset.theme = "light";
     });
-    await expect(char).not.toHaveElementClass("following", { containing: true });
-
-    // A wheel over the canvas zooms the camera, which re-projects the overlay —
-    // proof the pan/zoom camera transform is live (not a static full-size layout).
-    // Follow is off now, so a moved node means the transform actually changed.
-    const before = await browser.execute(
-      () => (document.querySelector(".town-char") as HTMLElement | null)?.style.left ?? "",
-    );
+    await shot("overview-day");
     await browser.execute(() => {
-      const c = document.querySelector(".town-canvas") as HTMLElement;
-      const rect = c.getBoundingClientRect();
-      // Pivot the zoom near a corner (not the centre) so the node definitively
-      // shifts even if the camera happened to be centred on it.
-      c.dispatchEvent(
-        new WheelEvent("wheel", {
-          deltaY: -300,
-          clientX: rect.left + 24,
-          clientY: rect.top + 24,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 5; i++) step?.(16);
+      document.documentElement.dataset.theme = "dark";
     });
-    const after = await browser.execute(
-      () => (document.querySelector(".town-char") as HTMLElement | null)?.style.left ?? "",
-    );
-    expect(after).not.toBe(before);
-
-    // Clicking a building GLIDES the camera in (eased), it does not snap. Zoom
-    // out first so the glide has a guaranteed zoom-in to ease through, then click
-    // building 0 and assert its overlay keeps growing across frames — a snap
-    // would reach final size on the first frame and not change afterwards.
+    await shot("overview-night");
     await browser.execute(() => {
-      const c = document.querySelector(".town-canvas") as HTMLElement;
-      const rect = c.getBoundingClientRect();
-      for (let i = 0; i < 4; i++)
-        c.dispatchEvent(
-          new WheelEvent("wheel", {
-            deltaY: 300,
-            clientX: rect.left + 40,
-            clientY: rect.top + 40,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-      for (let i = 0; i < 5; i++) step?.(16);
-      (document.querySelector('[data-testid="town-building-0"]') as HTMLElement).click();
+      delete document.documentElement.dataset.theme;
     });
-    const buildingWidth = (frames: number) =>
-      browser.execute((n) => {
-        const step = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-        for (let i = 0; i < n; i++) step?.(16);
-        const el = document.querySelector('[data-testid="town-building-0"]') as HTMLElement | null;
-        return parseFloat(el?.style.width || "0");
-      }, frames);
-    const wEarly = await buildingWidth(1);
-    const wSettled = await buildingWidth(60);
-    expect(wSettled).toBeGreaterThan(wEarly);
   });
 
-  // A live presence TRANSITION, which the steady-state test above never exercised:
-  // it only ever asserted one frozen data-state. The reconcile path that clears a
-  // character's path when its intent changes had no coverage at all (TIL-176).
-  //
-  // Live state needs a real heartbeat, and /heartbeat rejects any request carrying
-  // an Origin header — precisely so a web page cannot fake "working". The webview
-  // always sends one; Node does not, so the beat goes from the spec process
-  // straight at the app's agent server, exactly the way the shell hook does.
-  it("walks a character to its desk when it starts working, and out again when it goes quiet", async () => {
-    const pid = await selectId("SELECT id FROM projects WHERE name = 'Townproj'");
-    await exec(
-      "INSERT INTO tasks (project_id, title, status, position, priority, notes, created_at) VALUES ($1,$2,'doing',1,0,'',$3)",
-      [pid, "Flip task", "2026-01-01T00:00:00Z"],
+  it("outside inside toggle", async () => {
+    const buildings = () => $$('.town-stage [aria-label$=" building"]');
+    await expect(buildings()).toBeElementsArrayOfSize(2);
+    expect(await pressed(seg("Buildings", "Outside"))).toBe("true");
+
+    await seg("Buildings", "Inside").click();
+    expect(await buildings().map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "true"]);
+    expect(await pressed(seg("Buildings", "Inside"))).toBe("true");
+    expect(await pressed(seg("Buildings", "Outside"))).toBe("false");
+    await shot("inside-all");
+
+    // Closing one building leaves a mixed town: neither side is pressed.
+    await browser.execute(() =>
+      (document.querySelector('.town-stage [aria-label="Harbor building"]') as HTMLButtonElement).click(),
     );
-    const tid = await selectId("SELECT id FROM tasks WHERE title = 'Flip task'");
+    expect(await pressed(seg("Buildings", "Inside"))).toBe("false");
+    expect(await pressed(seg("Buildings", "Outside"))).toBe("false");
 
-    // Bind a session to the task — the durable half of presence; the beat below
-    // is the volatile half and finds its card through this row.
-    const session = "e2e-town-flip-0000-0000-000000000001";
-    await exec("INSERT INTO agent_claims (session_id, task_id, agent_name) VALUES ($1,$2,$3)", [
-      session,
-      tid,
-      "claude-code",
-    ]);
-
-    const endpoint = await invoke<string>("agent_server_start");
-    const beat = async (state: "working" | "idle") => {
-      const res = await fetch(new URL("/heartbeat", endpoint).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: session, state }),
-      });
-      expect(res.status).toBe(200);
-      await nudge(); // agent-db-changed → reload → loadPresence
-    };
-
-    const step = (n: number) =>
-      browser.execute((frames) => {
-        const s = (window as unknown as { __townStep?: (dt?: number) => void }).__townStep;
-        for (let i = 0; i < frames; i++) s?.(16);
-      }, n);
-
-    /** Is the character's overlay node inside its building's overlay box? */
-    const atHome = (taskId: number, building: number) =>
-      browser.execute(
-        (t, b) => {
-          const c = document.querySelector(`[data-testid="town-char-${t}"]`);
-          const h = document.querySelector(`[data-testid="town-building-${b}"]`);
-          if (!c || !h) return null;
-          const cr = c.getBoundingClientRect();
-          const hr = h.getBoundingClientRect();
-          const x = cr.left + cr.width / 2;
-          const y = cr.top + cr.height / 2;
-          return x >= hr.left && x <= hr.right && y >= hr.top && y <= hr.bottom;
-        },
-        taskId,
-        building,
-      );
-
-    // --- working: the character heads home and settles at its desk. ---
-    await beat("working");
-    const char = $(`[data-testid="town-char-${tid}"]`);
-    await char.waitForExist();
-    await expect(char).toHaveAttribute("data-state", "working");
-    const building = Number(await char.getAttribute("data-building"));
-    await step(900); // long enough to walk the yard, the gate and the house
-    expect(await atHome(tid, building)).toBe(true);
-
-    // The place tree is live, not decoration: the frame loop names where the
-    // character is standing, and at its desk that has to be the workroom.
-    const where = await char.getAttribute("data-where");
-    expect(where).toContain("in the workroom");
-    expect(where).toContain("'s house");
-    expect(await char.getAttribute("aria-label")).toContain(where);
-
-    // Heads-down at the desk is its own activity, distinct from the resting one
-    // asserted in the case above. A working character takes occasional trips —
-    // coffee, a wash — so accept those too rather than pinning a single frame of
-    // a routine; what must never appear here is resting or sleeping.
-    const workActivity = await char.getAttribute("data-activity");
-    expect(["typing", "building", "testing", "reading", "writing", "waiting", "coffee", "washing", "eating", "walking"]).toContain(
-      workActivity,
-    );
-    expect(["resting", "sleeping"]).not.toContain(workActivity);
-
-    // …and it is SITTING at that desk. This is the whole of TIL-200: heads-down
-    // work used to render as the walk cycle at half speed, so the busiest agent in
-    // town spent 25 minutes stepping on the spot at its own monitor. A worker is
-    // seated whenever it is at the desk, and on its feet only while it is up doing
-    // something — which is the pair of assertions below, not one or the other.
-    const workPosture = await char.getAttribute("data-posture");
-    if (workActivity === "walking" || ["coffee", "washing", "eating"].includes(workActivity ?? "")) {
-      expect(workPosture).toBe("stand");
-    } else {
-      expect(workPosture).toBe("sit");
-    }
-    // The artifact a reviewer can actually look at: a worker in a chair at a desk.
-    // Screenshots taken before the character settled are what let three defects
-    // through TIL-189, so this one is deliberately after the walk indoors.
-    await browser.saveScreenshot("./tests/e2e/artifacts/town-working.png");
-
-    // Chat state is mirrored from the sim onto the overlay every frame. Only the
-    // wiring is asserted here — that it is published, and that a working
-    // character is never mid-chat. WHETHER two idle characters meet is
-    // stochastic, so its coverage is the seeded townSim cases; an e2e that
-    // waited for a random encounter would just be a flake.
-    expect(await char.getAttribute("data-chatting")).toBe("false");
-
-    // --- Visibility resume settles in place; it does not re-spawn the town. ---
-    // Asserted HERE, with the character seated at its desk, because that is the
-    // only state where the two behaviours differ observably: settling a working
-    // character is a no-op, while createSim() empties the sim and the next step
-    // puts it back on its door, outside the house. Asserting this on a WANDERING
-    // character proves nothing — settle and respawn both send it to the door —
-    // and the first version of this check did exactly that, so it passed with
-    // the bug still present (caught by the Codex verify of TIL-190).
-    const posOf = () =>
-      browser.execute((t) => {
-        const n = document.querySelector(`[data-testid="town-char-${t}"]`) as HTMLElement | null;
-        return n ? { left: n.style.left, top: n.style.top } : null;
-      }, tid);
-    const idsOf = () =>
-      browser.execute(() =>
-        [...document.querySelectorAll(".town-char")]
-          .map((n) => (n as HTMLElement).dataset.testid ?? "")
-          .sort(),
-      );
-
-    const posBefore = await posOf();
-    const idsBefore = await idsOf();
-    expect(posBefore).not.toBeNull();
-
-    // The handler is keyed on visibilitychange and the document is visible, so
-    // firing the event runs exactly the resume branch.
-    await browser.execute(() => document.dispatchEvent(new Event("visibilitychange")));
-    await step(2);
-
-    expect(await posOf()).toEqual(posBefore); // did not budge
-    expect(await idsOf()).toEqual(idsBefore); // same population
-    expect(await atHome(tid, building)).toBe(true); // still indoors, not on the door
-
-    // --- quiet: the same character leaves its desk. Same node, no respawn. ---
-    //
-    // What it does next depends on the clock — by day it walks out to the plaza,
-    // after dark it goes to bed — so the assertion is the part that is true
-    // either way: it is no longer working at its desk in the workroom. Asserting
-    // "outdoors" would have passed every afternoon and failed every night.
-    await beat("idle");
-    await expect(char).toHaveAttribute("data-state", "quiet");
-    await step(1200);
-    await expect(char).toBeExisting(); // it left its desk; it did not vanish and return
-    const quietWhere = await char.getAttribute("data-where");
-    expect(quietWhere).not.toContain("in the workroom");
-    const quietActivity = await char.getAttribute("data-activity");
-    expect(["typing", "building", "testing", "reading", "writing"]).not.toContain(quietActivity);
+    await seg("Buildings", "Outside").click();
+    expect(await buildings().map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false"]);
+    expect(await pressed(seg("Buildings", "Outside"))).toBe("true");
   });
 
+  it("agent card on focus", async () => {
+    const { id, ref } = seeded.working;
+    await browser.execute(
+      (t) => (document.querySelector(`[data-testid="town-agent-${t}"]`) as HTMLElement).focus(),
+      id,
+    );
+    const card = $('[data-testid="town-card"]');
+    await card.waitForExist();
+    const text = await card.getText();
+    expect(text).toContain(CLIENT);
+    expect(text).toContain(`Harbor · ${ref}`);
+    expect(text).toContain("Ship the island renderer");
+    expect(text).toContain("Working");
+    expect(text).toContain("drawing the town square");
+    await shot("hover-card");
+
+    // Blurring the agent hides its card.
+    await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(card).not.toBeExisting();
+  });
+
+  it("focus bar zoom and Esc", async () => {
+    const all = chip("All projects");
+    expect(await pressed(all)).toBe("true");
+    await chip("Atlas").click();
+    expect(await pressed(chip("Atlas"))).toBe("true");
+    expect(await pressed(all)).toBe("false");
+    await shot("focus-one-project");
+
+    // Esc in the palette closes the palette and leaves the island focused.
+    await browser.keys(["Meta", "k"]);
+    const input = $(".palette-input input");
+    await input.waitForDisplayed({ timeout: 10000 });
+    await browser.keys("Escape");
+    await input.waitForExist({ reverse: true });
+    expect(await pressed(chip("Atlas"))).toBe("true");
+
+    await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
+    await browser.keys("Escape");
+    await browser.waitUntil(async () => (await pressed(all)) === "true", {
+      timeoutMsg: "Esc did not zoom back out to all projects",
+    });
+    expect(await pressed(chip("Atlas"))).toBe("false");
+  });
+
+  it("helper bots toggle", async () => {
+    expect(await pressed(seg("Helper bots", "Helper bots"))).toBe("true");
+    await seg("Helper bots", "Agents only").click();
+    expect(await pressed(seg("Helper bots", "Agents only"))).toBe("true");
+    expect(await pressed(seg("Helper bots", "Helper bots"))).toBe("false");
+    await shot("agents-only");
+    await seg("Helper bots", "Helper bots").click();
+    expect(await pressed(seg("Helper bots", "Helper bots"))).toBe("true");
+  });
+
+  it("environment picker saves", async () => {
+    const desert = () => $('[role="radiogroup"][aria-label="Environment"]').$("button=Desert");
+    await $(".nav-project*=Harbor").moveTo();
+    await $('button[aria-label="Edit Harbor"]').click();
+    await desert().waitForDisplayed({ timeout: 10000 });
+    await desert().click();
+    await expect(desert()).toHaveAttribute("aria-checked", "true");
+    await shot("project-dialog-environment");
+    await $(".modal-footer button.btn.primary").click();
+    await $(".modal").waitForExist({ reverse: true });
+
+    await $(".nav-project*=Harbor").moveTo();
+    await $('button[aria-label="Edit Harbor"]').click();
+    await desert().waitForDisplayed({ timeout: 10000 });
+    await expect(desert()).toHaveAttribute("aria-checked", "true");
+    await browser.keys("Escape");
+  });
 });

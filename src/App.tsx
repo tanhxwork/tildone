@@ -19,8 +19,6 @@ import { ReviewView } from "./components/ReviewView";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TableView } from "./components/TableView";
-// The town pulls in PixiJS (~450KB); code-split it so it only loads when opened.
-const TownView = lazy(() => import("./town/TownView").then((m) => ({ default: m.TownView })));
 import { TagManager } from "./components/TagManager";
 import { SessionPane } from "./components/SessionPane";
 import { SessionContextRail } from "./components/SessionContextRail";
@@ -38,6 +36,9 @@ import { paneHasFocus, usePaneStore } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { isPageSelection } from "./types";
+
+// The Town's canvas renderer is large and only the Town page needs it.
+const TownPage = lazy(() => import("./town/TownPage").then((m) => ({ default: m.TownPage })));
 
 /**
  * The installed app owns port 11502 by contract, so a fast restart (quit; replace
@@ -259,13 +260,19 @@ function App() {
         e.preventDefault();
         openSettings();
       } else if (e.key === "Escape") {
+        // Closing an overlay consumes the Esc, so a page listening after this
+        // one (the Town's zoom-out) leaves it alone.
         if (useStore.getState().paletteOpen) {
+          e.preventDefault();
           setPaletteOpen(false);
         } else if (useStore.getState().tagManagerOpen) {
+          e.preventDefault();
           setTagManagerOpen(false);
         } else if (useSettings.getState().settingsOpen) {
+          e.preventDefault();
           closeSettings();
         } else {
+          if (useStore.getState().editingTaskId !== null) e.preventDefault();
           openEditor(null);
         }
       }
@@ -380,16 +387,16 @@ function App() {
     content = <CompletedView />;
   } else if (selection.type === "goals") {
     content = <GoalsView />;
+  } else if (selection.type === "town") {
+    content = (
+      <Suspense fallback={null}>
+        <TownPage />
+      </Suspense>
+    );
   } else if (viewMode === "board") {
     content = <Kanban />;
   } else if (viewMode === "table") {
     content = <TableView />;
-  } else if (viewMode === "town") {
-    content = (
-      <Suspense fallback={null}>
-        <TownView />
-      </Suspense>
-    );
   } else {
     content = <TaskList />;
   }

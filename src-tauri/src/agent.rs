@@ -2279,6 +2279,23 @@ fn taken_project_codes(
     Ok(set)
 }
 
+/// Island environments in Town, in pick order. Mirrors ENVIRONMENTS in src/types.ts.
+const ENVIRONMENTS: [&str; 5] = ["meadow", "city", "desert", "snow", "autumn"];
+
+/// The environment a new project gets: the first one no project uses yet, else
+/// cycling by project count. Mirrors nextEnvironment in src/utils/environment.ts.
+fn next_environment(conn: &Connection) -> Result<&'static str, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT environment FROM projects")?;
+    let used: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(ENVIRONMENTS
+        .iter()
+        .find(|e| !used.iter().any(|u| u == *e))
+        .copied()
+        .unwrap_or(ENVIRONMENTS[used.len() % ENVIRONMENTS.len()]))
+}
+
 /// The code that mints refs for a task in `project_id` (INBOX_CODE for the Inbox).
 /// A project still lacking a code — a race ahead of the frontend backfill — gets one
 /// minted and persisted here so its tasks never fall back to the raw id.
@@ -2737,10 +2754,11 @@ impl TildoneAgent {
         let color = color.unwrap_or_else(|| color_for_name(&name).to_string());
         let taken = taken_project_codes(&conn).map_err(db_err)?;
         let code = derive_project_code(&name, &taken);
+        let environment = next_environment(&conn).map_err(db_err)?;
         conn.execute(
-            "INSERT INTO projects (name, color, position, created_at, code)
-             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects), ?3, ?4)",
-            rusqlite::params![name, color, now_iso(), code],
+            "INSERT INTO projects (name, color, position, created_at, code, environment)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM projects), ?3, ?4, ?5)",
+            rusqlite::params![name, color, now_iso(), code, environment],
         )
         .map_err(db_err)?;
         let id = conn.last_insert_rowid();
@@ -5536,6 +5554,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/025_goals.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/028_task_owner.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/029_observe.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/030_project_environment.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
@@ -7125,6 +7144,34 @@ mod tests {
                 )
                 .unwrap(),
         )
+    }
+
+    /// create_project picks the island environment the dialog would: the five in
+    /// order, then cycling by count, but a gap someone opened is filled first.
+    #[test]
+    fn create_project_picks_the_first_unused_environment() {
+        let (agent, db) = test_agent_with_db();
+        let env_of = |name: &str| -> String {
+            db.lock()
+                .unwrap()
+                .query_row("SELECT environment FROM projects WHERE name = ?1", [name], |r| r.get(0))
+                .unwrap()
+        };
+        for name in ["P0", "P1", "P2", "P3", "P4", "P5"] {
+            a_project(&agent, name);
+        }
+        let firsts: Vec<String> = ["P0", "P1", "P2", "P3", "P4"].iter().map(|n| env_of(n)).collect();
+        assert_eq!(firsts, ENVIRONMENTS);
+        // All five used: the sixth cycles by count, 5 % 5.
+        assert_eq!(env_of("P5"), "meadow");
+
+        // Moving P3 off snow opens a gap the next project fills.
+        db.lock()
+            .unwrap()
+            .execute("UPDATE projects SET environment = 'meadow' WHERE name = 'P3'", [])
+            .unwrap();
+        a_project(&agent, "P6");
+        assert_eq!(env_of("P6"), "snow");
     }
 
     fn get(agent: &TildoneAgent, id: i64) -> Value {

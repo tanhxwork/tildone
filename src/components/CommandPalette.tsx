@@ -55,6 +55,7 @@ export function CommandPalette() {
     const list: Command[] = [
       { id: "go-all", label: "Go to All Tasks", keywords: "go all tasks", icon: "go", run: goto({ type: "all" }) },
       { id: "go-review", label: "Go to Review", keywords: "go review dashboard stats", icon: "go", run: goto({ type: "review" }) },
+      { id: "go-town", label: "Go to Town", keywords: "go town agents island map", icon: "go", run: goto({ type: "town" }) },
       { id: "go-completed", label: "Go to Completed & Trash", keywords: "go completed trash history archive", icon: "go", run: goto({ type: "completed" }) },
       { id: "view-table", label: "Open Table view", keywords: "table spreadsheet view", icon: "go", run: goto({ type: "all" }, "table") },
       { id: "view-board", label: "Open Board view", keywords: "board kanban view", icon: "go", run: goto({ type: "all" }, "board") },

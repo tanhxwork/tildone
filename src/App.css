@@ -6438,81 +6438,89 @@ textarea:focus-visible,
   }
 }
 
-/* --- Town view (ambient agent rooms) ------------------------------------- */
-/* Pixi draws the pixel world; this styles the scroll frame and the invisible
-   DOM overlay that carries each character's hover target, focus ring, and aria. */
-.town {
+/* --- Town page (src/town/TownPage.tsx) ------------------------------------ */
+/* TownRenderer draws the world on the canvas; these style the chrome around it:
+   toolbar, focus bar, the agent card, the empty hint and the legend. */
+.town-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding-top: 8px;
+}
+
+.town-toolbar,
+.town-focusbar,
+.town-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.town-toolbar-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.town-focusbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: background 150ms, color 150ms;
+}
+
+.town-focusbar button:hover {
+  background: var(--bg-hover);
+}
+
+.town-focusbar button.active {
+  background: var(--bg-active);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.town-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.town-dot.working {
+  background: var(--doing);
+}
+
+.town-dot.blocked {
+  background: var(--blocked);
+}
+
+.town-stage {
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--bg-inset);
-}
-
-/* The canvas fills the viewport; the camera pans/zooms the world inside it, so
-   the frame clips and drags-to-pan get a grab cursor. */
-.town-canvas {
-  position: relative;
   overflow: hidden;
-  cursor: grab;
-  touch-action: none;
 }
 
-.town-canvas:active {
-  cursor: grabbing;
+.town-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-/* The overlay layer is click-through; only the character hit-targets take input. */
-.town-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.town-char {
-  position: absolute;
-  width: 36px;
-  height: 40px;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  border-radius: var(--radius-sm);
-  cursor: default;
-  pointer-events: auto;
-  transition: background 150ms;
-}
-
-.town-char:hover {
-  background: var(--bg-hover);
-}
-
-.town-char:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* Transparent hit-target over each building — click to frame that project. Sits
-   below the character buttons so a character inside stays clickable. */
-.town-building {
-  position: absolute;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
+.town-stage.pointing .town-canvas {
   cursor: pointer;
-  pointer-events: auto;
-}
-
-.town-building:hover {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-/* The character the camera is following (click to toggle). */
-.town-char.following {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  background: var(--bg-hover);
 }
 
 .town-empty {
@@ -6520,53 +6528,68 @@ textarea:focus-visible,
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: var(--text-faint);
-  font-size: 13px;
-  text-align: center;
-  pointer-events: none;
-}
-
-/* First-open interaction hint: a subtle pill at the bottom of the town that
-   teaches the controls, then dismisses on first use (see TownView). Click-through
-   so it never blocks a drag under it. */
-.town-hint {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100% - 32px);
-  padding: 6px 12px;
-  font-size: 12px;
-  color: var(--text-faint);
-  background: var(--bg-inset);
+  margin: 0;
+  padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
-  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 13px;
+  color: var(--text-muted);
   pointer-events: none;
-  animation: town-hint-in 200ms ease-out;
 }
 
-.town-hint b {
+/* Floats over the canvas, so it earns the pop shadow. */
+.town-card {
+  position: absolute;
+  z-index: 2;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pop);
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--text);
+  pointer-events: none;
+}
+
+.town-card-name {
+  font-size: 13px;
   font-weight: 600;
 }
 
-/* Slide up only — never animate opacity, so the hint is fully visible even in a
-   context that doesn't advance CSS animations (e.g. a backgrounded webview). */
-@keyframes town-hint-in {
-  from {
-    transform: translate(-50%, 8px);
-  }
-  to {
-    transform: translate(-50%, 0);
-  }
+.town-card-meta {
+  color: var(--text-muted);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .town-hint {
-    animation: none;
-  }
+.town-card-title {
+  font-size: 13px;
+}
+
+.town-card-state {
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.town-card-state.working {
+  color: var(--warn);
+}
+
+.town-card-state.blocked {
+  color: var(--danger-ink);
+}
+
+.town-legend {
+  gap: 4px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.town-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ---------- Owner views: Mine, Agent queue (spec 2026-10-01 task owner) ---------- */

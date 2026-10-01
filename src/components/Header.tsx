@@ -11,7 +11,6 @@ import {
   IconList,
   IconSearch,
   IconTable,
-  IconTown,
   IconX,
 } from "./Icons";
 
@@ -61,6 +60,9 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
       break;
     case "goals":
       title = "Goals";
+      break;
+    case "town":
+      title = "Town";
       break;
     case "project": {
       headerProject = projects.find((p) => p.id === selection.projectId);
@@ -164,14 +166,6 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
                 onClick={() => setViewMode("table")}
               >
                 <IconTable size={14} />
-              </button>
-              <button
-                className={viewMode === "town" ? "active" : ""}
-                aria-label="Town view"
-                title="Town view — agents at work"
-                onClick={() => setViewMode("town")}
-              >
-                <IconTown size={14} />
               </button>
             </div>
           </div>

@@ -33,7 +33,7 @@ describe("Tildone smoke", () => {
     const viewModes = async () =>
       $$('.segmented[aria-label="View mode"] button').map((el) => el.getAttribute("aria-label"));
     await $(".nav-item*=All Tasks").click();
-    expect(await viewModes()).toEqual(["List view", "Board view", "Table view", "Town view"]);
+    expect(await viewModes()).toEqual(["List view", "Board view", "Table view"]);
 
     await $('button[aria-label="New project"]').click();
     const nameField = $('.modal input[placeholder="Project name"]');
@@ -42,7 +42,7 @@ describe("Tildone smoke", () => {
     await $(".modal-footer button.btn.primary").click();
     await $(".nav-project*=Views probe").click();
     await $(".view-title*=Views probe").waitForExist({ timeout: 10000 });
-    expect(await viewModes()).toEqual(["List view", "Board view", "Table view", "Town view"]);
+    expect(await viewModes()).toEqual(["List view", "Board view", "Table view"]);
     await browser.saveScreenshot("./.test-artifacts/screenshots/remove-views-project-header.png");
 
     await browser.keys(["Meta", "k"]);
