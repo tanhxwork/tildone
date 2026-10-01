@@ -21,32 +21,12 @@ function Svg({ size = 16, children, ...rest }: IconProps) {
   );
 }
 
-export const IconStar = (p: IconProps) => (
-  <Svg {...p}>
-    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-  </Svg>
-);
-
-export const IconCalendar = (p: IconProps) => (
-  <Svg {...p}>
-    <rect x="3" y="4" width="18" height="18" rx="2" />
-    <path d="M16 2v4M8 2v4M3 10h18" />
-  </Svg>
-);
-
 // The town view — a house of rooms. A door marks it as a place agents work in.
 export const IconTown = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3 11l9-7 9 7" />
     <path d="M5 10v10h14V10" />
     <path d="M10 20v-5h4v5" />
-  </Svg>
-);
-
-export const IconInbox = (p: IconProps) => (
-  <Svg {...p}>
-    <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
   </Svg>
 );
 

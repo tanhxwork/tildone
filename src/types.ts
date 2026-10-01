@@ -256,11 +256,7 @@ export type Selection =
   | { type: "queue" }
   /** cardId preselects one card, e.g. when a follow-up's "from TIL-n" is clicked. */
   | { type: "observe"; cardId?: number }
-  | { type: "today" }
-  | { type: "upcoming" }
-  | { type: "inbox" }
   | { type: "all" }
-  | { type: "week" }
   | { type: "review" }
   | { type: "completed" }
   | { type: "goals" }
@@ -270,14 +266,13 @@ export type Selection =
    *  row. A filter like `goal`, not a page: every view mode renders it. */
   | { type: "ungoaled"; projectId: number };
 
-/** Views where every task shares one project (or has none), so a per-card project
+/** Views where every task shares one project, so a per-card project
  *  chip repeats the header on every row. A goal and its No-goal sibling qualify:
  *  a task's goal must belong to the task's project (invariant 2), so a goal view
  *  is single-project by construction. */
 export function isSingleProjectSelection(selection: Selection): boolean {
   return (
     selection.type === "project" ||
-    selection.type === "inbox" ||
     selection.type === "goal" ||
     selection.type === "ungoaled"
   );
@@ -289,14 +284,13 @@ export function isPageSelection(selection: Selection): boolean {
     selection.type === "mine" ||
     selection.type === "queue" ||
     selection.type === "observe" ||
-    selection.type === "week" ||
     selection.type === "review" ||
     selection.type === "completed" ||
     selection.type === "goals"
   );
 }
 
-export type ViewMode = "list" | "board" | "table" | "calendar" | "town";
+export type ViewMode = "list" | "board" | "table" | "town";
 
 export const PRIORITY_LABELS: Record<number, string> = {
   0: "None",

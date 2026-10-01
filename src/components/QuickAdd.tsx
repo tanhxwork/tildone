@@ -12,7 +12,7 @@ import { useDropTarget } from "../fileDrop";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import { PRIORITY_LABELS } from "../types";
-import { dueLabel, todayStr, tomorrowStr } from "../utils/dates";
+import { dueLabel } from "../utils/dates";
 import {
   formatImageBytes,
   imagesFromDataTransfer,
@@ -107,13 +107,7 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
         : selection.type === "ungoaled"
           ? selection.projectId
           : (goalProjectId ?? defaultProjectId));
-    const due_date =
-      p?.dueDate ??
-      (selection.type === "today" || selection.type === "week"
-        ? todayStr()
-        : selection.type === "upcoming"
-          ? tomorrowStr()
-          : null);
+    const due_date = p?.dueDate ?? null;
     const tag_ids: number[] = [];
     for (const name of p?.tagNames ?? []) tag_ids.push(await addTag(name));
     const id = await addTask({
@@ -146,19 +140,15 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
 
   const defaultProject = projects.find((p) => p.id === defaultProjectId);
   const hint =
-    selection.type === "today" || selection.type === "week"
-      ? "due today"
-      : selection.type === "upcoming"
-        ? "due tomorrow"
-        : selection.type === "project"
-          ? "in this project"
-          : selection.type === "goal"
-            ? "in this goal"
-            : selection.type === "ungoaled"
-              ? "in this project, no goal"
-              : defaultProject
-                ? `to ${defaultProject.name}`
-                : "to inbox";
+    selection.type === "project"
+      ? "in this project"
+      : selection.type === "goal"
+        ? "in this goal"
+        : selection.type === "ungoaled"
+          ? "in this project, no goal"
+          : defaultProject
+            ? `to ${defaultProject.name}`
+            : "to inbox";
 
   return (
     <>

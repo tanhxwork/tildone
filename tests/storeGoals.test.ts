@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { db, emptyBoard, resetDbMock, useStore } from "./support/dbMock";
+import { db, emptyBoard, loadNav, resetDbMock, useStore } from "./support/dbMock";
 import type { Goal, Task } from "../src/types";
 
 // The store is where the goal invariants live for the UI side (agent.rs enforces
@@ -58,7 +58,7 @@ beforeEach(() => {
     goals: [],
     tasks: [],
     projects: [],
-    selection: { type: "today" },
+    selection: { type: "all" },
   });
 });
 
@@ -239,7 +239,7 @@ describe("regressions from the Codex verify pass on TIL-204", () => {
     }));
     useStore.setState({ selection: { type: "goal", goalId: 100 } });
     await useStore.getState().reload();
-    expect(useStore.getState().selection).toEqual({ type: "today" });
+    expect(useStore.getState().selection).toEqual({ type: "mine" });
   });
 
   it("keeps a goal selection a reload still has", async () => {
@@ -333,6 +333,21 @@ describe("removeProject", () => {
     await useStore.getState().removeProject(7);
     const { goals, selection } = useStore.getState();
     expect(goals.map((g) => g.id)).toEqual([2]);
-    expect(selection).toEqual({ type: "today" });
+    expect(selection).toEqual({ type: "mine" });
+  });
+});
+
+describe("loadNav", () => {
+  it("opens Mine in list view when the stored nav names a removed view", () => {
+    const g = globalThis as { localStorage?: unknown };
+    const prev = g.localStorage;
+    g.localStorage = {
+      getItem: () => JSON.stringify({ selection: { type: "today" }, viewMode: "calendar" }),
+    };
+    try {
+      expect(loadNav()).toEqual({ selection: { type: "mine" }, viewMode: "list" });
+    } finally {
+      g.localStorage = prev;
+    }
   });
 });

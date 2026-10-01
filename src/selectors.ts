@@ -1,6 +1,5 @@
 import { format } from "date-fns";
 import type { Goal, Project, Selection, Task } from "./types";
-import { todayStr } from "./utils/dates";
 import {
   cardPresence,
   type FallbackPresence,
@@ -92,21 +91,13 @@ export function taskMatchesFilters(task: Task, filters: Filters): boolean {
 
 export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
   const live = liveTasks(tasks);
-  const today = todayStr();
   switch (selection.type) {
-    case "today":
-      return live.filter((t) => t.due_date !== null && t.due_date <= today);
-    case "upcoming":
-      return live.filter((t) => t.due_date !== null && t.due_date > today);
-    case "inbox":
-      return live.filter((t) => t.project_id === null);
     case "all":
-    // Pages (mine, queue, observe, week, review, completed, goals) do their own
+    // Pages (mine, queue, observe, review, completed, goals) do their own
     // slicing from the full live set.
     case "mine":
     case "queue":
     case "observe":
-    case "week":
     case "review":
     case "completed":
     case "goals":

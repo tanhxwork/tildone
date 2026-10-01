@@ -99,7 +99,7 @@ describe("attachment cleanup on hard delete", () => {
     // Deleting a project hard-deletes its tasks by FK cascade, so nothing goes
     // through the trash at all — a separate path from the test above, and the
     // one that was shipped on code-reading alone.
-    await $(".nav-item*=Today").click();
+    await $(".nav-item*=All Tasks").click();
     const start = attachmentDirs();
 
     await $('button[aria-label="New project"]').click();

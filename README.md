@@ -6,8 +6,7 @@ A lightweight desktop app for project and task management, built with Tauri 2, R
 
 - **Projects & tasks** — create projects (with colors), add tasks with notes, due dates, and priorities
 - **Kanban board** — drag-and-drop cards across To Do / In Progress / Done columns
-- **Today & Upcoming** — cross-project views by due date, with overdue highlighting
-- **Inbox** — tasks that don't belong to a project yet
+- **Inbox** — tasks without a project, grouped at the top of All Tasks
 - **Tags, filters & search** — tag tasks, filter by tag/priority, search across titles and notes
 - **Light & dark mode** — follows the system appearance
 - **Agent access (MCP)** — opt-in local MCP server so AI agents can manage your tasks

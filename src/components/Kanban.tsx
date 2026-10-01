@@ -87,7 +87,7 @@ type Lanes = Partial<Record<Lane, BoardModel>>;
 const containerId = (lane: Lane, status: Status) => `${lane}:${status}`;
 
 /** The project whose board splits into lanes, or null for a board that stays one
- *  row (Today, Inbox, Upcoming, All). A goal view keys by its goal's project, so
+ *  row (All Tasks). A goal view keys by its goal's project, so
  *  the collapse state is shared across the project and its goals. */
 function laneProjectId(selection: Selection, goals: Goal[]): number | null {
   if (selection.type === "project" || selection.type === "ungoaled") return selection.projectId;

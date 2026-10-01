@@ -202,4 +202,4 @@ export function resetDbMock(): void {
 // `import … from "../src/store"` in a test file is only safe while this
 // module happens to be imported above it, which is not a property worth
 // depending on. Re-export instead.
-export const { useStore, groupSlot } = await import("../../src/store");
+export const { useStore, groupSlot, loadNav } = await import("../../src/store");
