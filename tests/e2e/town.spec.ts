@@ -18,7 +18,10 @@ const CLIENT = "claude-code";
 const WORKING_SESSION = "3f6c2a10-7b1e-4c2d-9a51-0e2b7d4c1a01";
 const BLOCKED_SESSION = "3f6c2a10-7b1e-4c2d-9a51-0e2b7d4c1a02";
 
+/** The canvas redraws on the next frame and eases camera and cut-aways in, so
+ *  wait for it to settle; the DOM assertions don't need this, the picture does. */
 async function shot(state: string): Promise<void> {
+  await browser.pause(1000);
   mkdirSync(SHOTS, { recursive: true });
   await browser.saveScreenshot(`${SHOTS}/town-${state}.png`);
 }
