@@ -3,6 +3,7 @@ import Database from "@tauri-apps/plugin-sql";
 import type {
   ActivityEntry,
   Comment,
+  Environment,
   Goal,
   ObserveCard,
   ObserveLogLine,
@@ -86,7 +87,7 @@ export async function fetchAll(): Promise<{
   );
   const subtasks = subtaskRows.map((s) => ({ ...s, done: s.done !== 0 }));
   const projects = await d.select<Project[]>(
-    "SELECT id, name, color, position, folder_path, code FROM projects ORDER BY position, id",
+    "SELECT id, name, color, position, folder_path, code, environment FROM projects ORDER BY position, id",
   );
   const goals = await d.select<Goal[]>(
     "SELECT id, project_id, name, notes, color, position, target_date, created_at, completed_at FROM goals ORDER BY position, id",
@@ -447,6 +448,7 @@ export async function fetchAgentPresence(): Promise<
 export async function insertProject(
   name: string,
   color: string,
+  environment: Environment,
 ): Promise<{ id: number; code: string }> {
   const d = await getDb();
   const max = await d.select<{ p: number | null }[]>(
@@ -455,8 +457,8 @@ export async function insertProject(
   const position = (max[0]?.p ?? -1) + 1;
   const code = await nextProjectCode(d, name);
   const result = await d.execute(
-    "INSERT INTO projects (name, color, position, created_at, code) VALUES ($1, $2, $3, $4, $5)",
-    [name, color, position, new Date().toISOString(), code],
+    "INSERT INTO projects (name, color, position, created_at, code, environment) VALUES ($1, $2, $3, $4, $5, $6)",
+    [name, color, position, new Date().toISOString(), code, environment],
   );
   return { id: result.lastInsertId ?? 0, code };
 }
@@ -478,11 +480,12 @@ export async function updateProject(
   name: string,
   color: string,
   folderPath: string | null,
+  environment: Environment,
 ): Promise<void> {
   const d = await getDb();
   await d.execute(
-    "UPDATE projects SET name = $1, color = $2, folder_path = $3 WHERE id = $4",
-    [name, color, folderPath, id],
+    "UPDATE projects SET name = $1, color = $2, folder_path = $3, environment = $4 WHERE id = $5",
+    [name, color, folderPath, environment, id],
   );
 }
 
