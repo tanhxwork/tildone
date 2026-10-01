@@ -182,7 +182,8 @@ async function fetchObserveCards(d: Database, rows: Map<number, Task>): Promise<
   const cards: ObserveCard[] = [];
   for (const { task_id, options, ...row } of cardRows) {
     const task = rows.get(task_id);
-    if (!task || task.deleted_at !== null) continue;
+    // Only live cards reach `rows`; a trashed card stays in tasks for Trash.
+    if (!task) continue;
     cards.push({
       ...row,
       task,

@@ -1175,7 +1175,7 @@ impl TildoneAgent {
     fn goal_progress(conn: &Connection, goal_id: i64) -> Result<(i64, i64), rusqlite::Error> {
         conn.query_row(
             "SELECT COUNT(*), SUM(status = 'done')
-             FROM tasks WHERE goal_id = ?1 AND deleted_at IS NULL",
+             FROM tasks WHERE goal_id = ?1 AND deleted_at IS NULL AND kind = 'task'",
             [goal_id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
         )

@@ -103,7 +103,8 @@ export function lineageTask(
 ): Task | null {
   if (task.from_task_id === null) return null;
   const origin =
-    tasks.find((t) => t.id === task.from_task_id) ??
+    // A trashed observe card sits in tasks only for Trash; it is no lineage target.
+    tasks.find((t) => t.id === task.from_task_id && t.kind === "task") ??
     observeCards.find((c) => c.task.id === task.from_task_id)?.task;
   return origin?.ref ? origin : null;
 }

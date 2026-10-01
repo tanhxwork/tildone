@@ -330,4 +330,17 @@ describe("observe", () => {
     await $('[data-nav="observe"]').click();
     await expect(inGroup("waiting", EMPTY_Q)).toBeExisting();
   });
+
+  it("drops a trashed observe card from its follow-up's lineage", async () => {
+    const trash = await rpc(url, "tools/call", { name: "delete_task", arguments: { id: refs.rev } });
+    expect(trash.error ?? trash.result?.isError ?? false).toBeFalsy();
+    await $(`.nav-project*=${PROJECT}`).click();
+    await $('button[aria-label="Board view"]').click();
+    const followUp = $(`.board-card*=${FOLLOW_UP}`);
+    await followUp.waitForExist({ timeout: 10000 });
+    await browser.waitUntil(async () => !(await followUp.getText()).includes(`from ${refs.rev}`), {
+      timeout: 10000,
+      timeoutMsg: "follow-up still names its trashed observe card",
+    });
+  });
 });

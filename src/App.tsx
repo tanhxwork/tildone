@@ -162,8 +162,14 @@ function App() {
     const unlistenOpenTask = listen<string>("open-task-ref", async (event) => {
       const wanted = event.payload.trim().toUpperCase();
       if (!wanted) return;
-      const byRef = () =>
-        useStore.getState().tasks.find((t) => t.ref?.toUpperCase() === wanted);
+      // Observe cards live in their own slice; a live one opens on the Observe page.
+      const byRef = () => {
+        const s = useStore.getState();
+        return (
+          s.tasks.find((t) => t.ref?.toUpperCase() === wanted) ??
+          s.observeCards.find((c) => c.task.ref?.toUpperCase() === wanted)?.task
+        );
+      };
       let task = byRef();
       if (!task) {
         await useStore.getState().reload();
@@ -171,6 +177,11 @@ function App() {
       }
       if (!task) return;
       const st = useStore.getState();
+      if (task.kind === "observe") {
+        // A trashed card stays in Trash; it never opens in the task editor.
+        if (task.deleted_at === null) st.select({ type: "observe", cardId: task.id });
+        return;
+      }
       const sel = st.selection;
       const alreadyThere =
         sel.type === "all" ||

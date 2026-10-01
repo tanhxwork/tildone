@@ -771,7 +771,7 @@ export function TaskEditor() {
                   title={origin.title}
                   onClick={() => {
                     // An observe card has no editor; its home is the Observe page.
-                    if (observeCards.some((c) => c.task.id === origin.id)) {
+                    if (origin.kind === "observe") {
                       openEditor(null);
                       select({ type: "observe", cardId: origin.id });
                     } else {
