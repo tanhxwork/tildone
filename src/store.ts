@@ -840,6 +840,7 @@ export const useStore = create<Store>()((set, get) => ({
       unseen_at: null,
       owner: "human",
       from_task_id,
+      kind: "task",
       tag_ids,
     };
     set((s) => ({ tasks: [...s.tasks, task] }));
@@ -870,6 +871,7 @@ export const useStore = create<Store>()((set, get) => ({
         unseen_at: null,
         owner: "human",
         from_task_id: null,
+        kind: "observe",
         tag_ids: [],
       },
       check_text: input.check_text,
@@ -1001,6 +1003,8 @@ export const useStore = create<Store>()((set, get) => ({
     // needs a fresh one like any other arrival.
     const position = groupSlot(get().tasks, task.project_id, task.status);
     await db.updateTask(id, { deleted_at: null, position });
+    // A restored observe card belongs in observeCards, which only fetchAll builds.
+    if (task.kind === "observe") return get().reload();
     set((s) => ({
       tasks: s.tasks.map((t) =>
         t.id === id ? { ...t, deleted_at: null, position } : t,
@@ -1391,7 +1395,6 @@ useStore.subscribe((state) => {
   }
 });
 
-/** Persist an activity entry and refresh the log if that task's details are open. */
 /** Replace one observe card in the slice. */
 function patchObserveCard(id: number, fn: (card: ObserveCard) => ObserveCard): void {
   useStore.setState((s) => ({
@@ -1399,6 +1402,7 @@ function patchObserveCard(id: number, fn: (card: ObserveCard) => ObserveCard): v
   }));
 }
 
+/** Persist an activity entry and refresh the log if that task's details are open. */
 async function recordActivity(taskId: number, label: string): Promise<void> {
   await db.insertActivity(taskId, label);
   const s = useStore.getState();

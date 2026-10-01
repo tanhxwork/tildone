@@ -212,6 +212,8 @@ function ObserveDetail({
 }) {
   const { tasks, observeCards, decideObservation, watchMore, openFollowUp } = useStore();
   const [logOpen, setLogOpen] = useState(false);
+  // Guards "Open follow-up task" against a double click opening two tasks.
+  const [openingFollowUp, setOpeningFollowUp] = useState(false);
   const origin = lineageTask(card.task, tasks, observeCards);
   const summary = yesSummary(card.log);
   const unit = card.trigger_unit || "checks";
@@ -274,7 +276,11 @@ function ObserveDetail({
           summary={summary}
           logOpen={logOpen}
           onToggleLog={() => setLogOpen((v) => !v)}
-          onFollowUp={() => void openFollowUp(card.task.id)}
+          onFollowUp={() => {
+            if (openingFollowUp) return;
+            setOpeningFollowUp(true);
+            void openFollowUp(card.task.id).finally(() => setOpeningFollowUp(false));
+          }}
         >
           {checkAndLog}
         </ObservedBody>

@@ -110,9 +110,9 @@ export async function fetchAll(): Promise<{
   // their own slice, so no board, list or count has to filter them out.
   const observeRows = new Map<number, Task>();
   const tasks: Task[] = [];
-  for (const { kind, ...row } of rows) {
+  for (const row of rows) {
     const task = { ...row, tag_ids: tagsByTask.get(row.id) ?? [] };
-    if (kind === "observe") observeRows.set(row.id, task);
+    if (row.kind === "observe" && row.deleted_at === null) observeRows.set(row.id, task);
     else tasks.push(task);
   }
   const observeCards = await fetchObserveCards(d, observeRows);

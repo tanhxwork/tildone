@@ -315,4 +315,19 @@ describe("observe", () => {
     await expect(inGroup("waiting", NEW_Q)).toBeExisting();
     await expect($(".observe-row.selected")).toHaveText(new RegExp(NEW_Q.replace("?", "\\?")));
   });
+
+  it("lists a card trashed over MCP in Trash and restores it to Observe", async () => {
+    // delete_task answers in plain text, not JSON, so call it without tool().
+    const trash = await rpc(url, "tools/call", { name: "delete_task", arguments: { id: refs.empty } });
+    expect(trash.error ?? trash.result?.isError ?? false).toBeFalsy();
+    await row(EMPTY_Q).waitForExist({ timeout: 10000, reverse: true });
+    await $(".nav-item*=Completed").click();
+    await $("button*=Trash").click();
+    const trashed = $(`.history-row*=${EMPTY_Q}`);
+    await trashed.waitForExist({ timeout: 10000 });
+    await trashed.$("button=Restore").click();
+    await trashed.waitForExist({ timeout: 10000, reverse: true });
+    await $('[data-nav="observe"]').click();
+    await expect(inGroup("waiting", EMPTY_Q)).toBeExisting();
+  });
 });

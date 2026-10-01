@@ -16,6 +16,7 @@ export function ObserveDialog({
 }) {
   const { projects, addObservation } = useStore();
   const [question, setQuestion] = useState("");
+  const [saving, setSaving] = useState(false);
   const [projectId, setProjectId] = useState<number | null>(projects[0]?.id ?? null);
   const [why, setWhy] = useState("");
   const [check, setCheck] = useState("");
@@ -42,7 +43,9 @@ export function ObserveDialog({
     setOptions((list) => list.map((o, j) => (j === i ? { ...o, ...patch } : o)));
 
   async function save() {
-    if (!valid) return;
+    // A double click must not create the card twice.
+    if (!valid || saving) return;
+    setSaving(true);
     try {
       const id = await addObservation({
         project_id: projectId,
@@ -58,6 +61,7 @@ export function ObserveDialog({
       onClose();
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
+      setSaving(false);
     }
   }
 
@@ -223,7 +227,7 @@ export function ObserveDialog({
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" disabled={!valid} onClick={save}>
+          <button className="btn primary" disabled={!valid || saving} onClick={save}>
             Create
           </button>
         </div>

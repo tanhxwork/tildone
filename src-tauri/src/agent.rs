@@ -2845,8 +2845,8 @@ impl TildoneAgent {
             if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) };
         let sql = format!(
             "SELECT g.id, g.name, p.name, g.notes, g.color, g.target_date, g.completed_at,
-                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL),
-                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.status = 'done')
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.kind = 'task'),
+                    (SELECT COUNT(*) FROM tasks t WHERE t.goal_id = g.id AND t.deleted_at IS NULL AND t.kind = 'task' AND t.status = 'done')
              FROM goals g JOIN projects p ON p.id = g.project_id
              {where_sql}
              ORDER BY p.position, p.id, g.position, g.id"
@@ -3358,6 +3358,7 @@ impl TildoneAgent {
         if let Some(tags) = &p.tags {
             Self::set_tags(&conn, id, tags).map_err(db_err)?;
         }
+        let mut adopt = None;
         if status == "doing" {
             if let Some(session) = claim.session() {
                 Self::record_claim(
@@ -3369,11 +3370,7 @@ impl TildoneAgent {
                     agent,
                     self.beat_pid(session),
                 );
-                // Bind-on-claim (session-first intake): the create-and-claim
-                // in one write — the canonical "card emerges from the
-                // discussion" moment.
-                let pid = self.binding_pid(session);
-                crate::host::try_adopt_claim(session, pid);
+                adopt = Some((session.to_string(), self.binding_pid(session)));
             }
         }
         let label = if kind == "observe" { "Observe card created" } else { "Task created" };
@@ -3381,6 +3378,13 @@ impl TildoneAgent {
         let ack = Self::task_ack(&conn, id).map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         drop(conn);
+        // Bind-on-claim (session-first intake): the create-and-claim in one
+        // write, the canonical "card emerges from the discussion" moment. Host
+        // reads the claim on its own connection, so it runs after the commit
+        // and after the agent's DB lock is released (host.rs lock ordering).
+        if let Some((session, pid)) = adopt {
+            crate::host::try_adopt_claim(&session, pid);
+        }
         self.notify();
         ok_json(&ack)
     }

@@ -99,6 +99,10 @@ export interface Task {
   /** Lineage: the task whose work spawned this one, shown as "from TIL-205".
    * Null when none, or when that task was purged. */
   from_task_id: number | null;
+  /** 'observe' marks an observe card's row (migration 029). A live one lives in
+   *  the store's observeCards, never in tasks; only a trashed one sits in tasks,
+   *  so Trash can list and restore it. */
+  kind: "task" | "observe";
   tag_ids: number[];
 }
 
