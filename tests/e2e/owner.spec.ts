@@ -35,6 +35,10 @@ const HUMAN_TODO = "Lab renew the certificate";
 const AGENT_TODO = "Lab add the rename spec";
 const AGENT_DOING = "Lab trim unused tokens";
 const AGENT_VERIFY = "Lab drag keeps position";
+const HUMAN_BLOCKED = "Lab pick the retry limit";
+const AGENT_APPROVE = "Lab add a retry column";
+const AGENT_DISMISS = "Lab rename the queue";
+const AGENT_TAKE = "Lab write the release note";
 
 let seq = 0;
 function seedTask(title: string, owner: string, status: string, projectId: number): number {
@@ -45,6 +49,20 @@ function seedTask(title: string, owner: string, status: string, projectId: numbe
      VALUES (${projectId}, ${q(title)}, NULL, ${q(status)}, ${seq}, 0, '', ${completed}, datetime('now'), ${9800 + seq}, 'OWN-${seq}', ${q(owner)});`,
   );
   return Number(sql(`SELECT id FROM tasks WHERE title = ${q(title)};`));
+}
+
+function tagTask(id: number, tag: string) {
+  sql(`INSERT OR IGNORE INTO tags (name, color) VALUES (${q(tag)}, '#5645d4');`);
+  sql(
+    `INSERT INTO task_tags (task_id, tag_id)
+     SELECT ${id}, id FROM tags WHERE LOWER(name) = ${q(tag)};`,
+  );
+}
+
+function tagNames(id: number): string {
+  return sql(
+    `SELECT COALESCE(GROUP_CONCAT(t.name), '') FROM task_tags tt JOIN tags t ON t.id = tt.tag_id WHERE tt.task_id = ${id};`,
+  );
 }
 
 function taskRow(id: number): string {
@@ -118,12 +136,15 @@ describe("task owner", () => {
     ids.agentTodo = seedTask(AGENT_TODO, "agent", "todo", projectId);
     ids.agentDoing = seedTask(AGENT_DOING, "agent", "doing", projectId);
     ids.agentVerify = seedTask(AGENT_VERIFY, "agent", "done", projectId);
-    sql(`UPDATE tasks SET from_task_id = ${ids.human} WHERE id = ${ids.agentTodo};`);
-    sql(`INSERT OR IGNORE INTO tags (name, color) VALUES ('human-verify', '#5645d4');`);
-    sql(
-      `INSERT INTO task_tags (task_id, tag_id)
-       SELECT ${ids.agentVerify}, id FROM tags WHERE LOWER(name) = 'human-verify';`,
-    );
+    ids.humanBlocked = seedTask(HUMAN_BLOCKED, "human", "todo", projectId);
+    ids.agentApprove = seedTask(AGENT_APPROVE, "agent", "todo", projectId);
+    ids.agentDismiss = seedTask(AGENT_DISMISS, "agent", "todo", projectId);
+    ids.agentTake = seedTask(AGENT_TAKE, "agent", "todo", projectId);
+    sql(`UPDATE tasks SET from_task_id = ${ids.human} WHERE id IN (${ids.agentTodo}, ${ids.agentApprove});`);
+    tagTask(ids.agentVerify, "human-verify");
+    tagTask(ids.humanBlocked, "blocked");
+    tagTask(ids.agentApprove, "needs-approval");
+    tagTask(ids.agentDismiss, "needs-approval");
     await announceDbChange();
   });
 
@@ -132,6 +153,42 @@ describe("task owner", () => {
     // all, the app must fall back to Mine.
     await remount(() => localStorage.removeItem("tildone-nav"));
     await expect($('[data-nav="mine"]')).toHaveElementClass("active");
+  });
+
+  it("groups Mine and works the agent queue", async () => {
+    const mine = $(".owner-view");
+    await mine.waitForExist({ timeout: 10000 });
+    await expect(mine.$(".task-group*=Needs your answer").$(`.task-row*=${HUMAN_BLOCKED}`)).toBeExisting();
+    await expect(mine.$(".task-group*=To verify").$(`.task-row*=${AGENT_VERIFY}`)).toBeExisting();
+    await expect(mine.$(".task-group*=My todos").$(`.task-row*=${HUMAN_TODO}`)).toBeExisting();
+    await expect(mine.$(`.task-row*=${AGENT_TODO}`)).not.toBeExisting();
+    mkdirSync(".test-artifacts/screenshots", { recursive: true });
+    await browser.saveScreenshot(".test-artifacts/screenshots/owner-mine.png");
+
+    await $(".queue-strip").click();
+    await expect($('[data-nav="queue"]')).toHaveElementClass("active");
+    await expect($(`.queue-row*=${AGENT_APPROVE}`)).toHaveText(/from OWN-/);
+    await browser.saveScreenshot(".test-artifacts/screenshots/owner-queue.png");
+
+    await $(`.queue-row*=${AGENT_APPROVE}`).$("button=Approve").click();
+    await browser.waitUntil(() => !tagNames(ids.agentApprove).includes("needs-approval"), {
+      timeout: 10000,
+      timeoutMsg: `needs-approval still on: ${tagNames(ids.agentApprove)}`,
+    });
+    await $(`.queue-row*=${AGENT_DISMISS}`).$("button=Dismiss").click();
+    await browser.waitUntil(
+      () => sql(`SELECT deleted_at IS NOT NULL FROM tasks WHERE id = ${ids.agentDismiss};`) === "1",
+      { timeout: 10000, timeoutMsg: "dismissed task not in trash" },
+    );
+    await $(`.queue-row*=${AGENT_TAKE}`).$("button=Take it").click();
+    await browser.waitUntil(() => taskRow(ids.agentTake) === "human|todo", {
+      timeout: 10000,
+      timeoutMsg: `expected human|todo, got ${taskRow(ids.agentTake)}`,
+    });
+    await expect($(`.queue-row*=${AGENT_TAKE}`)).not.toBeExisting();
+
+    await $('[data-nav="mine"]').click();
+    await expect($(".owner-view").$(".task-group*=My todos").$(`.task-row*=${AGENT_TAKE}`)).toBeExisting();
   });
 
   it("splits a project board into You over Agents", async () => {
@@ -148,7 +205,6 @@ describe("task owner", () => {
     await expect(you.$('[data-status="done"]').$(`.board-card*=${AGENT_VERIFY}`)).toBeExisting();
     await expect(agents.$(`.board-card*=${AGENT_VERIFY}`)).not.toBeExisting();
 
-    mkdirSync(".test-artifacts/screenshots", { recursive: true });
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-board-lanes.png");
   });
 
