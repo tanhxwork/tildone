@@ -219,6 +219,12 @@ pub fn run() {
             sql: include_str!("../migrations/028_task_owner.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 29,
+            description: "observe",
+            sql: include_str!("../migrations/029_observe.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()

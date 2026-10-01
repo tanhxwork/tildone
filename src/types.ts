@@ -215,9 +215,42 @@ export function asLinkKind(kind: string): LinkKind {
   return (LINK_KINDS as string[]).includes(kind) ? (kind as LinkKind) : "other";
 }
 
+/** One decision an observe card offers, written at creation (migration 029). */
+export interface ObserveOption {
+  label: string;
+  detail: string;
+}
+
+/** One session's check of an observe card. verdict: true yes, false no, null none. */
+export interface ObserveLogLine {
+  id: number;
+  task_id: number;
+  at: string;
+  session_id: string | null;
+  text: string;
+  verdict: boolean | null;
+}
+
+/** An observe card: a task row with kind 'observe' (title = question, notes = why)
+ *  plus its trigger, check, options and log. Kept out of the store's `tasks` so no
+ *  board, list or count ever shows it. Exactly one of trigger_date (YYYY-MM-DD) and
+ *  trigger_count is set. decision is the chosen option's index, null until decided.
+ *  Due / Waiting / Observed is derived in observeViews.ts, never stored. */
+export interface ObserveCard {
+  task: Task;
+  check_text: string;
+  trigger_date: string | null;
+  trigger_count: number | null;
+  trigger_unit: string | null;
+  options: ObserveOption[];
+  decision: number | null;
+  log: ObserveLogLine[];
+}
+
 export type Selection =
   | { type: "mine" }
   | { type: "queue" }
+  | { type: "observe" }
   | { type: "today" }
   | { type: "upcoming" }
   | { type: "inbox" }

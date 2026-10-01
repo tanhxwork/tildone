@@ -5143,6 +5143,7 @@ mod tests {
         conn.execute_batch(include_str!("../migrations/024_task_cwd_newest.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/025_goals.sql")).unwrap();
         conn.execute_batch(include_str!("../migrations/028_task_owner.sql")).unwrap();
+        conn.execute_batch(include_str!("../migrations/029_observe.sql")).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
         conn
     }
