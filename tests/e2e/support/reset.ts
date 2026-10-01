@@ -187,12 +187,19 @@ export async function remount(
  * cleared. A truly empty localStorage means every spec file opens on the
  * first-run overlay, which would force all eight of them to carry a dismissal
  * dance in before(); pinning it dismissed gives every spec the same known
- * starting screen instead — Today, list view, no overlay.
+ * starting screen instead — Today, list view, no overlay. Today is pinned the
+ * same way: a fresh install opens Mine (task owner, spec 2026-10-01), but the
+ * specs were written against Today's quick-add list. owner.spec.ts clears the
+ * key itself to prove the fresh-install default.
  */
 export async function resetUiState(): Promise<void> {
   await remount((dismissKey: unknown) => {
     localStorage.clear();
     localStorage.setItem(dismissKey as string, "1");
+    localStorage.setItem(
+      "tildone-nav",
+      JSON.stringify({ selection: { type: "today" }, viewMode: "list" }),
+    );
   }, FIRST_RUN_DISMISSED);
 
   // Prove the dismissal key actually suppressed onboarding. Every spec dropped
