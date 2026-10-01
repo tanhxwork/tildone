@@ -250,7 +250,8 @@ export interface ObserveCard {
 export type Selection =
   | { type: "mine" }
   | { type: "queue" }
-  | { type: "observe" }
+  /** cardId preselects one card, e.g. when a follow-up's "from TIL-n" is clicked. */
+  | { type: "observe"; cardId?: number }
   | { type: "today" }
   | { type: "upcoming" }
   | { type: "inbox" }
@@ -283,6 +284,7 @@ export function isPageSelection(selection: Selection): boolean {
   return (
     selection.type === "mine" ||
     selection.type === "queue" ||
+    selection.type === "observe" ||
     selection.type === "week" ||
     selection.type === "review" ||
     selection.type === "completed" ||

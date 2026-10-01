@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
+import { observeCounts } from "../observeViews";
 import { mineGroups } from "../ownerViews";
 import { goalProgress, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
@@ -17,6 +18,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconColumns,
+  IconEye,
   IconFlag,
   IconInbox,
   IconLayers,
@@ -52,6 +54,7 @@ export function Sidebar() {
     goals,
     tasks,
     tags,
+    observeCards,
     selection,
     select,
     activeTagIds,
@@ -98,6 +101,7 @@ export function Sidebar() {
       }
     }
     const mine = mineGroups(tasks, tags);
+    const observe = observeCounts(observeCards, today);
     return {
       mine: mine.needsAnswer.length + mine.toVerify.length + mine.myTodos.length,
       queue: mine.queueCounts.todo + mine.queueCounts.doing + mine.queueCounts.needsApproval,
@@ -105,12 +109,21 @@ export function Sidebar() {
       upcoming: open.filter((t) => t.due_date !== null && t.due_date > today).length,
       inbox: open.filter((t) => t.project_id === null).length,
       all: open.length,
+      observeDue: observe.due,
+      observeWaiting: observe.waiting,
       byProject,
       byTag,
     };
-  }, [tasks, tags]);
+  }, [tasks, tags, observeCards]);
 
-  const smartLists: { sel: Selection; label: string; icon: ReactNode; count: number }[] = [
+  // `due` replaces the plain count with a doing-ink "N due" pill (Observe only).
+  const smartLists: {
+    sel: Selection;
+    label: string;
+    icon: ReactNode;
+    count: number;
+    due?: number;
+  }[] = [
     { sel: { type: "mine" }, label: "Mine", icon: <IconChecklist />, count: counts.mine },
     {
       sel: { type: "queue" },
@@ -118,6 +131,13 @@ export function Sidebar() {
       // The same neutral diamond that marks an agent-owned card.
       icon: <span className="owner-glyph nav-owner-glyph" aria-hidden="true">◇</span>,
       count: counts.queue,
+    },
+    {
+      sel: { type: "observe" },
+      label: "Observe",
+      icon: <IconEye />,
+      count: counts.observeWaiting,
+      due: counts.observeDue,
     },
     { sel: { type: "today" }, label: "Today", icon: <IconStar />, count: counts.today },
     { sel: { type: "upcoming" }, label: "Upcoming", icon: <IconCalendar />, count: counts.upcoming },
@@ -151,7 +171,11 @@ export function Sidebar() {
           >
             <span className="nav-icon">{item.icon}</span>
             <span className="nav-label">{item.label}</span>
-            {item.count > 0 && <span className="nav-count">{item.count}</span>}
+            {item.due ? (
+              <span className="nav-due">{item.due} due</span>
+            ) : (
+              item.count > 0 && <span className="nav-count">{item.count}</span>
+            )}
           </button>
         ))}
       </nav>

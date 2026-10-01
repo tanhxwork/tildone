@@ -32,6 +32,7 @@ import { TaskList } from "./components/TaskList";
 import { WeekView } from "./components/WeekView";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
+import { ObserveView } from "./components/ObserveView";
 import { QuitWarning } from "./components/QuitWarning";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
@@ -364,6 +365,8 @@ function App() {
     content = <MineView />;
   } else if (selection.type === "queue") {
     content = <AgentQueueView />;
+  } else if (selection.type === "observe") {
+    content = <ObserveView />;
   } else if (selection.type === "week") {
     content = <WeekView />;
   } else if (selection.type === "review") {

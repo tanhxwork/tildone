@@ -48,6 +48,9 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "queue":
       title = "Agent queue";
       break;
+    case "observe":
+      title = "Observe";
+      break;
     case "today":
       title = "Today";
       break;

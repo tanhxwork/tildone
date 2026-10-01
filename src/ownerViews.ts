@@ -1,5 +1,5 @@
 import { liveTasks } from "./selectors";
-import type { Project, Tag, Task } from "./types";
+import type { ObserveCard, Project, Tag, Task } from "./types";
 import { compareTasks } from "./utils/dates";
 
 // The two owner pages (spec 2026-10-01 task owner): Mine, the human's cross-
@@ -94,9 +94,16 @@ export function mineGroups(tasks: Task[], tags: Tag[]): MineGroups {
 }
 
 /** The task this one came from, when that task still exists and carries a ref —
- *  what "from TIL-205" names. Null hides the lineage line. */
-export function lineageTask(task: Task, tasks: Task[]): Task | null {
+ *  what "from TIL-205" names. Null hides the lineage line. The origin may be an
+ *  observe card (a decision's follow-up), which lives outside `tasks`. */
+export function lineageTask(
+  task: Task,
+  tasks: Task[],
+  observeCards: ObserveCard[],
+): Task | null {
   if (task.from_task_id === null) return null;
-  const origin = tasks.find((t) => t.id === task.from_task_id);
+  const origin =
+    tasks.find((t) => t.id === task.from_task_id) ??
+    observeCards.find((c) => c.task.id === task.from_task_id)?.task;
   return origin?.ref ? origin : null;
 }

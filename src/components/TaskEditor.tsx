@@ -94,6 +94,8 @@ function persistExpanded(expanded: boolean) {
 export function TaskEditor() {
   const {
     tasks,
+    observeCards,
+    select,
     projects,
     goals,
     tags,
@@ -228,7 +230,7 @@ export function TaskEditor() {
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.project_id);
-  const origin = lineageTask(task, tasks);
+  const origin = lineageTask(task, tasks, observeCards);
   const taskSubtasks = subtasks.filter((s) => s.task_id === task.id);
   // Verify steps split out of the build checklist only while the task is in
   // review — same rule and reason as the board card (Kanban.tsx): the tag coming
@@ -767,7 +769,15 @@ export function TaskEditor() {
                   type="button"
                   className="from-ref from-ref-link"
                   title={origin.title}
-                  onClick={() => openEditor(origin.id)}
+                  onClick={() => {
+                    // An observe card has no editor; its home is the Observe page.
+                    if (observeCards.some((c) => c.task.id === origin.id)) {
+                      openEditor(null);
+                      select({ type: "observe", cardId: origin.id });
+                    } else {
+                      openEditor(origin.id);
+                    }
+                  }}
                 >
                   from {origin.ref}
                 </button>

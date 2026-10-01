@@ -34,6 +34,9 @@
   --radius-card: 10px;
   /* Warning text. The doing hue's ink tier: fills use --doing, text uses this. */
   --warn: #c03f00;
+  /* The success and danger hues' ink tier (DESIGN.md, the Two-Token Rule). */
+  --success-ink: #007e00;
+  --danger-ink: #cf1a22;
 }
 
 :root[data-theme="dark"] {
@@ -55,6 +58,8 @@
   --success: #4dab5e;
   --doing: #ffa344;
   --warn: #ffa344;
+  --success-ink: #50ae60;
+  --danger-ink: #ff7369;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
 }
@@ -7089,4 +7094,424 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* ---------- Observe ---------- */
+/* The Observe page (docs/artifacts/2026-10-01-observe-section.html, "A + C"): a
+   grouped list of observe cards beside the selected card's detail. Pills write
+   in the -ink tier; violet stays on the active nav and the dialog's Create. */
+
+.observe-view {
+  padding-top: 8px;
+}
+
+.observe-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.observe-sub {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.observe-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.35fr);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  min-height: 420px;
+  background: var(--bg-main);
+}
+
+.observe-list {
+  border-right: 1px solid var(--border);
+  padding: 4px 8px 8px;
+  min-width: 0;
+}
+
+.observe-gtitle {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.observe-gcount {
+  color: var(--text-faint);
+}
+
+.observe-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.observe-row:hover {
+  background: var(--bg-hover);
+}
+
+.observe-row.due {
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.observe-row.selected {
+  background: var(--bg-active);
+}
+
+.observe-q {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.observe-row.observed .observe-q {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.observe-trig {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.observe-meta {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.observe-ref {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.observe-eye {
+  position: relative;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.observe-eye::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.observe-eye.due {
+  border-color: var(--doing);
+}
+
+.observe-eye.due::after {
+  background: var(--doing);
+}
+
+.observe-eye.kept {
+  border-color: var(--success);
+}
+
+.observe-eye.kept::after {
+  background: var(--success);
+}
+
+.observe-meter {
+  display: inline-flex;
+  gap: 2px;
+  vertical-align: middle;
+}
+
+.observe-meter i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.observe-meter i.f {
+  background: var(--text);
+}
+
+.observe-meter.due i.f {
+  background: var(--doing);
+}
+
+.observe-pill {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.observe-pill.due {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+.observe-pill.success {
+  color: var(--success-ink);
+  border-color: currentColor;
+}
+
+.observe-pill.danger {
+  color: var(--danger-ink);
+  border-color: currentColor;
+}
+
+.observe-det {
+  min-width: 0;
+  padding: 14px 18px;
+}
+
+.observe-det-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.observe-proj {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.observe-question {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.observe-why {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
+
+.observe-blk {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.observe-blk h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.observe-term {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.observe-log {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.observe-log td {
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.observe-log td.observe-log-date {
+  color: var(--text-faint);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.observe-log td.observe-log-session {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.observe-log td.yes {
+  color: var(--success-ink);
+  font-weight: 600;
+}
+
+.observe-log td.no {
+  color: var(--danger-ink);
+  font-weight: 600;
+}
+
+.observe-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.observe-summary {
+  margin-top: 6px;
+}
+
+.observe-dec {
+  display: grid;
+  gap: 6px;
+}
+
+.observe-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.observe-opt:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.observe-opt span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.observe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.observe-decision {
+  margin-bottom: 4px;
+}
+
+.observe-followup {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+}
+
+.observe-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.observe-toggle:hover {
+  color: var(--text);
+}
+
+.modal.observe-dialog {
+  width: 460px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.observe-check-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.observe-trigger-row,
+.observe-option-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.observe-option-row + .observe-option-row {
+  margin-top: 6px;
+}
+
+.observe-option-row input:first-child {
+  flex: 0 0 34%;
+}
+
+.observe-count-input {
+  flex: 0 0 72px;
+}
+
+/* A plain two-way toggle: the dialog's one violet element is Create. */
+.observe-seg {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.observe-seg button {
+  padding: 5px 10px;
+  color: var(--text-muted);
+}
+
+.observe-seg button + button {
+  border-left: 1px solid var(--border);
+}
+
+.observe-seg button.active {
+  background: var(--bg-hover);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.observe-add-option {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.nav-due {
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--warn);
 }
