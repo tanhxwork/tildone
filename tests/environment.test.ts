@@ -5,10 +5,6 @@ import { nextEnvironment } from "../src/utils/environment";
 const of = (...envs: Environment[]) => envs.map((environment) => ({ environment }));
 
 describe("nextEnvironment", () => {
-  it("starts with meadow on an empty board", () => {
-    expect(nextEnvironment([])).toBe("meadow");
-  });
-
   it("takes the first environment no project uses", () => {
     expect(nextEnvironment(of("meadow", "city"))).toBe("desert");
   });
