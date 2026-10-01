@@ -521,11 +521,12 @@ function deskSpots(b: Footprint, use: FloorUse): Spot[] {
   return use === "desks" && backRow - 0.55 >= b.y + 0.62 ? [...columns(front), ...columns(backRow)] : columns(front);
 }
 
-/** Where a working agent past a storey's last desk stands: a row along the front
- *  of the storey, then rows stepping back, one distinct spot each. */
-function overflowSpot(b: Footprint, index: number): Spot {
-  const perRow = Math.max(1, Math.floor((b.w - 0.9) / 0.6) + 1);
-  return { x: b.x + 0.45 + (index % perRow) * 0.6, y: b.y + b.d - 0.3 - Math.floor(index / perRow) * 0.6 };
+/** Where the index-th of `count` working agents past a storey's last desk stands:
+ *  one row along the front wall, packed closer as it fills, so nobody stands in
+ *  the furniture behind it. */
+function overflowSpot(b: Footprint, index: number, count: number): Spot {
+  const step = count > 1 ? Math.min(0.6, (b.w - 0.9) / (count - 1)) : 0;
+  return { x: b.x + 0.45 + index * step, y: b.y + b.d - 0.3 };
 }
 
 /** What stands on one storey of a building, by the storey's use. */
@@ -546,11 +547,12 @@ function floorContents(b: Footprint, floor: number, use: FloorUse, plan: Buildin
     layer: 1,
   });
   const spots = deskSpots(b, use);
+  const standingCount = desks.length - spots.length;
   for (const s of desks) {
     const spot = spots[s.desk];
     if (spot) workDesk(list, spot.x, spot.y, s.character, color, p);
     else {
-      const standing = overflowSpot(b, s.desk - spots.length);
+      const standing = overflowSpot(b, s.desk - spots.length, standingCount);
       add(list, { kind: "agent", x: standing.x, y: standing.y, z: 0, character: s.character, pose: "stand", color, layer: 1 });
     }
   }

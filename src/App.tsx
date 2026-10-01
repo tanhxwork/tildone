@@ -272,6 +272,7 @@ function App() {
           e.preventDefault();
           closeSettings();
         } else {
+          if (useStore.getState().editingTaskId !== null) e.preventDefault();
           openEditor(null);
         }
       }
