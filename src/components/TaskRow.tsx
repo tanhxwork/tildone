@@ -9,6 +9,7 @@ import {
   STATUS_LABELS,
 } from "../types";
 import { dueLabel, isOverdue } from "../utils/dates";
+import { cardPresence } from "../utils/presence";
 import { taskRefLabel } from "../utils/ref";
 import { IconCheck, IconFlag } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
@@ -146,6 +147,16 @@ export function OwnerMark({ task, label }: { task: Task; label?: string }) {
       {label}
     </span>
   );
+}
+
+/** Who holds a doing card: the agent's presence name, else its session id, else
+ *  null. The queue's Doing pill and the board's agent card both say it. */
+export function useClaimLabel(task: Task): string | null {
+  const live = useStore((s) => s.live);
+  const fallback = useStore((s) => s.presence);
+  const entry = cardPresence(task.id, live, fallback);
+  const session = live[task.id]?.session_id;
+  return entry?.name ?? (session ? `session ${session.slice(0, 4)}` : null);
 }
 
 /** "from TIL-205": the task whose work spawned this one. Renders nothing when

@@ -59,7 +59,7 @@ import {
 import { hostedForTask, resumableForTask, useHostStore } from "../hostStore";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
-import { FromRef, OwnerMark, TaskMeta, reservedState } from "./TaskRow";
+import { FromRef, OwnerMark, TaskMeta, reservedState, useClaimLabel } from "./TaskRow";
 import { AgentPresence, SecretaryBadge } from "../agents";
 import "./kanbanLanes.css";
 
@@ -764,8 +764,15 @@ function CardContent({
   const cardLinks = links[task.id] ?? [];
   const cardImages = images[task.id] ?? [];
   const state = reservedState(task, tags);
-  // Agent work back for the user's check says so in words, as Mine's To verify does.
-  const ownerLabel = state === "human-verify" ? "done by agent" : undefined;
+  // Agent work back for the user's check says so in words, as Mine's To verify
+  // does; a held agent card names the agent holding it, as the queue's Doing row does.
+  const claimLabel = useClaimLabel(task);
+  const ownerLabel =
+    state === "human-verify"
+      ? "done by agent"
+      : task.owner === "agent" && task.status === "doing"
+        ? (claimLabel ?? undefined)
+        : undefined;
   // Verify steps ("verify: …" subtasks) leave the build checklist only while the
   // task is actually in review — the tag coming off mid-flight folds them back
   // into plain subtasks rather than orphaning them out of every count. Both

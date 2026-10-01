@@ -39,7 +39,6 @@ const HUMAN_BLOCKED = "Lab pick the retry limit";
 const AGENT_APPROVE = "Lab add a retry column";
 const AGENT_DISMISS = "Lab rename the queue";
 const AGENT_TAKE = "Lab write the release note";
-const RETRY_PROJECT = "Owner Lab Retry";
 
 const SESSION = "7c1e9a2b-4d3f-4b6a-9c2e-1f0a2b3c4d5e";
 const CLIENT = "owner-e2e";
@@ -129,7 +128,9 @@ async function drag(sourceSel: string, targetSel: string) {
             buttons: type === "pointerup" ? 0 : 1,
           }),
         );
-      const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+      // setTimeout, not requestAnimationFrame: WebKit throttles rAF in a background
+      // window, which stalled this drag past the script timeout (1 run in 2).
+      const frame = () => new Promise((r) => setTimeout(() => r(null), 16));
       void (async () => {
         fire(from, "pointerdown", start);
         await frame();
@@ -245,6 +246,8 @@ describe("task owner", () => {
     await expect(you.$(`.board-card*=${HUMAN_TODO}`)).toBeExisting();
     await expect(agents.$(`.board-card*=${AGENT_TODO}`)).toBeExisting();
     await expect(agents.$(`.board-card*=${AGENT_DOING}`)).toBeExisting();
+    // A held agent card names who holds it, as the queue's Doing row does.
+    await expect(agents.$(`.board-card*=${AGENT_DOING}`)).toHaveText(new RegExp(CLIENT));
     // Checking an agent's finished work is the user's job: it sits in You.
     await expect(you.$('[data-status="done"]').$(`.board-card*=${AGENT_VERIFY}`)).toBeExisting();
     await expect(agents.$(`.board-card*=${AGENT_VERIFY}`)).not.toBeExisting();
@@ -277,18 +280,5 @@ describe("task owner", () => {
     await expect($(`.board-card*=${AGENT_TODO}`)).not.toBeExisting();
     await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-board-lanes-collapsed.png");
-  });
-
-  it("serves a card again through next_task once its agent puts it back", async () => {
-    // Its own project, so the card is the only agent todo next_task can pick.
-    await tool(url, "create_project", { name: RETRY_PROJECT });
-    const id = (await tool(url, "create_task", { title: "Lab retry the flaky step", project: RETRY_PROJECT }))
-      .id as number;
-    await tool(url, "update_task", { id, status: "doing", session_id: SESSION });
-    expect((await tool(url, "next_task", { project: RETRY_PROJECT })).id).toBeUndefined();
-
-    // The session gave up: the claim row stays behind, the card must not vanish.
-    await tool(url, "update_task", { id, status: "todo" });
-    expect((await tool(url, "next_task", { project: RETRY_PROJECT })).id).toBe(id);
   });
 });

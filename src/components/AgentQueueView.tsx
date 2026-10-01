@@ -1,12 +1,11 @@
 import { useMemo, type ReactNode } from "react";
 import { queueGroups } from "../ownerViews";
 import { useStore } from "../store";
-import type { Task } from "../types";
-import { cardPresence } from "../utils/presence";
+import { RESERVED_TAG_LABELS, type Task } from "../types";
 import { taskRefLabel } from "../utils/ref";
 import { TildoneMark } from "./Brand";
 import { ProjectGlyph } from "./ProjectGlyph";
-import { FromRef } from "./TaskRow";
+import { FromRef, reservedState, useClaimLabel } from "./TaskRow";
 
 // The Agent queue: open agent-owned work in the order agents pick it (next_task
 // takes the first Todo of a project). The user steers it from here — approve or dismiss a
@@ -99,8 +98,10 @@ function QueueGroup({
 }
 
 function QueueRow({ task, action }: { task: Task; action: ReactNode }) {
-  const { projects, openEditor, editingTaskId } = useStore();
+  const { projects, tags, openEditor, editingTaskId } = useStore();
   const project = projects.find((p) => p.id === task.project_id);
+  // A blocked Todo row stays in place but next_task skips it; the pill says why.
+  const state = reservedState(task, tags);
   return (
     <div
       className={`task-row queue-row ${editingTaskId === task.id ? "editing" : ""}`}
@@ -112,6 +113,9 @@ function QueueRow({ task, action }: { task: Task; action: ReactNode }) {
       <span className="task-id" aria-hidden="true">{taskRefLabel(task)}</span>
       <span className="task-title">{task.title}</span>
       <FromRef task={task} />
+      {state === "blocked" && (
+        <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
+      )}
       <span className="project-label">
         {project ? (
           <>
@@ -130,10 +134,5 @@ function QueueRow({ task, action }: { task: Task; action: ReactNode }) {
 /** Who is on a doing card: the claiming agent's name, else its session, as the
  *  board card's presence reads it. */
 function ClaimPill({ task }: { task: Task }) {
-  const live = useStore((s) => s.live);
-  const fallback = useStore((s) => s.presence);
-  const entry = cardPresence(task.id, live, fallback);
-  const session = live[task.id]?.session_id;
-  const label = entry?.name ?? (session ? `session ${session.slice(0, 4)}` : "doing");
-  return <span className="status-pill">{label}</span>;
+  return <span className="status-pill">{useClaimLabel(task) ?? "doing"}</span>;
 }
