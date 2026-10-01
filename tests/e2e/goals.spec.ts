@@ -225,7 +225,8 @@ describe("goals", () => {
   });
 
   it("offers no goal picker on an Inbox task", async () => {
-    await $(".nav-item*=Inbox").click();
+    // A projectless task lands in All Tasks' "Inbox" group.
+    await $(".nav-item*=All Tasks").click();
     await quickAdd(INBOX_TASK);
     await openTask(INBOX_TASK);
     expect(await $('select[aria-label="Goal"]').isExisting()).toBe(false);

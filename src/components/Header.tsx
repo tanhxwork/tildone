@@ -6,7 +6,6 @@ import type { Project } from "../types";
 import { ProjectGlyph } from "./ProjectGlyph";
 import {
   IconBoard,
-  IconCalendar,
   IconEye,
   IconEyeOff,
   IconList,
@@ -51,20 +50,8 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "observe":
       title = "Observe";
       break;
-    case "today":
-      title = "Today";
-      break;
-    case "upcoming":
-      title = "Upcoming";
-      break;
-    case "inbox":
-      title = "Inbox";
-      break;
     case "all":
       title = "All Tasks";
-      break;
-    case "week":
-      title = "My Week";
       break;
     case "review":
       title = "Review";
@@ -177,14 +164,6 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
                 onClick={() => setViewMode("table")}
               >
                 <IconTable size={14} />
-              </button>
-              <button
-                className={viewMode === "calendar" ? "active" : ""}
-                aria-label="Calendar view"
-                title="Calendar view"
-                onClick={() => setViewMode("calendar")}
-              >
-                <IconCalendar size={14} />
               </button>
               <button
                 className={viewMode === "town" ? "active" : ""}

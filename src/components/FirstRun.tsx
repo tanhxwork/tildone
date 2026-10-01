@@ -57,7 +57,7 @@ const TEMPLATES: Template[] = [
     tasks: [
       { title: "Brain-dump everything on your mind", due: "today" },
       { title: "Pick tomorrow's top 3", due: "today" },
-      { title: "Weekly review — plan My Week", due: "tomorrow" },
+      { title: "Weekly review — plan the week", due: "tomorrow" },
     ],
   },
 ];

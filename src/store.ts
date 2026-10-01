@@ -261,20 +261,17 @@ const TRASH_RETENTION_DAYS = 30;
 
 /**
  * Last-viewed selection + view mode, persisted so relaunch lands where the user
- * left off instead of resetting to Today/list. A project selection is validated
- * against the loaded projects in `init` — a deleted project falls back to Today.
+ * left off instead of resetting to Mine/list. A project selection is validated
+ * against the loaded projects in `init` — a deleted project falls back to Mine.
+ * A stored selection or view mode that no longer exists also loads as Mine/list.
  */
 const NAV_STORAGE_KEY = "tildone-nav";
-const VIEW_MODES: ViewMode[] = ["list", "board", "table", "calendar"];
+const VIEW_MODES: ViewMode[] = ["list", "board", "table"];
 const SELECTION_TYPES: Selection["type"][] = [
   "mine",
   "queue",
   "observe",
-  "today",
-  "upcoming",
-  "inbox",
   "all",
-  "week",
   "review",
   "completed",
   "goals",
@@ -283,7 +280,7 @@ const SELECTION_TYPES: Selection["type"][] = [
   "ungoaled",
 ];
 
-function loadNav(): { selection: Selection; viewMode: ViewMode } {
+export function loadNav(): { selection: Selection; viewMode: ViewMode } {
   const fallback = { selection: { type: "mine" } as Selection, viewMode: "list" as ViewMode };
   try {
     const raw = localStorage.getItem(NAV_STORAGE_KEY);
@@ -437,13 +434,13 @@ export const useStore = create<Store>()((set, get) => ({
         db.trace(`init: attempt ${attempt} loaded ok`);
         set({ ...data, loaded: true, initError: null });
         // A restored project selection may point at a project deleted in another
-        // session; fall back to Today so we never land on a dead view.
+        // session; fall back to Mine so we never land on a dead view.
         const { selection } = get();
         if (
           selection.type === "project" &&
           !data.projects.some((p) => p.id === selection.projectId)
         ) {
-          set({ selection: { type: "today" } });
+          set({ selection: { type: "mine" } });
         }
         // Same guard for a restored goal — deleted in another session, or gone
         // with its project.
@@ -451,13 +448,13 @@ export const useStore = create<Store>()((set, get) => ({
           selection.type === "goal" &&
           !data.goals.some((g) => g.id === selection.goalId)
         ) {
-          set({ selection: { type: "today" } });
+          set({ selection: { type: "mine" } });
         }
         if (
           selection.type === "ungoaled" &&
           !data.projects.some((p) => p.id === selection.projectId)
         ) {
-          set({ selection: { type: "today" } });
+          set({ selection: { type: "mine" } });
         }
         // Icons resolve async off the main load — the dot shows until they land.
         void get().loadProjectIcons();
@@ -493,13 +490,13 @@ export const useStore = create<Store>()((set, get) => ({
     // while the view stays pointed at it, rendering an empty board with no band.
     const sel = get().selection;
     if (sel.type === "goal" && !data.goals.some((g) => g.id === sel.goalId)) {
-      set({ selection: { type: "today" } });
+      set({ selection: { type: "mine" } });
     }
     if (sel.type === "project" && !data.projects.some((p) => p.id === sel.projectId)) {
-      set({ selection: { type: "today" } });
+      set({ selection: { type: "mine" } });
     }
     if (sel.type === "ungoaled" && !data.projects.some((p) => p.id === sel.projectId)) {
-      set({ selection: { type: "today" } });
+      set({ selection: { type: "mine" } });
     }
     void get().loadProjectIcons();
     // fetchAll has no activity or comment bodies in it, so an open task's log and
@@ -643,7 +640,7 @@ export const useStore = create<Store>()((set, get) => ({
         (s.selection.type === "project" && s.selection.projectId === id) ||
         (s.selection.type === "ungoaled" && s.selection.projectId === id) ||
         (s.selection.type === "goal" && removedGoalIds.has(s.selection.goalId))
-          ? ({ type: "today" } as Selection)
+          ? ({ type: "mine" } as Selection)
           : s.selection;
       const removedTaskIds = new Set(
         s.tasks.filter((t) => t.project_id === id).map((t) => t.id),
