@@ -29,6 +29,7 @@ import { format } from "date-fns";
 import { computeDragUpdates } from "./reorder";
 import { watchMoreTrigger } from "./observeViews";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
+import { nextEnvironment } from "./utils/environment";
 import { byTask, type LivePresence } from "./utils/presence";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
@@ -576,6 +577,7 @@ export const useStore = create<Store>()((set, get) => ({
       position: get().projects.length,
       folder_path: null,
       code,
+      environment: nextEnvironment(get().projects),
     };
     set((s) => ({
       projects: [...s.projects, project],
