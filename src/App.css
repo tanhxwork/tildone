@@ -1959,6 +1959,13 @@ textarea:focus-visible,
   padding: 6px 10px;
 }
 
+/* One line has no free corner: the unseen mark sits inline at the row's end. */
+.board-card.done.compact .tilde {
+  position: static;
+  width: 18px;
+  flex-shrink: 0;
+}
+
 .done-check {
   width: 15px;
   height: 15px;

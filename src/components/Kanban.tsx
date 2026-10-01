@@ -364,12 +364,11 @@ export function Kanban() {
 
   const activeTask = activeId !== null ? taskById.get(activeId) : undefined;
   // Keep the drag overlay in the same form as the resting card: the pinned
-  // verify queue and today's done cards (the first `verify + today` in a Done
-  // column) drag as full, not compact.
+  // verify queue (the first `verify` in a Done column) drags as full, not compact.
   const activeFull =
     activeId !== null &&
     Object.values(lanes).some((m) =>
-      m.columns.done.slice(0, m.doneVerifyCount + m.doneTodayCount).includes(activeId),
+      m.columns.done.slice(0, m.doneVerifyCount).includes(activeId),
     );
 
   const column = (lane: Lane, status: Status, showHeader = true) => {
@@ -491,7 +490,7 @@ function Column({
   const isDoing = status === "doing";
 
   // `full` keeps a done card in its full form instead of collapsing to one line —
-  // used for today's completions, which are still fresh enough to want the detail.
+  // used for the verify queue, whose steps the user still has to read.
   const card = (id: number, full = false, inSection = false) => {
     const task = taskById.get(id);
     return task ? (
@@ -554,7 +553,7 @@ function Column({
               )}
               {ids.slice(0, verifyCount).map((id) => card(id, true, true))}
               {todayCount > 0 && <div className="col-divider">Today</div>}
-              {ids.slice(verifyCount, verifyCount + todayCount).map((id) => card(id, true))}
+              {ids.slice(verifyCount, verifyCount + todayCount).map((id) => card(id))}
               {hasEarlier && (
                 <div className="col-divider">
                   Earlier
@@ -805,12 +804,16 @@ function CardContent({
   // A finished card is history, not work in flight: collapse it to one line —
   // check, strikethrough title, project dot, completion time. The full meta
   // (subtask bar, due date, priority, tags) only matters while a task is live —
-  // except for today's completions (`full`), which stay full so the day's work
-  // keeps its detail; older done cards still collapse.
+  // except for the verify queue (`full`), whose steps the user still has to
+  // read. Today's completions collapse too; the unseen mark rides inline.
   if (task.status === "done" && !full) {
     const time = task.completed_at ? format(new Date(task.completed_at), "h:mm a") : "";
     return (
-      <div className={["board-card", "done", "compact", overlay ? "overlay" : ""].filter(Boolean).join(" ")}>
+      <div
+        className={["board-card", "done", "compact", overlay ? "overlay" : "", showMark ? "unseen" : ""]
+          .filter(Boolean)
+          .join(" ")}
+      >
         <span className="done-check" aria-hidden="true">
           <IconCheck size={10} />
         </span>
@@ -850,6 +853,9 @@ function CardContent({
           <FromRef task={task} />
           {time && <span className="done-time">{time}</span>}
         </span>
+        {showMark && (
+          <UnseenMark key={settleKey ?? "unseen"} settling={settling} onDone={onSettleDone} />
+        )}
         {flourishKey !== null && <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />}
       </div>
     );
