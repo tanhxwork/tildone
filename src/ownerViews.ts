@@ -1,5 +1,5 @@
 import { liveTasks } from "./selectors";
-import type { Tag, Task } from "./types";
+import type { Project, Tag, Task } from "./types";
 import { compareTasks } from "./utils/dates";
 
 // The two owner pages (spec 2026-10-01 task owner): Mine, the human's cross-
@@ -40,11 +40,20 @@ function nameIndex(tags: Tag[]): Map<number, string> {
   return new Map(tags.map((t) => [t.id, t.name]));
 }
 
-export function queueGroups(tasks: Task[], tags: Tag[]): QueueGroups {
+/** Queue order is next_task's pick order: the Inbox, then projects in sidebar
+ *  order (position, id), then the board order inside each (position, id). So the
+ *  first Todo row of a project is what next_task(project) returns. */
+export function queueGroups(tasks: Task[], tags: Tag[], projects: Project[]): QueueGroups {
   const byId = nameIndex(tags);
+  const projectRank = new Map(
+    [...projects]
+      .sort((a, b) => a.position - b.position || a.id - b.id)
+      .map((p, i) => [p.id, i + 1]),
+  );
+  const rank = (t: Task) => (t.project_id === null ? 0 : (projectRank.get(t.project_id) ?? 0));
   const open = liveTasks(tasks)
     .filter((t) => t.owner === "agent" && t.status !== "done")
-    .sort(compareTasks);
+    .sort((a, b) => rank(a) - rank(b) || a.position - b.position || a.id - b.id);
   const groups: QueueGroups = { doing: [], needsApproval: [], todo: [] };
   for (const t of open) {
     if (t.status === "doing") groups.doing.push(t);
@@ -71,7 +80,7 @@ export function mineGroups(tasks: Task[], tags: Tag[]): MineGroups {
       myTodos.push(t);
     }
   }
-  const queue = queueGroups(tasks, tags);
+  const queue = queueGroups(tasks, tags, []);
   return {
     needsAnswer,
     toVerify,

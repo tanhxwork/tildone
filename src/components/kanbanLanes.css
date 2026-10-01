@@ -69,16 +69,3 @@
   border-radius: var(--radius-card);
 }
 
-/* ---------- Card owner line ----------
-   The ◇ marker and "from TIL-xxx" share one quiet row above the meta; the
-   glyph and lineage styles themselves live with OwnerMark / FromRef. */
-
-.card-owner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.card-owner:empty {
-  display: none;
-}

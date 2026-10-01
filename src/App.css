@@ -6981,6 +6981,18 @@ textarea:focus-visible,
   color: var(--text-muted);
 }
 
+/* In the sidebar the glyph fills the same 16px box as the SVG nav icons, so the
+   Agent queue label lines up with Mine and Today, and takes the active colour. */
+.nav-owner-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  color: inherit;
+}
+
 .owner-mark {
   flex-shrink: 0;
   display: inline-flex;

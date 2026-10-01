@@ -764,6 +764,8 @@ function CardContent({
   const cardLinks = links[task.id] ?? [];
   const cardImages = images[task.id] ?? [];
   const state = reservedState(task, tags);
+  // Agent work back for the user's check says so in words, as Mine's To verify does.
+  const ownerLabel = state === "human-verify" ? "done by agent" : undefined;
   // Verify steps ("verify: …" subtasks) leave the build checklist only while the
   // task is actually in review — the tag coming off mid-flight folds them back
   // into plain subtasks rather than orphaning them out of every count. Both
@@ -837,7 +839,8 @@ function CardContent({
               <ProjectGlyph project={project} size={12} />
             </span>
           )}
-          <OwnerMark task={task} />
+          <OwnerMark task={task} label={ownerLabel} />
+          <FromRef task={task} />
           {time && <span className="done-time">{time}</span>}
         </span>
         {flourishKey !== null && <CompletionFlourish key={flourishKey} onDone={onFlourishDone} />}
@@ -944,13 +947,7 @@ function CardContent({
           {commentCount}
         </span>
       )}
-      {(task.owner === "agent" || task.from_task_id !== null) && (
-        <span className="card-owner">
-          <OwnerMark task={task} />
-          <FromRef task={task} />
-        </span>
-      )}
-      <TaskMeta task={task} hideStatus hideState={inSection} />
+      <TaskMeta task={task} hideStatus hideState={inSection} showOwner ownerLabel={ownerLabel} />
       <CardProvenance
         task={task}
         project={showProject ? project : undefined}

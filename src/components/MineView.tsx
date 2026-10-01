@@ -64,6 +64,7 @@ export function MineView() {
                   task={task}
                   showProject
                   ownerLabel={section.key === "verify" ? "done by agent" : undefined}
+                  awaitingCheck={section.key === "verify"}
                 />
               ))}
             </section>

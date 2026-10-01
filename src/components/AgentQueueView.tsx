@@ -9,11 +9,11 @@ import { ProjectGlyph } from "./ProjectGlyph";
 import { FromRef } from "./TaskRow";
 
 // The Agent queue: open agent-owned work in the order agents pick it (next_task
-// takes the top of Todo). The user steers it from here — approve or dismiss a
+// takes the first Todo of a project). The user steers it from here — approve or dismiss a
 // proposed follow-up, or take a card over, which moves it to Mine.
 export function AgentQueueView() {
-  const { tasks, tags, approveTask, removeTask, patchTask } = useStore();
-  const groups = useMemo(() => queueGroups(tasks, tags), [tasks, tags]);
+  const { tasks, tags, projects, approveTask, removeTask, patchTask } = useStore();
+  const groups = useMemo(() => queueGroups(tasks, tags, projects), [tasks, tags, projects]);
 
   const takeIt = (task: Task) => (
     <button
@@ -40,7 +40,7 @@ export function AgentQueueView() {
 
   return (
     <div className="task-list owner-view">
-      <p className="queue-lede">Agents pick from the top of Todo.</p>
+      <p className="queue-lede">Agents take the first Todo in each project.</p>
       <QueueGroup label="Doing" tasks={groups.doing} action={(t) => <ClaimPill task={t} />} />
       <QueueGroup
         label="Waiting for your approval"

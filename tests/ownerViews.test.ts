@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { mineGroups, queueGroups } from "../src/ownerViews";
-import type { Tag, Task } from "../src/types";
+import type { Project, Tag, Task } from "../src/types";
 
 // Mine and the Agent queue are slices of the live task set by owner, status and
 // the reserved tags. These cases pin which group a task lands in.
@@ -87,10 +87,25 @@ describe("queueGroups", () => {
     const trashed = task({ owner: "agent", deleted_at: "2026-09-01T00:00:00.000Z" });
     const human = task();
     const all = [doing, approval, todo, done, trashed, human];
-    const q = queueGroups(all, tags);
+    const q = queueGroups(all, tags, []);
     expect(ids(q.doing)).toEqual([doing.id]);
     expect(ids(q.needsApproval)).toEqual([approval.id]);
     expect(ids(q.todo)).toEqual([todo.id]);
     expect(mineGroups(all, tags).queueCounts).toEqual({ todo: 1, doing: 1, needsApproval: 1 });
+  });
+
+  it("orders todo in next_task's pick order: project, then board position, ignoring priority and due", () => {
+    const projects: Project[] = [
+      { id: 2, name: "Later", color: "#0075de", position: 2, folder_path: null, code: null },
+      { id: 1, name: "First", color: "#0075de", position: 1, folder_path: null, code: null },
+    ];
+    const otherProject = task({ owner: "agent", project_id: 2, position: 0 });
+    const top = task({ owner: "agent", project_id: 1, position: 1 });
+    const urgent = task({ owner: "agent", project_id: 1, position: 2, priority: 3, due_date: "2026-01-01" });
+    expect(ids(queueGroups([urgent, otherProject, top], tags, projects).todo)).toEqual([
+      top.id,
+      urgent.id,
+      otherProject.id,
+    ]);
   });
 });

@@ -31,6 +31,8 @@ export function TaskMeta({
   showProject,
   hideStatus,
   hideState,
+  showOwner,
+  ownerLabel,
 }: {
   task: Task;
   showProject?: boolean;
@@ -41,8 +43,13 @@ export function TaskMeta({
    *  (To Do, Done, the list views) leaves this off: there the pill is the only
    *  thing carrying the state. */
   hideState?: boolean;
+  /** Lead the row with the agent ◇ and "from TIL-xxx" — the board card folds
+   *  them into its meta line instead of a line of their own. */
+  showOwner?: boolean;
+  /** Visible text beside the ◇ (see OwnerMark). */
+  ownerLabel?: string;
 }) {
-  const { projects, tags, goals, selection, select } = useStore();
+  const { projects, tags, goals, tasks, selection, select } = useStore();
   const project = showProject
     ? projects.find((p) => p.id === task.project_id)
     : undefined;
@@ -59,7 +66,10 @@ export function TaskMeta({
     goal !== undefined && !(selection.type === "goal" && selection.goalId === goal.id);
 
   const showDoing = task.status === "doing" && !hideStatus;
+  const origin = showOwner ? lineageTask(task, tasks) : null;
+  const ownerLead = showOwner && (task.owner === "agent" || origin !== null);
   const hasMeta =
+    ownerLead ||
     task.due_date ||
     task.priority > 0 ||
     taskTags.length > 0 ||
@@ -71,6 +81,8 @@ export function TaskMeta({
 
   return (
     <span className="task-meta">
+      {ownerLead && <OwnerMark task={task} label={ownerLabel} />}
+      {origin && <span className="from-ref">from {origin.ref}</span>}
       {state && (
         <span className={`state-pill ${state}`}>{RESERVED_TAG_LABELS[state]}</span>
       )}
@@ -149,18 +161,22 @@ export function TaskRow({
   task,
   showProject,
   ownerLabel,
+  awaitingCheck,
 }: {
   task: Task;
   showProject?: boolean;
   /** Visible text beside the agent marker; the glyph alone otherwise. */
   ownerLabel?: string;
+  /** Mine's To verify: done work still waiting on the user's check. The title
+   *  stays live (no strikethrough); the checkbox still reflects and toggles done. */
+  awaitingCheck?: boolean;
 }) {
   const { toggleDone, openEditor, editingTaskId } = useStore();
   const done = task.status === "done";
 
   return (
     <div
-      className={`task-row ${done ? "done" : ""} ${editingTaskId === task.id ? "editing" : ""}`}
+      className={`task-row ${done && !awaitingCheck ? "done" : ""} ${editingTaskId === task.id ? "editing" : ""}`}
       onClick={() => openEditor(task.id)}
       role="button"
       tabIndex={0}

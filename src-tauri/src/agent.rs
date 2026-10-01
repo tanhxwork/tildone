@@ -3027,7 +3027,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "The agent queue's next task in a project: the top agent-owned To Do card (board order) that is unclaimed and not tagged blocked or needs-approval. Returns the task like get_task, or {reason} when the queue is empty. Does not claim it — claim with update_task (status \"doing\" + session_id)."
+        description = "The agent queue's next task in a project: the top agent-owned To Do card (board order) not tagged blocked or needs-approval. Returns the task like get_task, or {reason} when the queue is empty. Does not claim it — claim with update_task (status \"doing\" + session_id)."
     )]
     fn next_task(
         &self,
@@ -3039,8 +3039,10 @@ impl TildoneAgent {
             Err(msg) => return Ok(err(msg)),
         };
         // Board order of the To Do column (position, then id — see RANK_SQL). A
-        // claim on a todo card means a session already holds it, even if it has
-        // not moved the card yet, so it is not up for grabs.
+        // held card is in Doing, so `status = 'todo'` already skips it. A stale
+        // agent_claims row is no filter: claims survive a card moved back to todo
+        // (the agent gave up, or the user dragged it back), and that card must be
+        // served again.
         let id = conn
             .query_row(
                 "SELECT t.id FROM tasks t
@@ -3049,7 +3051,6 @@ impl TildoneAgent {
                     AND NOT EXISTS (SELECT 1 FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id
                                      WHERE tt.task_id = t.id
                                        AND LOWER(tg.name) IN ('blocked', 'needs-approval'))
-                    AND NOT EXISTS (SELECT 1 FROM agent_claims c WHERE c.task_id = t.id)
                   ORDER BY t.position, t.id
                   LIMIT 1",
                 [project_id],
@@ -3068,7 +3069,7 @@ impl TildoneAgent {
         match task {
             Some(task) => ok_json(&task),
             None => ok_json(&json!({
-                "reason": format!("No unclaimed agent todo in {}.", p.project.trim()),
+                "reason": format!("No agent todo in {}.", p.project.trim()),
             })),
         }
     }
@@ -3976,7 +3977,7 @@ impl ServerHandler for TildoneAgent {
              follow-up owner agent only when an agent can finish it without asking the user; \
              if it changes product behaviour or scope, also tag it needs-approval; anything \
              needing the user's action or decision is owner human. Set from_task to the task \
-             whose work spawned it. next_task(project) pulls the top unclaimed agent todo. \
+             whose work spawned it. next_task(project) pulls the top agent todo. \
              Start with list_projects/list_goals/list_tasks to see what exists — the goals \
              before the tasks, so an outcome already in flight is visible before you mint \
              cards under it; deleting a project is irreversible, deleted tasks go to a \
@@ -6834,7 +6835,7 @@ mod tests {
     }
 
     #[test]
-    fn next_task_serves_the_top_unclaimed_unblocked_agent_todo() {
+    fn next_task_serves_the_top_unblocked_agent_todo() {
         let agent = test_agent();
         a_project(&agent, "Work");
         a_project(&agent, "Other");
@@ -6848,14 +6849,13 @@ mod tests {
         set_task_tags(&agent, blocked, &["Blocked"]);
         let approval = make("Awaiting approval", "agent");
         set_task_tags(&agent, approval, &["needs-approval"]);
-        let claimed = make("Held by a session", "agent");
-        work_on(&agent, claimed, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
-        work_on(&agent, claimed, "todo", None, None, None);
+        let held = make("Held by a session", "agent");
+        work_on(&agent, held, "doing", Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"), None, None);
         let done = make("Finished", "agent");
         work_on(&agent, done, "done", None, None, None);
         an_owned_task(&agent, "Elsewhere", Some("Other"), None, None);
         let first = make("First up", "agent");
-        make("Second", "agent");
+        let second = make("Second", "agent");
 
         let (is_err, next) =
             extract(&agent.next_task(Parameters(NextTaskParams { project: "work".into() })).unwrap());
@@ -6864,6 +6864,14 @@ mod tests {
         assert!(next["subtasks"].is_array(), "same shape as get_task: {next}");
         // Pulling is not claiming.
         assert_eq!(next["status"], "todo");
+
+        // A card moved back to todo keeps its stale claim row; it is up for grabs again.
+        work_on(&agent, held, "todo", None, None, None);
+        work_on(&agent, first, "done", None, None, None);
+        work_on(&agent, second, "done", None, None, None);
+        let (_, next) =
+            extract(&agent.next_task(Parameters(NextTaskParams { project: "Work".into() })).unwrap());
+        assert_eq!(next["id"].as_i64(), Some(held), "{next}");
     }
 
     #[test]
@@ -6876,7 +6884,7 @@ mod tests {
             extract(&agent.next_task(Parameters(NextTaskParams { project: "Work".into() })).unwrap());
         assert!(!is_err, "an empty queue is not an error: {out}");
         assert!(out.get("id").is_none());
-        assert_eq!(out["reason"], "No unclaimed agent todo in Work.");
+        assert_eq!(out["reason"], "No agent todo in Work.");
     }
 
     #[test]

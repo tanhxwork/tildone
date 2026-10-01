@@ -116,7 +116,7 @@ export function Sidebar() {
       sel: { type: "queue" },
       label: "Agent queue",
       // The same neutral diamond that marks an agent-owned card.
-      icon: <span className="owner-glyph" aria-hidden="true">◇</span>,
+      icon: <span className="owner-glyph nav-owner-glyph" aria-hidden="true">◇</span>,
       count: counts.queue,
     },
     { sel: { type: "today" }, label: "Today", icon: <IconStar />, count: counts.today },

@@ -5,10 +5,10 @@ import { E2E_DB as DB } from "./support/dataDir.js";
 import { remount } from "./support/reset.js";
 
 // Task owner (spec 2026-10-01): Mine is the fresh-install view, and a project
-// board splits into a You lane over an Agents lane. Cards are seeded through
-// the sqlite3 CLI, a second connection to the same file, which is what the MCP
-// agent server is; the owner column is written explicitly so the spec does not
-// depend on the MCP create default.
+// board splits into a You lane over an Agents lane. Cards are created through
+// the app's real MCP server, as an agent would: agent tasks pass no owner, so the
+// create_task default is what puts them in the queue. The sqlite3 CLI only reads
+// back what the app wrote.
 
 const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
@@ -39,24 +39,57 @@ const HUMAN_BLOCKED = "Lab pick the retry limit";
 const AGENT_APPROVE = "Lab add a retry column";
 const AGENT_DISMISS = "Lab rename the queue";
 const AGENT_TAKE = "Lab write the release note";
+const RETRY_PROJECT = "Owner Lab Retry";
 
-let seq = 0;
-function seedTask(title: string, owner: string, status: string, projectId: number): number {
-  seq += 1;
-  const completed = status === "done" ? "datetime('now')" : "NULL";
-  sql(
-    `INSERT INTO tasks (project_id, title, due_date, status, position, priority, notes, completed_at, created_at, number, ref, owner)
-     VALUES (${projectId}, ${q(title)}, NULL, ${q(status)}, ${seq}, 0, '', ${completed}, datetime('now'), ${9800 + seq}, 'OWN-${seq}', ${q(owner)});`,
-  );
-  return Number(sql(`SELECT id FROM tasks WHERE title = ${q(title)};`));
+const SESSION = "7c1e9a2b-4d3f-4b6a-9c2e-1f0a2b3c4d5e";
+const CLIENT = "owner-e2e";
+
+/** The agent server's MCP URL; the port is only known after bind. */
+async function mcpUrl(): Promise<string> {
+  const url = (await browser.executeAsync((done: (v: unknown) => void) => {
+    const tauri = (window as never as { __TAURI__: { core: { invoke: Function } } }).__TAURI__;
+    tauri.core.invoke("agent_server_start").then(done, (e: unknown) => done(`ERR ${e}`));
+  })) as string;
+  expect(url).not.toMatch(/^ERR/);
+  return url.endsWith("/mcp") ? url : `${url.replace(/\/$/, "")}/mcp`;
 }
 
-function tagTask(id: number, tag: string) {
-  sql(`INSERT OR IGNORE INTO tags (name, color) VALUES (${q(tag)}, '#5645d4');`);
-  sql(
-    `INSERT INTO task_tags (task_id, tag_id)
-     SELECT ${id}, id FROM tags WHERE LOWER(name) = ${q(tag)};`,
-  );
+let mcpSession = "";
+let rpcId = 0;
+/** One JSON-RPC call; the reply is plain JSON or a single SSE `data:` event. */
+async function rpc(url: string, method: string, params: unknown, notify = false) {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  if (mcpSession) headers["mcp-session-id"] = mcpSession;
+  const body: Record<string, unknown> = { jsonrpc: "2.0", method, params };
+  if (!notify) body.id = ++rpcId;
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+  mcpSession = res.headers.get("mcp-session-id") ?? mcpSession;
+  const text = await res.text();
+  if (notify) return null;
+  const data = text.trim().startsWith("{")
+    ? text
+    : text.split("\n").filter((l) => l.startsWith("data:")).pop()!.slice(5);
+  return JSON.parse(data);
+}
+
+async function connect(url: string) {
+  await rpc(url, "initialize", {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: CLIENT, version: "1" },
+  });
+  await rpc(url, "notifications/initialized", {}, true);
+}
+
+/** Call a tool and return its JSON payload; a tool error fails the spec. */
+async function tool(url: string, name: string, args: Record<string, unknown>) {
+  const out = await rpc(url, "tools/call", { name, arguments: args });
+  const text = out.result?.content?.[0]?.text ?? "";
+  if (out.error || out.result?.isError) throw new Error(`${name}: ${JSON.stringify(out)}`);
+  return JSON.parse(text);
 }
 
 function tagNames(id: number): string {
@@ -121,6 +154,7 @@ async function drag(sourceSel: string, targetSel: string) {
 
 describe("task owner", () => {
   const ids: Record<string, number> = {};
+  let url = "";
 
   before(async () => {
     await $("#root").waitForExist();
@@ -131,20 +165,22 @@ describe("task owner", () => {
     await $(".modal-footer button.btn.primary").click();
     await $(`.nav-project*=${PROJECT}`).waitForExist({ timeout: 10000 });
 
-    const projectId = Number(sql(`SELECT id FROM projects WHERE name = ${q(PROJECT)};`));
-    ids.human = seedTask(HUMAN_TODO, "human", "todo", projectId);
-    ids.agentTodo = seedTask(AGENT_TODO, "agent", "todo", projectId);
-    ids.agentDoing = seedTask(AGENT_DOING, "agent", "doing", projectId);
-    ids.agentVerify = seedTask(AGENT_VERIFY, "agent", "done", projectId);
-    ids.humanBlocked = seedTask(HUMAN_BLOCKED, "human", "todo", projectId);
-    ids.agentApprove = seedTask(AGENT_APPROVE, "agent", "todo", projectId);
-    ids.agentDismiss = seedTask(AGENT_DISMISS, "agent", "todo", projectId);
-    ids.agentTake = seedTask(AGENT_TAKE, "agent", "todo", projectId);
-    sql(`UPDATE tasks SET from_task_id = ${ids.human} WHERE id IN (${ids.agentTodo}, ${ids.agentApprove});`);
-    tagTask(ids.agentVerify, "human-verify");
-    tagTask(ids.humanBlocked, "blocked");
-    tagTask(ids.agentApprove, "needs-approval");
-    tagTask(ids.agentDismiss, "needs-approval");
+    url = await mcpUrl();
+    await connect(url);
+    const create = async (title: string, args: Record<string, unknown> = {}) =>
+      (await tool(url, "create_task", { title, project: PROJECT, ...args })).id as number;
+    ids.human = await create(HUMAN_TODO, { owner: "human" });
+    ids.agentTodo = await create(AGENT_TODO, { from_task: ids.human });
+    ids.agentDoing = await create(AGENT_DOING);
+    ids.agentVerify = await create(AGENT_VERIFY, { tags: ["human-verify"] });
+    ids.humanBlocked = await create(HUMAN_BLOCKED, { owner: "human", tags: ["blocked"] });
+    ids.agentApprove = await create(AGENT_APPROVE, { from_task: ids.human, tags: ["needs-approval"] });
+    ids.agentDismiss = await create(AGENT_DISMISS, { tags: ["needs-approval"] });
+    ids.agentTake = await create(AGENT_TAKE);
+    await tool(url, "update_task", { id: ids.agentVerify, status: "done" });
+    // Claimed the way a session claims: the doing write carries its session id.
+    await tool(url, "update_task", { id: ids.agentDoing, status: "doing", session_id: SESSION });
+    expect(taskRow(ids.agentTodo)).toBe("agent|todo");
     await announceDbChange();
   });
 
@@ -163,11 +199,19 @@ describe("task owner", () => {
     await expect(mine.$(".task-group*=My todos").$(`.task-row*=${HUMAN_TODO}`)).toBeExisting();
     await expect(mine.$(`.task-row*=${AGENT_TODO}`)).not.toBeExisting();
     mkdirSync(".test-artifacts/screenshots", { recursive: true });
+    await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-mine.png");
 
     await $(".queue-strip").click();
     await expect($('[data-nav="queue"]')).toHaveElementClass("active");
-    await expect($(`.queue-row*=${AGENT_APPROVE}`)).toHaveText(/from OWN-/);
+    const humanRef = sql(`SELECT ref FROM tasks WHERE id = ${ids.human};`);
+    await expect($(`.queue-row*=${AGENT_APPROVE}`)).toHaveText(new RegExp(`from ${humanRef}`));
+    // The Doing row names who holds the card: the claiming client.
+    await expect($(".task-group*=Doing").$(`.queue-row*=${AGENT_DOING}`)).toHaveText(
+      new RegExp(CLIENT),
+    );
+    // The nav background transitions for 150ms; capture after it settles.
+    await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-queue.png");
 
     await $(`.queue-row*=${AGENT_APPROVE}`).$("button=Approve").click();
@@ -205,6 +249,7 @@ describe("task owner", () => {
     await expect(you.$('[data-status="done"]').$(`.board-card*=${AGENT_VERIFY}`)).toBeExisting();
     await expect(agents.$(`.board-card*=${AGENT_VERIFY}`)).not.toBeExisting();
 
+    await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-board-lanes.png");
   });
 
@@ -230,6 +275,20 @@ describe("task owner", () => {
     await $('[data-lane="agent"]').waitForExist({ timeout: 10000 });
     await expect($('[data-lane="agent"]')).toHaveElementClass("collapsed");
     await expect($(`.board-card*=${AGENT_TODO}`)).not.toBeExisting();
+    await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-board-lanes-collapsed.png");
+  });
+
+  it("serves a card again through next_task once its agent puts it back", async () => {
+    // Its own project, so the card is the only agent todo next_task can pick.
+    await tool(url, "create_project", { name: RETRY_PROJECT });
+    const id = (await tool(url, "create_task", { title: "Lab retry the flaky step", project: RETRY_PROJECT }))
+      .id as number;
+    await tool(url, "update_task", { id, status: "doing", session_id: SESSION });
+    expect((await tool(url, "next_task", { project: RETRY_PROJECT })).id).toBeUndefined();
+
+    // The session gave up: the claim row stays behind, the card must not vanish.
+    await tool(url, "update_task", { id, status: "todo" });
+    expect((await tool(url, "next_task", { project: RETRY_PROJECT })).id).toBe(id);
   });
 });
