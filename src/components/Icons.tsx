@@ -21,7 +21,7 @@ function Svg({ size = 16, children, ...rest }: IconProps) {
   );
 }
 
-// The town view — a house of rooms. A door marks it as a place agents work in.
+// The Town page — a house of rooms. A door marks it as a place agents work in.
 export const IconTown = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3 11l9-7 9 7" />

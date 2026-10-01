@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { useAI } from "./ai";
 import { useFileDropListener } from "./fileDrop";
@@ -26,7 +26,6 @@ import { switchToSession } from "./components/useSwitcher";
 import { switcherSessions, nextSessionId } from "./utils/sessions";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
-import { TownPage } from "./town/TownPage";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
@@ -37,6 +36,9 @@ import { paneHasFocus, usePaneStore } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { isPageSelection } from "./types";
+
+// The Town's canvas renderer is large and only the Town page needs it.
+const TownPage = lazy(() => import("./town/TownPage").then((m) => ({ default: m.TownPage })));
 
 /**
  * The installed app owns port 11502 by contract, so a fast restart (quit; replace
@@ -380,7 +382,11 @@ function App() {
   } else if (selection.type === "goals") {
     content = <GoalsView />;
   } else if (selection.type === "town") {
-    content = <TownPage />;
+    content = (
+      <Suspense fallback={null}>
+        <TownPage />
+      </Suspense>
+    );
   } else if (viewMode === "board") {
     content = <Kanban />;
   } else if (viewMode === "table") {

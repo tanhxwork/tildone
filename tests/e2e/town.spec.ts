@@ -214,6 +214,15 @@ describe("town page", () => {
     expect(await pressed(all)).toBe("false");
     await shot("focus-one-project");
 
+    // Esc in the palette closes the palette and leaves the island focused.
+    await browser.keys(["Meta", "k"]);
+    const input = $(".palette-input input");
+    await input.waitForDisplayed({ timeout: 10000 });
+    await browser.keys("Escape");
+    await input.waitForExist({ reverse: true });
+    expect(await pressed(chip("Atlas"))).toBe("true");
+
+    await browser.execute(() => (document.activeElement as HTMLElement | null)?.blur());
     await browser.keys("Escape");
     await browser.waitUntil(async () => (await pressed(all)) === "true", {
       timeoutMsg: "Esc did not zoom back out to all projects",
