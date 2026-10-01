@@ -198,7 +198,7 @@ export async function resetUiState(): Promise<void> {
     localStorage.setItem(dismissKey as string, "1");
     localStorage.setItem(
       "tildone-nav",
-      JSON.stringify({ selection: { type: "mine" }, viewMode: "list" }),
+      JSON.stringify({ selection: { type: "all" }, viewMode: "list" }),
     );
   }, FIRST_RUN_DISMISSED);
 
