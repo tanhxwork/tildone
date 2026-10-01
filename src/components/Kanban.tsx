@@ -38,7 +38,7 @@ import {
   isVerifyStep,
   verifyStepLabel,
 } from "../types";
-import { timeAgo, todayStr } from "../utils/dates";
+import { timeAgo, toIsoUtc, todayStr } from "../utils/dates";
 import { imageSrc, useImageBase } from "../utils/images";
 import { cardPresence } from "../utils/presence";
 import { useArtifactStore } from "../artifactStore";
@@ -130,7 +130,10 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
   // `verify:` checklist still unticked stay on the board regardless of the
   // window — out of sight is the failure mode this state exists to prevent.
   // Same split-index shape as the review section above.
-  const doneTasks = tasks.filter((t) => t.status === "done");
+  // Only the last few days of done work sit on the board, verify cards
+  // included; the rest live in Completed (and Mine's To verify list).
+  const allDone = tasks.filter((t) => t.status === "done");
+  const doneTasks = allDone.filter(onDoneBoard);
   const verifyQueue = doneTasks
     .filter((t) => reservedState(t, tags) === "human-verify")
     .sort((a, b) => {
@@ -141,7 +144,7 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
     });
   const verifyIds = new Set(verifyQueue.map((t) => t.id));
   // The rest is the recent window (today + backfill to the limit), newest
-  // first. Everything beyond it lives in Completed.
+  // first.
   const w = doneBoardWindow(doneTasks.filter((t) => !verifyIds.has(t.id)), today);
   columns.done = [...verifyQueue, ...w.today, ...w.earlier].map((t) => t.id);
   return {
@@ -149,8 +152,14 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
     doingReviewCount: review.length,
     doneVerifyCount: verifyQueue.length,
     doneTodayCount: w.today.length,
-    doneHidden: w.hiddenCount,
+    doneHidden: allDone.length - columns.done.length,
   };
+}
+
+const DONE_BOARD_MS = 3 * 24 * 60 * 60 * 1000;
+function onDoneBoard(task: Task): boolean {
+  if (!task.completed_at) return false;
+  return Date.now() - new Date(toIsoUtc(task.completed_at)).getTime() < DONE_BOARD_MS;
 }
 
 /** A verify card stays full for its first day done, so fresh work shows its
@@ -158,7 +167,7 @@ function computeColumns(tasks: Task[], tags: Tag[], today: string): BoardModel {
 const VERIFY_FULL_MS = 24 * 60 * 60 * 1000;
 function isFreshVerify(task: Task | undefined): boolean {
   if (!task?.completed_at) return true;
-  return Date.now() - new Date(task.completed_at).getTime() < VERIFY_FULL_MS;
+  return Date.now() - new Date(toIsoUtc(task.completed_at)).getTime() < VERIFY_FULL_MS;
 }
 
 export function Kanban() {

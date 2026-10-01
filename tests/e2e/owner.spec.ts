@@ -296,4 +296,11 @@ describe("task owner", () => {
     await browser.pause(300);
     await browser.saveScreenshot(".test-artifacts/screenshots/owner-verify-compact.png");
   });
+
+  it("moves a done card to Completed after three days", async () => {
+    sql(`UPDATE tasks SET completed_at = datetime('now', '-4 days') WHERE id = ${ids.agentVerify};`);
+    await announceDbChange();
+    await $(`.board-card*=${AGENT_VERIFY}`).waitForExist({ reverse: true, timeout: 10000 });
+    await expect($('[data-lane="human"]').$(".see-all*=more in Completed")).toBeExisting();
+  });
 });
