@@ -3,7 +3,7 @@ import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
 import { observeCounts } from "../observeViews";
 import { mineGroups } from "../ownerViews";
-import { goalProgress, ungoaledOpenCount } from "../selectors";
+import { goalProgress, townModel, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
@@ -24,6 +24,7 @@ import {
   IconSettings,
   IconSparkles,
   IconTag,
+  IconTown,
   IconX,
 } from "./Icons";
 import { ProjectDialog } from "./ProjectDialog";
@@ -56,6 +57,8 @@ export function Sidebar() {
     activeTagIds,
     toggleTagFilter,
     removeTag,
+    live,
+    presence,
   } = useStore();
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
   const [newGoalProjectId, setNewGoalProjectId] = useState<number | null>(null);
@@ -135,8 +138,19 @@ export function Sidebar() {
     { sel: { type: "all" }, label: "All Tasks", icon: <IconLayers />, count: counts.all },
   ];
 
-  const pages: { sel: Selection; label: string; icon: ReactNode }[] = [
+  // Live agent sessions across the whole town, the same roster the Town draws.
+  const liveAgents = useMemo(
+    () =>
+      townModel(projects, tasks, live, presence).rooms.reduce(
+        (n, room) => n + room.characters.filter((c) => c.live).length,
+        0,
+      ),
+    [projects, tasks, live, presence],
+  );
+
+  const pages: { sel: Selection; label: string; icon: ReactNode; live?: number }[] = [
     { sel: { type: "goals" }, label: "Goals", icon: <IconFlag /> },
+    { sel: { type: "town" }, label: "Town", icon: <IconTown />, live: liveAgents },
     { sel: { type: "review" }, label: "Review", icon: <IconChart /> },
     { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
   ];
@@ -176,11 +190,13 @@ export function Sidebar() {
         {pages.map((item) => (
           <button
             key={item.label}
+            data-nav={item.sel.type}
             className={`nav-item ${isSelected(selection, item.sel) ? "active" : ""}`}
             onClick={() => select(item.sel)}
           >
             <span className="nav-icon">{item.icon}</span>
             <span className="nav-label">{item.label}</span>
+            {item.live ? <span className="nav-count">{item.live} live</span> : null}
           </button>
         ))}
       </nav>

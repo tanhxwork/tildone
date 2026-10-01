@@ -61,6 +61,9 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "goals":
       title = "Goals";
       break;
+    case "town":
+      title = "Town";
+      break;
     case "project": {
       headerProject = projects.find((p) => p.id === selection.projectId);
       title = headerProject?.name ?? "Project";

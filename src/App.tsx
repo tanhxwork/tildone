@@ -26,6 +26,7 @@ import { switchToSession } from "./components/useSwitcher";
 import { switcherSessions, nextSessionId } from "./utils/sessions";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskList } from "./components/TaskList";
+import { TownPage } from "./town/TownPage";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
@@ -378,6 +379,8 @@ function App() {
     content = <CompletedView />;
   } else if (selection.type === "goals") {
     content = <GoalsView />;
+  } else if (selection.type === "town") {
+    content = <TownPage />;
   } else if (viewMode === "board") {
     content = <Kanban />;
   } else if (viewMode === "table") {
