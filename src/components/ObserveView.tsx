@@ -146,16 +146,17 @@ function ObserveRow({
       )}
       <div className="observe-meta">
         {state === "observed" ? (
-          <>
-            {card.task.completed_at && <span>{shortDate(card.task.completed_at)}</span>}
+          <span>
+            {card.task.completed_at && shortDate(card.task.completed_at)}
             {followUp ? (
-              <span>
+              <>
+                {" "}
                 · follow-up <span className="observe-ref">{followUp.ref}</span>
-              </span>
+              </>
             ) : (
-              yesSummary(card.log) && <span>· {yesSummary(card.log)}</span>
+              yesSummary(card.log) && ` · ${yesSummary(card.log)}`
             )}
-          </>
+          </span>
         ) : (
           <>
             <span className="observe-ref">{card.task.ref}</span>
