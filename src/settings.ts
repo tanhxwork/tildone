@@ -17,6 +17,9 @@ interface SettingsState {
    * means expanded — same "true = collapsed" convention as tagsCollapsed, keyed
    * by project id since each project's goal list collapses independently. */
   projectGoalsCollapsed: Record<number, boolean>;
+  /** Per-project collapse of the board's Agents lane. Same convention as
+   * projectGoalsCollapsed: missing entry means expanded. */
+  agentLaneCollapsed: Record<number, boolean>;
   /** "Not yet" on a goal's completion strip, keyed by goal id and remembering
    * the task total it was dismissed at. Keying on the total is what re-arms it:
    * dismiss at 3/3, add a fourth task, and finishing that one is a new
@@ -31,6 +34,7 @@ interface SettingsState {
   setAgentNotify: (enabled: boolean) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
   setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
+  setAgentLaneCollapsed: (projectId: number, collapsed: boolean) => void;
   dismissGoalClose: (goalId: number, total: number) => void;
   /** Drop dismissals for goals that no longer exist. */
   pruneGoalCloseDismissed: (liveGoalIds: number[]) => void;
@@ -49,6 +53,7 @@ function loadPersisted(): Pick<
   | "agentNotify"
   | "tagsCollapsed"
   | "projectGoalsCollapsed"
+  | "agentLaneCollapsed"
   | "goalCloseDismissed"
 > {
   const defaults = {
@@ -59,6 +64,7 @@ function loadPersisted(): Pick<
     agentNotify: true,
     tagsCollapsed: false,
     projectGoalsCollapsed: {} as Record<number, boolean>,
+    agentLaneCollapsed: {} as Record<number, boolean>,
     goalCloseDismissed: {} as Record<number, number>,
   };
   try {
@@ -74,13 +80,18 @@ function loadPersisted(): Pick<
         }
       }
     }
-    const projectGoalsCollapsed: Record<number, boolean> = {};
-    if (parsed.projectGoalsCollapsed && typeof parsed.projectGoalsCollapsed === "object") {
-      for (const [key, value] of Object.entries(parsed.projectGoalsCollapsed)) {
-        const id = Number(key);
-        if (Number.isFinite(id) && value === true) projectGoalsCollapsed[id] = true;
+    const collapsedMap = (raw: unknown) => {
+      const out: Record<number, boolean> = {};
+      if (raw && typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw)) {
+          const id = Number(key);
+          if (Number.isFinite(id) && value === true) out[id] = true;
+        }
       }
-    }
+      return out;
+    };
+    const projectGoalsCollapsed = collapsedMap(parsed.projectGoalsCollapsed);
+    const agentLaneCollapsed = collapsedMap(parsed.agentLaneCollapsed);
     return {
       theme: ["auto", "light", "dark"].includes(parsed.theme) ? parsed.theme : defaults.theme,
       weekStart: ["monday", "sunday"].includes(parsed.weekStart)
@@ -93,6 +104,7 @@ function loadPersisted(): Pick<
       agentNotify: parsed.agentNotify !== false,
       tagsCollapsed: parsed.tagsCollapsed === true,
       projectGoalsCollapsed,
+      agentLaneCollapsed,
       goalCloseDismissed,
     };
   } catch {
@@ -111,6 +123,7 @@ function persist(state: SettingsState) {
       agentNotify: state.agentNotify,
       tagsCollapsed: state.tagsCollapsed,
       projectGoalsCollapsed: state.projectGoalsCollapsed,
+      agentLaneCollapsed: state.agentLaneCollapsed,
       goalCloseDismissed: state.goalCloseDismissed,
     }),
   );
@@ -151,6 +164,15 @@ export const useSettings = create<SettingsState>()((set, get) => ({
       if (collapsed) next[projectId] = true;
       else delete next[projectId];
       return { projectGoalsCollapsed: next };
+    });
+    persist(get());
+  },
+  setAgentLaneCollapsed: (projectId, collapsed) => {
+    set((s) => {
+      const next = { ...s.agentLaneCollapsed };
+      if (collapsed) next[projectId] = true;
+      else delete next[projectId];
+      return { agentLaneCollapsed: next };
     });
     persist(get());
   },

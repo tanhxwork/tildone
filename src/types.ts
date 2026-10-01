@@ -92,8 +92,17 @@ export interface Task {
    * saw, so the drag and the editor never stamp it. Rendered as the Tildone mark
    * held before its check settles; opening the card completes it and clears this. */
   unseen_at: string | null;
+  /** Who works the task. Created in the app -> human; over MCP -> agent unless the
+   * agent passes owner (migration 028). Mine and the board's You lane show human
+   * tasks; the agent queue and next_task serve agent ones. */
+  owner: Owner;
+  /** Lineage: the task whose work spawned this one, shown as "from TIL-205".
+   * Null when none, or when that task was purged. */
+  from_task_id: number | null;
   tag_ids: number[];
 }
+
+export type Owner = "human" | "agent";
 
 export interface Subtask {
   id: number;
@@ -207,6 +216,8 @@ export function asLinkKind(kind: string): LinkKind {
 }
 
 export type Selection =
+  | { type: "mine" }
+  | { type: "queue" }
   | { type: "today" }
   | { type: "upcoming" }
   | { type: "inbox" }
@@ -281,12 +292,18 @@ export const PRIORITY_COLORS: Record<number, string> = {
  * DONE_CLEARED_TAGS: surviving the move to Done is its entire purpose
  * (spec 2026-07-21-human-verify-done-glow).
  *
- * Order is precedence: the first match wins, so blocked outranks needs-review,
+ * `needs-approval` (task owner, spec 2026-10-01): an agent follow-up that changes
+ * product behaviour or scope and waits for the user's yes before any agent may
+ * claim it. Approve removes it; next_task skips cards carrying it.
+ *
+ * Order is precedence: the first match wins, so blocked outranks needs-approval,
+ * which outranks needs-review,
  * which outranks human-verify, which outranks needs-landing. Matched
  * case-insensitively.
  */
 export const RESERVED_TAGS = [
   "blocked",
+  "needs-approval",
   "needs-review",
   "human-verify",
   "needs-landing",
@@ -304,6 +321,7 @@ export const DONE_CLEARED_TAGS: readonly ReservedTag[] = ["blocked", "needs-revi
 
 export const RESERVED_TAG_LABELS: Record<ReservedTag, string> = {
   blocked: "Blocked",
+  "needs-approval": "Needs approval",
   "needs-review": "Needs review",
   // The same word the verify surface already uses — the pill, the popover head
   // and the Done divider all speak one vocabulary.

@@ -213,6 +213,12 @@ pub fn run() {
             sql: include_str!("../migrations/027_goal_belongs_to_project.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 28,
+            description: "task_owner",
+            sql: include_str!("../migrations/028_task_owner.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()

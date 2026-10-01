@@ -34,6 +34,8 @@ function task(opts: Partial<Task> = {}): Task {
     number: seq,
     ref: `TIL-${seq}`,
     unseen_at: null,
+    owner: "human",
+    from_task_id: null,
     tag_ids: [],
     ...opts,
   };
