@@ -126,7 +126,8 @@ export function TaskEditor() {
   const aiConfig = useAI((s) => s.config);
   const chat = useAI((s) => s.chat);
 
-  const task = tasks.find((t) => t.id === editingTaskId);
+  // An observe card (a trashed one sits in tasks for Trash) never opens here.
+  const task = tasks.find((t) => t.id === editingTaskId && t.kind === "task");
 
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
