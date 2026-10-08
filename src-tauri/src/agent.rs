@@ -4523,11 +4523,36 @@ const TOOL_LIST_TTL_MS: u64 = 5 * 60 * 1000;
 /// of that, reject any browser-originated request outright: web pages always
 /// send an Origin header and can never legitimately talk to this server, while
 /// real MCP clients (CLIs, desktop apps) send none and pass.
+///
+/// The machine's own hostname is allowed too, so another machine can reach the
+/// board through a TCP forward such as `tailscale serve`, which passes the
+/// client's `Host: <hostname>` through unchanged.
 fn server_config(port: u16) -> StreamableHttpServerConfig {
-    StreamableHttpServerConfig::default().with_allowed_origins([
-        format!("http://127.0.0.1:{port}"),
-        format!("http://localhost:{port}"),
-    ])
+    let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+    hosts.extend(own_hostnames());
+    StreamableHttpServerConfig::default()
+        .with_allowed_hosts(hosts)
+        .with_allowed_origins([
+            format!("http://127.0.0.1:{port}"),
+            format!("http://localhost:{port}"),
+        ])
+}
+
+/// This machine's hostname as `<name>` and `<name>.local`, lowercased
+/// ("Tans-MacBook-Pro.local" gives "tans-macbook-pro" and "tans-macbook-pro.local").
+fn own_hostnames() -> Vec<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: buf is valid for buf.len() bytes; gethostname NUL-terminates on success.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return Vec::new();
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let full = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+    let short = full.split('.').next().unwrap_or_default().to_string();
+    if short.is_empty() {
+        return Vec::new();
+    }
+    vec![format!("{short}.local"), short]
 }
 
 #[derive(serde::Deserialize)]
