@@ -21,6 +21,7 @@ import {
   IconLayers,
   IconPencil,
   IconPlus,
+  IconServer,
   IconSettings,
   IconSparkles,
   IconTag,
@@ -30,6 +31,7 @@ import {
 import { ProjectDialog } from "./ProjectDialog";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { SessionsSection } from "./SessionsSection";
+import { WsNavCount } from "./WsServers";
 
 function isSelected(a: Selection, b: Selection): boolean {
   if (a.type !== b.type) return false;
@@ -148,9 +150,20 @@ export function Sidebar() {
     [projects, tasks, live, presence],
   );
 
-  const pages: { sel: Selection; label: string; icon: ReactNode; live?: number }[] = [
+  // Servers appears only while the ws hub URL is set.
+  const wsHubUrl = useSettings((s) => s.wsHubUrl);
+  const pages: {
+    sel: Selection;
+    label: string;
+    icon: ReactNode;
+    live?: number;
+    ws?: boolean;
+  }[] = [
     { sel: { type: "goals" }, label: "Goals", icon: <IconFlag /> },
     { sel: { type: "town" }, label: "Town", icon: <IconTown />, live: liveAgents },
+    ...(wsHubUrl
+      ? [{ sel: { type: "servers" } as Selection, label: "Servers", icon: <IconServer />, ws: true }]
+      : []),
     { sel: { type: "review" }, label: "Review", icon: <IconChart /> },
     { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
   ];
@@ -197,6 +210,7 @@ export function Sidebar() {
             <span className="nav-icon">{item.icon}</span>
             <span className="nav-label">{item.label}</span>
             {item.live ? <span className="nav-count">{item.live} live</span> : null}
+            {item.ws && <WsNavCount />}
           </button>
         ))}
       </nav>

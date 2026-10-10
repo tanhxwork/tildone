@@ -93,7 +93,7 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
   const live = liveTasks(tasks);
   switch (selection.type) {
     case "all":
-    // Pages (mine, queue, observe, review, completed, goals, town) do their own
+    // Pages (mine, queue, observe, review, completed, goals, town, servers) do their own
     // slicing from the full live set.
     case "mine":
     case "queue":
@@ -102,6 +102,7 @@ export function tasksForSelection(tasks: Task[], selection: Selection): Task[] {
     case "completed":
     case "goals":
     case "town":
+    case "servers":
       return live;
     case "project":
       return live.filter((t) => t.project_id === selection.projectId);

@@ -279,6 +279,7 @@ const SELECTION_TYPES: Selection["type"][] = [
   "review",
   "completed",
   "goals",
+  "servers",
   "project",
   "goal",
   "ungoaled",
