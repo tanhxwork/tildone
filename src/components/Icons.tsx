@@ -21,6 +21,15 @@ function Svg({ size = 16, children, ...rest }: IconProps) {
   );
 }
 
+// The Servers page: two stacked server units, each with a status light.
+export const IconServer = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="7" rx="2" />
+    <rect x="3" y="13" width="18" height="7" rx="2" />
+    <path d="M7 7.5h.01M7 16.5h.01" />
+  </Svg>
+);
+
 // The Town page — a house of rooms. A door marks it as a place agents work in.
 export const IconTown = (p: IconProps) => (
   <Svg {...p}>

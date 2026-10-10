@@ -26,11 +26,13 @@ export function SettingsDialog() {
     defaultProjectId,
     agentServer,
     agentNotify,
+    wsHubUrl,
     setTheme,
     setWeekStart,
     setDefaultProjectId,
     setAgentServer,
     setAgentNotify,
+    setWsHubUrl,
     closeSettings,
   } = useSettings();
   const { projects, tasks, tags, importData } = useStore();
@@ -243,6 +245,27 @@ export function SettingsDialog() {
                 </option>
               ))}
             </select>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <h3 className="settings-heading">Workstation</h3>
+
+          <div className="settings-row">
+            <div className="settings-label">
+              ws hub URL
+              <span className="settings-sub">
+                Shows the dev servers on your Linux workstation. Leave empty to hide them.
+              </span>
+            </div>
+            <input
+              className="settings-input"
+              aria-label="ws hub URL"
+              placeholder="https://hub.ws.test:8444"
+              spellCheck={false}
+              value={wsHubUrl}
+              onChange={(e) => setWsHubUrl(e.target.value)}
+            />
           </div>
         </section>
 

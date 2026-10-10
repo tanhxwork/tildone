@@ -4,6 +4,7 @@ import { usePaneStore } from "../paneStore";
 import { isPageSelection } from "../types";
 import type { Project } from "../types";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { WsPill, WsServersHeader } from "./WsServers";
 import {
   IconBoard,
   IconEye,
@@ -64,6 +65,9 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "town":
       title = "Town";
       break;
+    case "servers":
+      title = "Servers";
+      break;
     case "project": {
       headerProject = projects.find((p) => p.id === selection.projectId);
       title = headerProject?.name ?? "Project";
@@ -95,6 +99,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
         <h1 className="view-title" data-tauri-drag-region>
           {headerProject && <ProjectGlyph project={headerProject} size={20} large />}
           {title}
+          {selection.type === "servers" && <WsServersHeader />}
           {headerGoalName && (
             <>
               <span className="view-title-sep">/</span>
@@ -103,73 +108,76 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
           )}
         </h1>
 
-        {!isPage && !railActive && (
-          <div className="header-controls">
-            <div className="search-box">
-              <IconSearch size={14} />
-              <input
-                ref={searchRef}
-                value={search}
-                placeholder="Search tasks…"
-                aria-label="Search tasks"
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {search && (
-                <button className="icon-btn" aria-label="Clear search" onClick={() => setSearch("")}>
-                  <IconX size={12} />
+        <div className="header-right">
+          {!isPage && !railActive && (
+            <div className="header-controls">
+              <div className="search-box">
+                <IconSearch size={14} />
+                <input
+                  ref={searchRef}
+                  value={search}
+                  placeholder="Search tasks…"
+                  aria-label="Search tasks"
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {search && (
+                  <button className="icon-btn" aria-label="Clear search" onClick={() => setSearch("")}>
+                    <IconX size={12} />
+                  </button>
+                )}
+              </div>
+
+              <select
+                className="priority-filter"
+                aria-label="Filter by priority"
+                value={priorityFilter}
+                onChange={(e) => setPriorityFilter(Number(e.target.value))}
+              >
+                <option value={0}>Any priority</option>
+                <option value={3}>High</option>
+                <option value={2}>Medium</option>
+                <option value={1}>Low</option>
+              </select>
+
+              <button
+                className={`icon-btn toggle ${showCompleted ? "on" : ""}`}
+                aria-label={showCompleted ? "Hide completed tasks" : "Show completed tasks"}
+                title={showCompleted ? "Hide completed" : "Show completed"}
+                onClick={toggleShowCompleted}
+              >
+                {showCompleted ? <IconEye /> : <IconEyeOff />}
+              </button>
+
+              <div className="segmented" role="group" aria-label="View mode">
+                <button
+                  className={viewMode === "list" ? "active" : ""}
+                  aria-label="List view"
+                  title="List view"
+                  onClick={() => setViewMode("list")}
+                >
+                  <IconList size={14} />
                 </button>
-              )}
+                <button
+                  className={viewMode === "board" ? "active" : ""}
+                  aria-label="Board view"
+                  title="Board view"
+                  onClick={() => setViewMode("board")}
+                >
+                  <IconBoard size={14} />
+                </button>
+                <button
+                  className={viewMode === "table" ? "active" : ""}
+                  aria-label="Table view"
+                  title="Table view"
+                  onClick={() => setViewMode("table")}
+                >
+                  <IconTable size={14} />
+                </button>
+              </div>
             </div>
-
-            <select
-              className="priority-filter"
-              aria-label="Filter by priority"
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(Number(e.target.value))}
-            >
-              <option value={0}>Any priority</option>
-              <option value={3}>High</option>
-              <option value={2}>Medium</option>
-              <option value={1}>Low</option>
-            </select>
-
-            <button
-              className={`icon-btn toggle ${showCompleted ? "on" : ""}`}
-              aria-label={showCompleted ? "Hide completed tasks" : "Show completed tasks"}
-              title={showCompleted ? "Hide completed" : "Show completed"}
-              onClick={toggleShowCompleted}
-            >
-              {showCompleted ? <IconEye /> : <IconEyeOff />}
-            </button>
-
-            <div className="segmented" role="group" aria-label="View mode">
-              <button
-                className={viewMode === "list" ? "active" : ""}
-                aria-label="List view"
-                title="List view"
-                onClick={() => setViewMode("list")}
-              >
-                <IconList size={14} />
-              </button>
-              <button
-                className={viewMode === "board" ? "active" : ""}
-                aria-label="Board view"
-                title="Board view"
-                onClick={() => setViewMode("board")}
-              >
-                <IconBoard size={14} />
-              </button>
-              <button
-                className={viewMode === "table" ? "active" : ""}
-                aria-label="Table view"
-                title="Table view"
-                onClick={() => setViewMode("table")}
-              >
-                <IconTable size={14} />
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+          {selection.type !== "servers" && <WsPill />}
+        </div>
       </div>
 
       {!isPage && !railActive && activeTags.length > 0 && (

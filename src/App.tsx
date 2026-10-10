@@ -30,11 +30,13 @@ import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
 import { QuitWarning } from "./components/QuitWarning";
+import { WsServersView } from "./components/WsServers";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
 import { paneHasFocus, usePaneStore } from "./paneStore";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
+import { initWsStore } from "./wsStore";
 import { isPageSelection } from "./types";
 
 // The Town's canvas renderer is large and only the Town page needs it.
@@ -216,6 +218,8 @@ function App() {
     // Artifact facts are the same shape: Rust watches the filesystem and
     // emits `artifacts-changed`; the store re-pulls.
     const disposeArtifacts = initArtifactStore();
+    // The ws hub poll runs only while the hub URL setting is set.
+    const disposeWs = initWsStore();
     // Effect signals (F4): the board asks the forge itself about PR/CI state
     // — on focus and every 5 minutes while visible, never in background.
     // Repeats under 60 s are skipped; a failed poll is silent by contract.
@@ -236,6 +240,7 @@ function App() {
       clearInterval(presenceTimer);
       disposeHost();
       disposeArtifacts();
+      disposeWs();
       window.removeEventListener("focus", pollForge);
       clearInterval(forgeTimer);
     };
@@ -387,6 +392,8 @@ function App() {
     content = <CompletedView />;
   } else if (selection.type === "goals") {
     content = <GoalsView />;
+  } else if (selection.type === "servers") {
+    content = <WsServersView />;
   } else if (selection.type === "town") {
     content = (
       <Suspense fallback={null}>

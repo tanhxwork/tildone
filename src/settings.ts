@@ -12,6 +12,9 @@ interface SettingsState {
   /** Raise a native notification when an agent completes / blocks / needs-review a
    * task. Default on. Only meaningful while agentServer is on. */
   agentNotify: boolean;
+  /** Base URL of the dev-server hub on the Linux workstation, e.g.
+   * https://hub.ws.test:8444. Empty hides every ws surface. */
+  wsHubUrl: string;
   tagsCollapsed: boolean;
   /** Per-project sidebar goal-nesting collapse (migration 025). Missing entry
    * means expanded — same "true = collapsed" convention as tagsCollapsed, keyed
@@ -32,6 +35,7 @@ interface SettingsState {
   setDefaultProjectId: (id: number | null) => void;
   setAgentServer: (enabled: boolean) => void;
   setAgentNotify: (enabled: boolean) => void;
+  setWsHubUrl: (url: string) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
   setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
   setAgentLaneCollapsed: (projectId: number, collapsed: boolean) => void;
@@ -51,6 +55,7 @@ function loadPersisted(): Pick<
   | "defaultProjectId"
   | "agentServer"
   | "agentNotify"
+  | "wsHubUrl"
   | "tagsCollapsed"
   | "projectGoalsCollapsed"
   | "agentLaneCollapsed"
@@ -62,6 +67,7 @@ function loadPersisted(): Pick<
     defaultProjectId: null,
     agentServer: false,
     agentNotify: true,
+    wsHubUrl: "",
     tagsCollapsed: false,
     projectGoalsCollapsed: {} as Record<number, boolean>,
     agentLaneCollapsed: {} as Record<number, boolean>,
@@ -102,6 +108,7 @@ function loadPersisted(): Pick<
       agentServer: parsed.agentServer === true,
       // Default on: absent (older settings) or any non-false value means notify.
       agentNotify: parsed.agentNotify !== false,
+      wsHubUrl: typeof parsed.wsHubUrl === "string" ? parsed.wsHubUrl : "",
       tagsCollapsed: parsed.tagsCollapsed === true,
       projectGoalsCollapsed,
       agentLaneCollapsed,
@@ -121,6 +128,7 @@ function persist(state: SettingsState) {
       defaultProjectId: state.defaultProjectId,
       agentServer: state.agentServer,
       agentNotify: state.agentNotify,
+      wsHubUrl: state.wsHubUrl,
       tagsCollapsed: state.tagsCollapsed,
       projectGoalsCollapsed: state.projectGoalsCollapsed,
       agentLaneCollapsed: state.agentLaneCollapsed,
@@ -152,6 +160,10 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   },
   setAgentNotify: (agentNotify) => {
     set({ agentNotify });
+    persist(get());
+  },
+  setWsHubUrl: (url) => {
+    set({ wsHubUrl: url.trim() });
     persist(get());
   },
   setTagsCollapsed: (tagsCollapsed) => {

@@ -278,6 +278,8 @@ export type Selection =
   | { type: "goals" }
   /** Every project as an island, agents placed by state. */
   | { type: "town" }
+  /** Dev servers on the Linux workstation; present only while the ws hub URL is set. */
+  | { type: "servers" }
   | { type: "project"; projectId: number }
   | { type: "goal"; goalId: number }
   /** The open tasks in one project carrying no goal — the sidebar's "No goal"
@@ -305,7 +307,8 @@ export function isPageSelection(selection: Selection): boolean {
     selection.type === "review" ||
     selection.type === "completed" ||
     selection.type === "goals" ||
-    selection.type === "town"
+    selection.type === "town" ||
+    selection.type === "servers"
   );
 }
 

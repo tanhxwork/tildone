@@ -10,6 +10,7 @@ mod icons;
 mod pty;
 mod secretary;
 mod settingsfile;
+mod wsservers;
 
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -374,6 +375,8 @@ pub fn run() {
             pty::pty_close,
             artifacts::artifact_facts,
             forge::forge_poll,
+            wsservers::ws_status,
+            wsservers::ws_action,
             host::host_adapters,
             host::host_list,
             host::host_start,
