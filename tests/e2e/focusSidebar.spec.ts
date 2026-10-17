@@ -76,9 +76,10 @@ interface Seeded {
  * sidebar-focus: three goals in three projects with cards moved today (a human
  * "you" card, agent cards, needs-approval cards), one of them finished but open,
  * and two loose doing cards. `stalled` adds two doing cards untouched for days;
- * `quiet` adds two projects whose only cards are just as old.
+ * `quiet` adds two projects whose only cards are just as old; `finishedStale`
+ * adds a finished goal whose cards were all closed weeks ago.
  */
-async function seed(level: "focus" | "stalled" | "quiet"): Promise<Seeded> {
+async function seed(level: "focus" | "stalled" | "quiet" | "finishedStale"): Promise<Seeded> {
   const url = `${await endpoint()}/mcp`;
   mcpSession = "";
   await rpc(url, "initialize", {
@@ -140,7 +141,15 @@ async function seed(level: "focus" | "stalled" | "quiet"): Promise<Seeded> {
     owner: "human",
   });
 
-  if (level !== "focus") {
+  if (level === "finishedStale") {
+    const g = await tool(url, "create_goal", { project: "Worklane", name: "Legacy cleanup" });
+    out.goals["Legacy cleanup"] = g.id;
+    for (const [key, title] of [["z1", "Drop the old exporter"], ["z2", "Archive the old runbook"]]) {
+      const t = await task(key, { project: "Worklane", goal: "Legacy cleanup", title, status: "done" });
+      backdateActivity(t.id, 20);
+    }
+  }
+  if (level === "stalled" || level === "quiet") {
     const old1 = await task("s1", { project: "Factory", title: "Old spike A", status: "doing" });
     const old2 = await task("s2", { project: "Worklane", title: "Old spike B", status: "doing" });
     backdateActivity(old1.id, 12);
@@ -159,6 +168,14 @@ async function seed(level: "focus" | "stalled" | "quiet"): Promise<Seeded> {
 }
 
 const goalBlock = (id: number) => $(`[data-focus-goal="${id}"]`);
+
+/** Scroll the sidebar's list to its end, so the rows under the goals show. */
+async function scrollSidebarToEnd(): Promise<void> {
+  await browser.execute(() => {
+    const list = document.querySelector(".sidebar-scroll");
+    if (list) list.scrollTop = list.scrollHeight;
+  });
+}
 
 describe("Focus sidebar", () => {
   beforeEach(async () => {
@@ -207,20 +224,32 @@ describe("Focus sidebar", () => {
     await expect($('[data-nav="needs-you"] .focus-you')).toHaveText("2");
     expect(await $$('[data-nav="stalled"]')).toHaveLength(0);
     await shot("sidebar-focus");
+    // The sidebar scrolls: the same state, past the goals.
+    await scrollSidebarToEnd();
+    await shot("sidebar-focus-lower");
 
     // A goal block opens the goal; a card opens the editor, not the goal.
+    await m.scrollIntoView();
     await m.$(".focus-goal-head").click();
     await expect($(".view-title-sub")).toHaveText("Mobile driver fixes");
+    await shot("sidebar-goal-click");
     await m.$("[data-focus-card]").click();
     await expect($('[aria-label="Task details"] .detail-breadcrumb-task')).toHaveText(
       "Restore the rig card",
     );
+    await shot("sidebar-card-click");
   });
 
   it("needs you opens Mine", async () => {
     await seed("focus");
     await $('[data-nav="needs-you"]').click();
     await expect($('[data-nav="mine"]')).toHaveElementClass("active");
+    // Mine is the active row, at the top of the list the click scrolled away from.
+    await browser.execute(() => {
+      const list = document.querySelector(".sidebar-scroll");
+      if (list) list.scrollTop = 0;
+    });
+    await shot("sidebar-needs-you-click");
   });
 
   it("stalled expands oldest first", async () => {
@@ -232,10 +261,25 @@ describe("Focus sidebar", () => {
     await row.click();
     const titles = await $$("[data-focus-stalled] .focus-card-title").map((el) => el.getText());
     expect(titles).toEqual(["Old spike A", "Old spike B"]);
+    // Same anatomy as a loose row, but the marker is still: no pulse, no owner.
+    expect(await $$("[data-focus-stalled] .focus-idle")).toHaveLength(2);
+    expect(await $$("[data-focus-stalled] .focus-pulse")).toHaveLength(0);
+    await scrollSidebarToEnd();
     await shot("sidebar-stalled-open");
 
     await $("[data-focus-stalled]").click();
     await expect($('[aria-label="Task details"] .detail-breadcrumb-task')).toHaveText("Old spike A");
+    await shot("sidebar-stalled-click");
+  });
+
+  it("a finished goal with no recent move sorts last", async () => {
+    const s = await seed("finishedStale");
+    const order = await $$("[data-focus-goal]").map((el) => el.getAttribute("data-focus-goal"));
+    expect(order).toHaveLength(4);
+    expect(order[order.length - 1]).toBe(String(s.goals["Legacy cleanup"]));
+    await expect(goalBlock(s.goals["Legacy cleanup"]).$(".focus-count")).toHaveText("2/2 ✓");
+    await scrollSidebarToEnd();
+    await shot("sidebar-finished-stale");
   });
 
   it("quiet fold hides projects with no move this week", async () => {
@@ -245,6 +289,31 @@ describe("Focus sidebar", () => {
 
     const fold = $('[data-nav="quiet"]');
     await expect(fold).toHaveText("Quiet · 2 projects");
+    await expect($(".nav-project*=Archive One")).not.toBeExisting();
+    await scrollSidebarToEnd();
+    await shot("sidebar-quiet-collapsed");
+
+    // A project row shows its +goal and edit buttons on hover. WebDriver's moveTo
+    // cannot drive CSS :hover in this webview (see sessions.spec), so the reveal is
+    // forced on for the shot; the buttons must exist on the row.
+    const crest = $(".nav-project*=Crestlink");
+    await expect(crest.$('[aria-label="New goal in Crestlink"]')).toBeExisting();
+    await expect(crest.$('[aria-label="Edit Crestlink"]')).toBeExisting();
+    const revealed = await browser.execute(() => {
+      const row = [...document.querySelectorAll(".nav-project")].find((r) =>
+        r.textContent?.includes("Crestlink"),
+      ) as HTMLElement | undefined;
+      const actions = row?.querySelectorAll<HTMLElement>(".row-action") ?? [];
+      actions.forEach((b) => {
+        b.style.transition = "none";
+        b.style.opacity = "1";
+      });
+      if (row) row.style.background = "var(--bg-hover)";
+      return actions.length;
+    });
+    expect(revealed).toBe(2);
+    await shot("sidebar-project-hover");
+
     await fold.click();
     await expect($(".nav-project*=Archive One")).toBeExisting();
     await expect($(".nav-project*=Archive Two")).toBeExisting();
@@ -254,6 +323,23 @@ describe("Focus sidebar", () => {
     await $(".nav-project*=Archive One").click();
     await fold.click();
     await expect($(".nav-project*=Archive One")).toBeExisting();
+  });
+
+  it("selecting a quiet project from outside the fold opens it", async () => {
+    await seed("quiet");
+    await expect($(".nav-project*=Archive Two")).not.toBeExisting();
+
+    // The command palette is the way in that does not go through the fold.
+    await browser.keys(["Meta", "k"]);
+    const input = $(".palette-input input");
+    await input.waitForDisplayed({ timeout: 10000 });
+    await input.setValue("Go to Archive Two");
+    await browser.keys("Enter");
+    await expect($(".view-title*=Archive Two")).toBeExisting();
+    await expect($(".nav-project*=Archive Two")).toHaveElementClass("active");
+    await expect($(".nav-project*=Archive One")).toBeExisting();
+    await scrollSidebarToEnd();
+    await shot("sidebar-quiet-auto-open");
   });
 
   it("an empty board says nothing moved", async () => {

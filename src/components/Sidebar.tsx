@@ -8,6 +8,7 @@ import { goalProgress, townModel, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
+import { useNow } from "../useNow";
 import { todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
 import { FocusSection } from "./FocusSidebar";
@@ -93,12 +94,6 @@ export function Sidebar() {
   const counts = useMemo(() => {
     const today = todayStr();
     const open = tasks.filter((t) => t.status !== "done" && t.deleted_at === null);
-    const byProject = new Map<number, number>();
-    for (const t of open) {
-      if (t.project_id !== null) {
-        byProject.set(t.project_id, (byProject.get(t.project_id) ?? 0) + 1);
-      }
-    }
     const byTag = new Map<number, number>();
     for (const t of open) {
       for (const tagId of t.tag_ids) {
@@ -113,16 +108,16 @@ export function Sidebar() {
       all: open.length,
       observeDue: observe.due,
       observeWaiting: observe.waiting,
-      byProject,
       byTag,
     };
   }, [tasks, tags, observeCards]);
 
   // Where the board is moving: Focus goals, loose work, active vs quiet projects.
-  // `now` is read at render; the store changing re-renders, which is what moves it.
+  // `now` ticks each minute, so a quiet board still ages cards out of Moving.
+  const now = useNow();
   const model = useMemo(
-    () => focusModel({ tasks, goals, projects, tags, lastActivity, now: Date.now() }),
-    [tasks, goals, projects, tags, lastActivity],
+    () => focusModel({ tasks, goals, projects, tags, lastActivity, now }),
+    [tasks, goals, projects, tags, lastActivity, now],
   );
   // A selected row must never vanish under the selection: the Quiet fold opens
   // itself while the view points at a quiet project, one of its goals or its

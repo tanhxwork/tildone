@@ -7451,6 +7451,7 @@ textarea:focus-visible,
   display: block;
   margin: 0 0 4px;
   height: 4px;
+  background: var(--border);
 }
 
 .focus-goal.finished .goal-row-bar-fill {
@@ -7550,7 +7551,11 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
-/* Stalled list rows hang under the row's label, past its chevron. */
-.focus-stalled-card {
-  padding-left: 26px;
+/* A stalled card's marker: a still, muted dot where a moving card pulses. */
+.focus-idle {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--border-strong);
 }

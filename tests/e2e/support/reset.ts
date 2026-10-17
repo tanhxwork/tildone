@@ -218,8 +218,9 @@ export async function resetUiState(): Promise<void> {
 
 /**
  * Backdate a task's activity to `daysAgo` days ago (ISO UTC), by numeric id or ref
- * ("TIL-3"): its activity rows and its own created_at move to that time, and one
- * activity row is inserted there when it has none. Seeds stalled and quiet states
+ * ("TIL-3"): its activity rows, its own created_at and (when it is done) its
+ * completed_at move to that time, and one activity row is inserted there when it
+ * has none. Seeds stalled and quiet states
  * without waiting a week.
  */
 export function backdateActivity(task: number | string, daysAgo: number): void {
@@ -232,6 +233,7 @@ export function backdateActivity(task: number | string, daysAgo: number): void {
     `BEGIN; ` +
       `UPDATE task_activity SET created_at = '${at}' WHERE task_id = ${id}; ` +
       `UPDATE tasks SET created_at = '${at}' WHERE id = ${id}; ` +
+      `UPDATE tasks SET completed_at = '${at}' WHERE id = ${id} AND completed_at IS NOT NULL; ` +
       `INSERT INTO task_activity (task_id, label, created_at, actor_kind) ` +
       `SELECT ${id}, 'Backdated', '${at}', 'user' ` +
       `WHERE NOT EXISTS (SELECT 1 FROM task_activity WHERE task_id = ${id}); ` +

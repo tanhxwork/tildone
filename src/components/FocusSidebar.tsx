@@ -11,13 +11,25 @@ import { OwnerMark } from "./TaskRow";
 
 const CARDS_PER_GOAL = 3;
 
-/** One card line: marker, ref, title, who owns it. Opens the editor. */
-function CardLine({ task, done, loose }: { task: Task; done: boolean; loose: boolean }) {
+/** One card line: marker, ref, title, who owns it. Opens the editor. `idle` is a
+ *  stalled card: a muted dot instead of the pulse, and no owner. */
+function CardLine({
+  task,
+  done,
+  loose,
+  idle = false,
+}: {
+  task: Task;
+  done: boolean;
+  loose: boolean;
+  idle?: boolean;
+}) {
   const openEditor = useStore((s) => s.openEditor);
   return (
     <button
       className={`focus-card ${loose ? "loose" : ""}`}
       data-focus-card={task.id}
+      data-focus-stalled={idle ? task.id : undefined}
       onClick={(e) => {
         e.stopPropagation();
         openEditor(task.id);
@@ -25,12 +37,15 @@ function CardLine({ task, done, loose }: { task: Task; done: boolean; loose: boo
     >
       {done ? (
         <span className="focus-tick" aria-hidden="true">✓</span>
+      ) : idle ? (
+        <span className="focus-idle" aria-hidden="true" />
       ) : (
         <span className="focus-pulse" aria-hidden="true" />
       )}
       <span className="focus-ref">{task.ref}</span>
       <span className="focus-card-title">{task.title}</span>
-      {task.owner === "human" ? <span className="focus-you">you</span> : <OwnerMark task={task} />}
+      {!idle &&
+        (task.owner === "human" ? <span className="focus-you">you</span> : <OwnerMark task={task} />)}
     </button>
   );
 }
@@ -81,7 +96,6 @@ function GoalBlock({ entry }: { entry: FocusGoal }) {
 
 export function FocusSection({ model }: { model: FocusModel }) {
   const select = useStore((s) => s.select);
-  const openEditor = useStore((s) => s.openEditor);
   const [stalledOpen, setStalledOpen] = useState(false);
   const goalCount = model.goals.length;
   return (
@@ -142,15 +156,7 @@ export function FocusSection({ model }: { model: FocusModel }) {
             </button>
             {stalledOpen &&
               model.stalled.map((task) => (
-                <button
-                  key={task.id}
-                  className="focus-card loose focus-stalled-card"
-                  data-focus-stalled={task.id}
-                  onClick={() => openEditor(task.id)}
-                >
-                  <span className="focus-ref">{task.ref}</span>
-                  <span className="focus-card-title">{task.title}</span>
-                </button>
+                <CardLine key={task.id} task={task} done={false} loose idle />
               ))}
           </>
         )}
