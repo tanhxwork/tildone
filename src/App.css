@@ -2876,7 +2876,6 @@ textarea:focus-visible,
 
 .goals-view {
   padding-top: 8px;
-  max-width: 780px;
   display: flex;
   flex-direction: column;
   gap: 4px;
