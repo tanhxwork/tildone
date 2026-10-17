@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getName } from "@tauri-apps/api/app";
 import { useAI } from "../ai";
+import { focusModel } from "../focusViews";
 import { observeCounts } from "../observeViews";
 import { mineGroups } from "../ownerViews";
 import { goalProgress, townModel, ungoaledOpenCount } from "../selectors";
@@ -9,6 +10,7 @@ import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
+import { FocusSection } from "./FocusSidebar";
 import { GoalDialog } from "./GoalDialog";
 import {
   IconArchive,
@@ -61,6 +63,7 @@ export function Sidebar() {
     removeTag,
     live,
     presence,
+    lastActivity,
   } = useStore();
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
   const [newGoalProjectId, setNewGoalProjectId] = useState<number | null>(null);
@@ -72,6 +75,7 @@ export function Sidebar() {
   const projectGoalsCollapsed = useSettings((s) => s.projectGoalsCollapsed);
   const setProjectGoalsCollapsed = useSettings((s) => s.setProjectGoalsCollapsed);
   const setTagManagerOpen = useStore((s) => s.setTagManagerOpen);
+  const [quietOpen, setQuietOpen] = useState(false);
   const [confirmTagId, setConfirmTagId] = useState<number | null>(null);
   // Dev builds run as "Tildone Dev — <worktree>" (scripts/tauri.sh); show
   // that worktree in the sidebar so the window says which task it belongs to.
@@ -113,6 +117,25 @@ export function Sidebar() {
       byTag,
     };
   }, [tasks, tags, observeCards]);
+
+  // Where the board is moving: Focus goals, loose work, active vs quiet projects.
+  // `now` is read at render; the store changing re-renders, which is what moves it.
+  const model = useMemo(
+    () => focusModel({ tasks, goals, projects, tags, lastActivity, now: Date.now() }),
+    [tasks, goals, projects, tags, lastActivity],
+  );
+  // A selected row must never vanish under the selection: the Quiet fold opens
+  // itself while the view points at a quiet project, one of its goals or its
+  // No goal list.
+  const selectionProjectId =
+    selection.type === "project" || selection.type === "ungoaled"
+      ? selection.projectId
+      : selection.type === "goal"
+        ? (goals.find((g) => g.id === selection.goalId)?.project_id ?? null)
+        : null;
+  const quietExpanded =
+    quietOpen ||
+    (selectionProjectId !== null && model.quiet.some((p) => p.id === selectionProjectId));
 
   // `due` replaces the plain count with a doing-ink "N due" pill (Observe only).
   const smartLists: {
@@ -168,6 +191,125 @@ export function Sidebar() {
     { sel: { type: "completed" }, label: "Completed", icon: <IconArchive /> },
   ];
 
+  // One project row, shared by the active list and the Quiet fold. `moved` is
+  // the number beside it: cards that moved this week (focusModel), not the backlog.
+  const renderProject = (project: Project, moved: number) => {
+    const sel: Selection = { type: "project", projectId: project.id };
+    // Position order, same as goals load from the DB (db.ts fetchAll
+    // ORDER BY position, id) — filtering preserves it.
+    const projectGoals = goals.filter((g) => g.project_id === project.id);
+    const openGoals = projectGoals.filter((g) => g.completed_at === null);
+    const hasOpenGoals = openGoals.length > 0;
+    // A selected row must never vanish under the selection. Finishing the
+    // last un-goaled task drops the count to zero, and closing the last
+    // goal drops hasOpenGoals — either one used to take the "No goal" row
+    // (and the whole nested section) away while the view was still
+    // pointed at it, leaving an empty board with nothing selected in the
+    // sidebar. Selection wins over both, and over the collapse state.
+    const onNoGoal =
+      selection.type === "ungoaled" && selection.projectId === project.id;
+    const expanded =
+      onNoGoal || (hasOpenGoals && projectGoalsCollapsed[project.id] !== true);
+    const noGoalCount =
+      hasOpenGoals || onNoGoal ? ungoaledOpenCount(tasks, project.id) : 0;
+    return (
+      <div key={project.id}>
+        <div
+          className={`nav-item nav-project ${isSelected(selection, sel) ? "active" : ""}`}
+          onClick={() => select(sel)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === "Enter" && select(sel)}
+        >
+          {hasOpenGoals ? (
+            <button
+              className="icon-btn nav-chevron"
+              aria-label={expanded ? `Collapse ${project.name} goals` : `Expand ${project.name} goals`}
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                setProjectGoalsCollapsed(project.id, expanded);
+              }}
+            >
+              {expanded ? <IconChevronDown size={11} /> : <IconChevronRight size={11} />}
+            </button>
+          ) : (
+            <span className="nav-chevron-spacer" aria-hidden="true" />
+          )}
+          <ProjectGlyph project={project} size={16} />
+          <span className="nav-label">{project.name}</span>
+          <button
+            className="icon-btn row-action"
+            aria-label={`New goal in ${project.name}`}
+            title="New goal"
+            onClick={(e) => {
+              e.stopPropagation();
+              setNewGoalProjectId(project.id);
+            }}
+          >
+            <IconPlus size={12} />
+          </button>
+          <button
+            className="icon-btn row-action"
+            aria-label={`Edit ${project.name}`}
+            title="Edit project"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDialog(project);
+            }}
+          >
+            <IconPencil size={13} />
+          </button>
+          {moved > 0 && <span className="nav-count">{moved}</span>}
+        </div>
+        {expanded && (
+          <div className="nav-goals">
+            {openGoals.map((goal) => {
+              const gsel: Selection = { type: "goal", goalId: goal.id };
+              const open = goalProgress(tasks, goal.id).open;
+              return (
+                <div
+                  key={goal.id}
+                  className={`nav-item nav-goal ${isSelected(selection, gsel) ? "active" : ""}`}
+                  onClick={() => select(gsel)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === "Enter" && select(gsel)}
+                >
+                  <span className="goal-glyph" style={{ color: goal.color }} aria-hidden="true" />
+                  <span className="nav-label">{goal.name}</span>
+                  {open > 0 && <span className="nav-count">{open}</span>}
+                </div>
+              );
+            })}
+            {(noGoalCount > 0 || onNoGoal) && (() => {
+              // A real selection, like every other nav row: this is the
+              // one view that answers "what in this project is still
+              // unattached", and it used to be the only row in the app
+              // that did nothing. Its glyph is dashed and faint — an
+              // absence must not wear .goal-glyph, the identity mark of a
+              // live goal.
+              const usel: Selection = { type: "ungoaled", projectId: project.id };
+              return (
+                <div
+                  className={`nav-item nav-goal nav-goal-none ${isSelected(selection, usel) ? "active" : ""}`}
+                  onClick={() => select(usel)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === "Enter" && select(usel)}
+                >
+                  <span className="goal-glyph goal-glyph-none" aria-hidden="true" />
+                  <span className="nav-label">No goal</span>
+                  <span className="nav-count">{noGoalCount}</span>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <aside className="sidebar">
       <div className="sidebar-titlebar" data-tauri-drag-region />
@@ -215,6 +357,8 @@ export function Sidebar() {
         ))}
       </nav>
 
+      <FocusSection model={model} />
+
       <div className="sidebar-section">
         <div className="section-header">
           <span>Projects</span>
@@ -227,124 +371,25 @@ export function Sidebar() {
             <IconPlus size={14} />
           </button>
         </div>
-        {projects.map((project) => {
-          const sel: Selection = { type: "project", projectId: project.id };
-          // Position order, same as goals load from the DB (db.ts fetchAll
-          // ORDER BY position, id) — filtering preserves it.
-          const projectGoals = goals.filter((g) => g.project_id === project.id);
-          const openGoals = projectGoals.filter((g) => g.completed_at === null);
-          const hasOpenGoals = openGoals.length > 0;
-          // A selected row must never vanish under the selection. Finishing the
-          // last un-goaled task drops the count to zero, and closing the last
-          // goal drops hasOpenGoals — either one used to take the "No goal" row
-          // (and the whole nested section) away while the view was still
-          // pointed at it, leaving an empty board with nothing selected in the
-          // sidebar. Selection wins over both, and over the collapse state.
-          const onNoGoal =
-            selection.type === "ungoaled" && selection.projectId === project.id;
-          const expanded =
-            onNoGoal || (hasOpenGoals && projectGoalsCollapsed[project.id] !== true);
-          const noGoalCount =
-            hasOpenGoals || onNoGoal ? ungoaledOpenCount(tasks, project.id) : 0;
-          return (
-            <div key={project.id}>
-              <div
-                className={`nav-item nav-project ${isSelected(selection, sel) ? "active" : ""}`}
-                onClick={() => select(sel)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && select(sel)}
-              >
-                {hasOpenGoals ? (
-                  <button
-                    className="icon-btn nav-chevron"
-                    aria-label={expanded ? `Collapse ${project.name} goals` : `Expand ${project.name} goals`}
-                    aria-expanded={expanded}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setProjectGoalsCollapsed(project.id, expanded);
-                    }}
-                  >
-                    {expanded ? <IconChevronDown size={11} /> : <IconChevronRight size={11} />}
-                  </button>
-                ) : (
-                  <span className="nav-chevron-spacer" aria-hidden="true" />
-                )}
-                <ProjectGlyph project={project} size={16} />
-                <span className="nav-label">{project.name}</span>
-                <button
-                  className="icon-btn row-action"
-                  aria-label={`New goal in ${project.name}`}
-                  title="New goal"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setNewGoalProjectId(project.id);
-                  }}
-                >
-                  <IconPlus size={12} />
-                </button>
-                <button
-                  className="icon-btn row-action"
-                  aria-label={`Edit ${project.name}`}
-                  title="Edit project"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDialog(project);
-                  }}
-                >
-                  <IconPencil size={13} />
-                </button>
-                {(counts.byProject.get(project.id) ?? 0) > 0 && (
-                  <span className="nav-count">{counts.byProject.get(project.id)}</span>
-                )}
-              </div>
-              {expanded && (
-                <div className="nav-goals">
-                  {openGoals.map((goal) => {
-                    const gsel: Selection = { type: "goal", goalId: goal.id };
-                    const open = goalProgress(tasks, goal.id).open;
-                    return (
-                      <div
-                        key={goal.id}
-                        className={`nav-item nav-goal ${isSelected(selection, gsel) ? "active" : ""}`}
-                        onClick={() => select(gsel)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => e.key === "Enter" && select(gsel)}
-                      >
-                        <span className="goal-glyph" style={{ color: goal.color }} aria-hidden="true" />
-                        <span className="nav-label">{goal.name}</span>
-                        {open > 0 && <span className="nav-count">{open}</span>}
-                      </div>
-                    );
-                  })}
-                  {(noGoalCount > 0 || onNoGoal) && (() => {
-                    // A real selection, like every other nav row: this is the
-                    // one view that answers "what in this project is still
-                    // unattached", and it used to be the only row in the app
-                    // that did nothing. Its glyph is dashed and faint — an
-                    // absence must not wear .goal-glyph, the identity mark of a
-                    // live goal.
-                    const usel: Selection = { type: "ungoaled", projectId: project.id };
-                    return (
-                      <div
-                        className={`nav-item nav-goal nav-goal-none ${isSelected(selection, usel) ? "active" : ""}`}
-                        onClick={() => select(usel)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => e.key === "Enter" && select(usel)}
-                      >
-                        <span className="goal-glyph goal-glyph-none" aria-hidden="true" />
-                        <span className="nav-label">No goal</span>
-                        <span className="nav-count">{noGoalCount}</span>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {model.active.map((m) => renderProject(m.project, m.moved))}
+        {model.quiet.length > 0 && (
+          <>
+            <button
+              className="nav-item focus-fold"
+              data-nav="quiet"
+              aria-expanded={quietExpanded}
+              onClick={() => setQuietOpen(!quietExpanded)}
+            >
+              <span className="nav-chevron-spacer focus-fold-chevron" aria-hidden="true">
+                {quietExpanded ? <IconChevronDown size={11} /> : <IconChevronRight size={11} />}
+              </span>
+              <span className="nav-label">
+                Quiet · {model.quiet.length} {model.quiet.length === 1 ? "project" : "projects"}
+              </span>
+            </button>
+            {quietExpanded && model.quiet.map((project) => renderProject(project, 0))}
+          </>
+        )}
         {projects.length === 0 && (
           <p className="sidebar-hint">No projects yet — create one with +</p>
         )}
