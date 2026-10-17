@@ -58,3 +58,19 @@ describe("reload keeps an open task's Activity feed live", () => {
     expect(useStore.getState().activity).toEqual([]);
   });
 });
+
+describe("lastActivity", () => {
+  beforeEach(() => {
+    resetDbMock();
+    useStore.setState({ lastActivity: {}, tasks: [] });
+  });
+
+  it("moves at once when the app records an activity row", async () => {
+    // Any user edit that records activity goes through recordActivity.
+    const id = await useStore.getState().addTask({ title: "x" });
+    await new Promise((r) => setTimeout(r, 0)); // addTask does not await its log row
+    const [taskId, , createdAt] = db.insertActivity.mock.calls[0];
+    expect(taskId).toBe(id);
+    expect(useStore.getState().lastActivity[id]).toBe(createdAt);
+  });
+});

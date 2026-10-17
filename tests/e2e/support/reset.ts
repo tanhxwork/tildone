@@ -187,19 +187,16 @@ export async function remount(
  * cleared. A truly empty localStorage means every spec file opens on the
  * first-run overlay, which would force all eight of them to carry a dismissal
  * dance in before(); pinning it dismissed gives every spec the same known
- * starting screen instead — Mine, list view, no overlay. Mine is pinned too,
- * though a fresh install opens it anyway, so a stale nav from an earlier run
- * never decides where a spec starts. owner.spec.ts clears the key itself to
- * prove the fresh-install default.
+ * starting screen instead — All Tasks, list view, no overlay. The app opens on
+ * Goals at every launch and saves no selection, so the reset clicks All Tasks
+ * once the app has mounted. owner.spec.ts clears the nav key itself to prove the
+ * launch view.
  */
 export async function resetUiState(): Promise<void> {
   await remount((dismissKey: unknown) => {
     localStorage.clear();
     localStorage.setItem(dismissKey as string, "1");
-    localStorage.setItem(
-      "tildone-nav",
-      JSON.stringify({ selection: { type: "all" }, viewMode: "list" }),
-    );
+    localStorage.setItem("tildone-nav", JSON.stringify({ viewMode: "list" }));
   }, FIRST_RUN_DISMISSED);
 
   // Prove the dismissal key actually suppressed onboarding. Every spec dropped
@@ -215,6 +212,31 @@ export async function resetUiState(): Promise<void> {
         `every spec relies on it to open on a usable screen.`,
     );
   }
+
+  await $('[data-nav="all"]').click();
+}
+
+/**
+ * Backdate a task's activity to `daysAgo` days ago (ISO UTC), by numeric id or ref
+ * ("TIL-3"): its activity rows and its own created_at move to that time, and one
+ * activity row is inserted there when it has none. Seeds stalled and quiet states
+ * without waiting a week.
+ */
+export function backdateActivity(task: number | string, daysAgo: number): void {
+  const at = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+  const id =
+    typeof task === "number"
+      ? String(task)
+      : `(SELECT id FROM tasks WHERE ref = '${task.replace(/'/g, "''")}')`;
+  sqlite(
+    `BEGIN; ` +
+      `UPDATE task_activity SET created_at = '${at}' WHERE task_id = ${id}; ` +
+      `UPDATE tasks SET created_at = '${at}' WHERE id = ${id}; ` +
+      `INSERT INTO task_activity (task_id, label, created_at, actor_kind) ` +
+      `SELECT ${id}, 'Backdated', '${at}', 'user' ` +
+      `WHERE NOT EXISTS (SELECT 1 FROM task_activity WHERE task_id = ${id}); ` +
+      `COMMIT;`,
+  );
 }
 
 /** Empty database + clean UI state, for a spec file to start from. */

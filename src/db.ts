@@ -79,6 +79,7 @@ export async function fetchAll(): Promise<{
   links: Record<number, TaskLink[]>;
   images: Record<number, TaskImage[]>;
   commentCounts: Record<number, number>;
+  lastActivity: Record<number, string>;
   observeCards: ObserveCard[];
 }> {
   const d = await getDb();
@@ -140,6 +141,14 @@ export async function fetchAll(): Promise<{
   );
   const commentCounts: Record<number, number> = {};
   for (const row of countRows) commentCounts[row.task_id] = row.n;
+  // Each task's latest activity row, for "what moved" (focusViews.lastMoved). Rows
+  // mix ISO and SQLite's marker-less UTC, which do not sort as strings, so
+  // datetime() normalizes before MAX; the reader still parses through toIsoUtc.
+  const lastRows = await d.select<{ task_id: number; at: string }[]>(
+    "SELECT task_id, MAX(datetime(created_at)) AS at FROM task_activity GROUP BY task_id",
+  );
+  const lastActivity: Record<number, string> = {};
+  for (const row of lastRows) lastActivity[row.task_id] = row.at;
   return {
     projects,
     goals,
@@ -150,6 +159,7 @@ export async function fetchAll(): Promise<{
     links: linksByTask,
     images: imagesByTask,
     commentCounts,
+    lastActivity,
     observeCards,
   };
 }
@@ -395,11 +405,15 @@ export async function deleteSubtask(id: number): Promise<void> {
 // actor_kind is hard-coded 'user' here for the same reason agent.rs hard-codes
 // 'agent': every write through this module came from the person using the app.
 // The two writers are mirror images, and neither can mislabel the other's rows.
-export async function insertActivity(taskId: number, label: string): Promise<void> {
+export async function insertActivity(
+  taskId: number,
+  label: string,
+  createdAt: string,
+): Promise<void> {
   const d = await getDb();
   await d.execute(
     "INSERT INTO task_activity (task_id, label, created_at, actor_kind) VALUES ($1, $2, $3, 'user')",
-    [taskId, label, new Date().toISOString()],
+    [taskId, label, createdAt],
   );
 }
 

@@ -338,16 +338,29 @@ describe("removeProject", () => {
 });
 
 describe("loadNav", () => {
-  it("opens Mine in list view when the stored nav names a removed view", () => {
+  function withStored(value: string | null, run: () => void) {
     const g = globalThis as { localStorage?: unknown };
     const prev = g.localStorage;
-    g.localStorage = {
-      getItem: () => JSON.stringify({ selection: { type: "today" }, viewMode: "calendar" }),
-    };
+    g.localStorage = { getItem: () => value };
     try {
-      expect(loadNav()).toEqual({ selection: { type: "mine" }, viewMode: "list" });
+      run();
     } finally {
       g.localStorage = prev;
     }
+  }
+
+  it("opens Goals at every launch and ignores a stored selection", () => {
+    withStored(JSON.stringify({ selection: { type: "mine" }, viewMode: "board" }), () => {
+      expect(loadNav()).toEqual({ selection: { type: "goals" }, viewMode: "board" });
+    });
+  });
+
+  it("opens Goals in list view when nothing is stored or the view mode was removed", () => {
+    withStored(null, () => {
+      expect(loadNav()).toEqual({ selection: { type: "goals" }, viewMode: "list" });
+    });
+    withStored(JSON.stringify({ viewMode: "calendar" }), () => {
+      expect(loadNav()).toEqual({ selection: { type: "goals" }, viewMode: "list" });
+    });
   });
 });
