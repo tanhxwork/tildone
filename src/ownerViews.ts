@@ -36,8 +36,24 @@ function tagNames(task: Task, tagById: Map<number, string>): Set<string> {
   return names;
 }
 
-function nameIndex(tags: Tag[]): Map<number, string> {
+export function nameIndex(tags: Tag[]): Map<number, string> {
   return new Map(tags.map((t) => [t.id, t.name]));
+}
+
+export type NeedsYouKind = "decide" | "approve" | "verify";
+
+/** What an open task waits on the user for, or null when it waits on nobody:
+ *  "decide" a human task tagged blocked or needs-approval, "verify" anything tagged
+ *  human-verify, "approve" an agent follow-up tagged needs-approval. First match
+ *  wins, in that order. A done task waits on nothing. */
+export function needsYouKind(task: Task, tagById: Map<number, string>): NeedsYouKind | null {
+  if (task.status === "done") return null;
+  const names = tagNames(task, tagById);
+  const human = task.owner === "human";
+  if (human && (names.has("blocked") || names.has("needs-approval"))) return "decide";
+  if (names.has("human-verify")) return "verify";
+  if (!human && names.has("needs-approval")) return "approve";
+  return null;
 }
 
 /** Queue order is next_task's pick order: the Inbox, then projects in sidebar
@@ -70,13 +86,12 @@ export function mineGroups(tasks: Task[], tags: Tag[]): MineGroups {
   const toVerify: Task[] = [];
   const myTodos: Task[] = [];
   for (const t of live) {
-    const names = tagNames(t, byId);
-    const human = t.owner === "human";
-    if (human && t.status !== "done" && (names.has("blocked") || names.has("needs-approval"))) {
+    if (needsYouKind(t, byId) === "decide") {
       needsAnswer.push(t);
-    } else if (names.has("human-verify")) {
+    } else if (tagNames(t, byId).has("human-verify")) {
+      // Unlike needsYouKind, Mine keeps a done task here until it is archived.
       toVerify.push(t);
-    } else if (human && t.status !== "done") {
+    } else if (t.owner === "human" && t.status !== "done") {
       myTodos.push(t);
     }
   }

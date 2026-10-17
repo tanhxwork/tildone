@@ -1,24 +1,32 @@
 import { useMemo, useState } from "react";
+import { FOCUS_WINDOW_MS, focusModel } from "../focusViews";
 import { goalProgress, goalsPageOrder } from "../selectors";
 import { useStore } from "../store";
+import { useNow } from "../useNow";
 import { dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
+import { GoalBands, LooseBand } from "./CompassBand";
 import { GoalDialog } from "./GoalDialog";
 import { IconPlus } from "./Icons";
+import "./compass.css";
 
 type Filter = "open" | "all";
 
 /**
- * Surface C: every goal across every project, one row each — the "what am I
- * actually pushing this month" answer no other view gives (spec
- * 2026-08-20-goals-inside-projects.md). Ordering is goalsPageOrder: overdue
- * first, then target date, undated last, completed last (only reachable under
- * All).
+ * The home view. On top, "Where you're going": a band per goal that moved this
+ * week, what needs the user, what is moving, and the work moving with no goal
+ * (spec focus-compass). Below, "All goals": every goal across every project, one
+ * row each — the "what am I actually pushing this month" answer no other view
+ * gives (spec 2026-08-20-goals-inside-projects.md). Ordering is goalsPageOrder:
+ * overdue first, then target date, undated last, completed last (only reachable
+ * under All).
  */
 export function GoalsView() {
   const goals = useStore((s) => s.goals);
   const projects = useStore((s) => s.projects);
   const tasks = useStore((s) => s.tasks);
+  const tags = useStore((s) => s.tags);
+  const lastActivity = useStore((s) => s.lastActivity);
   const select = useStore((s) => s.select);
   const [filter, setFilter] = useState<Filter>("open");
   // The page used to send you back to the sidebar to create a goal — an empty
@@ -29,6 +37,15 @@ export function GoalsView() {
 
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
+  // `now` ticks, so a card still ages out of "moving" on an app left open.
+  const now = useNow();
+  const model = useMemo(
+    () => focusModel({ tasks, goals, projects, tags, lastActivity, now }),
+    [tasks, goals, projects, tags, lastActivity, now],
+  );
+  const goalsMoved = model.goals.filter((g) => now - g.lastMovedAt <= FOCUS_WINDOW_MS).length;
+  const needsYou = model.needsYou;
+
   const visible = useMemo(() => {
     const base = filter === "open" ? goals.filter((g) => g.completed_at === null) : goals;
     return goalsPageOrder(base, projects, today);
@@ -36,7 +53,26 @@ export function GoalsView() {
 
   return (
     <div className="goals-view">
-      <div className="goals-toolbar">
+      <p className="compass-sub">
+        {goalsMoved} {goalsMoved === 1 ? "goal" : "goals"} moved this week ·{" "}
+        {needsYou} {needsYou === 1 ? "card needs" : "cards need"} you
+      </p>
+      {model.goals.length === 0 && model.movedNoGoal === 0 ? (
+        <div className="compass-empty">Nothing moved this week</div>
+      ) : (
+        <>
+          <GoalBands goals={model.goals} />
+          <LooseBand
+            loose={model.loose}
+            byProject={model.looseByProject}
+            movedNoGoal={model.movedNoGoal}
+            movedThisWeek={model.movedThisWeek}
+          />
+        </>
+      )}
+
+      <div className="goals-toolbar compass-all">
+        <h2 className="compass-all-title">All goals</h2>
         <div className="segmented" role="group" aria-label="Open or all goals">
           <button className={filter === "open" ? "active" : ""} onClick={() => setFilter("open")}>
             Open
