@@ -1208,8 +1208,8 @@ function CardProvenance({
         // process and heartbeat is gone. Quiet by design, and on the meta line
         // beside the ref and chips rather than a row of its own.
         <span
-          className="card-artifacts"
-          title="Artifact trail — transcript activity and commits, survives the session"
+          className={`card-artifacts${facts?.last_active ? " has-time" : ""}`}
+          title={`${factsText} — artifact trail: transcript activity and commits, survives the session`}
         >
           {factsText}
         </span>
