@@ -1,18 +1,19 @@
-/* Theme tokens follow the Tildone design system (docs/DESIGN.md):
-   warm gray neutrals around charcoal ink #37352f, hairline borders, purple primary. */
+/* Theme tokens follow the Tildone design system (docs/DESIGN.md): the Notion
+   app's measured neutrals, tonal steps over borders, violet primary. */
 :root {
   color-scheme: light;
-  --bg-sidebar: #f6f5f4;
+  --bg-sidebar: #f9f8f7;
   --bg-main: #ffffff;
   --bg-card: #ffffff;
-  --bg-inset: #f6f5f4;
+  --bg-inset: #f9f8f7;
   --bg-hover: rgba(55, 53, 47, 0.06);
   --bg-active: rgba(86, 69, 212, 0.09);
-  --border: #e5e3df;
-  --border-strong: #c8c4be;
-  --text: #37352f;
-  --text-muted: #787671;
-  --text-faint: #a4a097;
+  --border: #e6e5e3;
+  --border-strong: #d4d3cf;
+  --text: #2c2c2b;
+  --text-muted: #73706b;
+  --text-faint: #73706b;
+  --icon: #8e8b86;
   --accent: #5645d4;
   --accent-contrast: #ffffff;
   --danger: #e03131;
@@ -23,8 +24,9 @@
      these follow automatically and must not be duplicated there. */
   --blocked: var(--danger);
   --review: var(--doing);
-  --shadow-card: 0 1px 2px rgba(15, 15, 15, 0.06), 0 1px 1px rgba(15, 15, 15, 0.03);
-  --shadow-pop: 0 8px 30px rgba(15, 15, 15, 0.18);
+  --shadow-card: 0 2px 4px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(42, 28, 0, 0.07);
+  --shadow-pop: 0 14px 28px -6px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06),
+    0 0 0 1px rgba(28, 19, 1, 0.11);
   --radius: 8px;
   --radius-sm: 6px;
   /* The xs step (rounded.xs) — small chips like kbd keycaps. */
@@ -43,15 +45,16 @@
   color-scheme: dark;
   --bg-sidebar: #202020;
   --bg-main: #191919;
-  --bg-card: #252525;
-  --bg-inset: #1f1f1f;
+  --bg-card: #262626;
+  --bg-inset: #202020;
   --bg-hover: rgba(255, 255, 255, 0.055);
   --bg-active: rgba(147, 134, 236, 0.16);
-  --border: #313131;
-  --border-strong: #454545;
-  --text: #e8e8e6;
-  --text-muted: #9b9a97;
-  --text-faint: #6f6e69;
+  --border: #383836;
+  --border-strong: #5f5e59;
+  --text: #f0efed;
+  --text-muted: #ada9a3;
+  --text-faint: #9b9893;
+  --icon: #ada9a3;
   --accent: #9386ec;
   --accent-contrast: #191919;
   --danger: #ff7369;
@@ -60,8 +63,8 @@
   --warn: #ffa344;
   --success-ink: #50ae60;
   --danger-ink: #ff7369;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 0 0 1px #383836, 0 2px 4px rgba(25, 25, 25, 0.08);
+  --shadow-pop: 0 0 0 1px #383836, 0 14px 28px -6px rgba(0, 0, 0, 0.4);
 }
 
 /* Dev builds only (attribute set in main.tsx from import.meta.env.DEV):
@@ -92,10 +95,10 @@ body,
 }
 
 body {
-  /* Notion Sans when installed, then its Inter base, then the system stack. */
-  font-family: "Notion Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    sans-serif;
-  font-size: 13px;
+  /* The Notion app's own stack: the platform UI font, no web font. */
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
+    "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--text);
   background: var(--bg-main);
@@ -170,7 +173,7 @@ textarea:focus-visible,
   max-width: 420px;
   margin: 0 24px;
   text-align: center;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -192,7 +195,7 @@ textarea:focus-visible,
 
 .app-loading-error p {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .app-loading-error pre {
@@ -203,7 +206,7 @@ textarea:focus-visible,
   border-radius: 8px;
   background: var(--bg-subtle);
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -294,10 +297,9 @@ textarea:focus-visible,
   justify-content: space-between;
   padding: 0 8px;
   margin-bottom: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -331,7 +333,7 @@ textarea:focus-visible,
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 15px;
   text-align: center;
@@ -340,7 +342,7 @@ textarea:focus-visible,
 
 .sidebar-hint {
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -363,7 +365,7 @@ textarea:focus-visible,
 .nav-item.active {
   background: var(--bg-active);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .nav-icon {
@@ -384,7 +386,7 @@ textarea:focus-visible,
 }
 
 .nav-count {
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
@@ -455,7 +457,7 @@ textarea:focus-visible,
 
 .nav-goal {
   padding: 4px 8px 4px 26px;
-  font-size: 12px;
+  font-size: 13px;
   gap: 6px;
 }
 
@@ -507,11 +509,11 @@ textarea:focus-visible,
   align-items: center;
   gap: 4px;
   padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--tag-color) 45%, transparent);
-  color: color-mix(in srgb, var(--tag-color) 80%, var(--text));
-  background: color-mix(in srgb, var(--tag-color) 8%, transparent);
-  font-size: 12px;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  color: color-mix(in srgb, var(--tag-color) 70%, var(--text));
+  background: color-mix(in srgb, var(--tag-color) 14%, transparent);
+  font-size: 13px;
   cursor: pointer;
   transition: background 150ms, border-color 150ms;
 }
@@ -523,17 +525,17 @@ textarea:focus-visible,
 .tag-chip.active {
   background: color-mix(in srgb, var(--tag-color) 22%, transparent);
   border-color: var(--tag-color);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .tag-chip.mini {
   padding: 0 6px;
-  font-size: 11px;
+  font-size: 12px;
   cursor: default;
 }
 
 .tag-count {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -577,7 +579,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 19px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.3px;
 }
@@ -699,7 +701,7 @@ textarea:focus-visible,
 .segmented button.active {
   background: var(--bg-active);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .segmented.full {
@@ -709,7 +711,7 @@ textarea:focus-visible,
 
 .segmented.full button {
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .active-filters {
@@ -721,7 +723,7 @@ textarea:focus-visible,
 }
 
 .filters-label {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -756,13 +758,13 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
 }
 
 .goal-band-closed {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-faint);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -771,7 +773,7 @@ textarea:focus-visible,
 
 .goal-band-outcome {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   margin-top: 3px;
   max-width: 66ch;
   overflow: hidden;
@@ -784,7 +786,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
   flex-shrink: 0;
@@ -792,13 +794,13 @@ textarea:focus-visible,
 
 .goal-band-count {
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
 }
 
 .goal-band-date.overdue {
   color: var(--doing);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .goal-band-bar {
@@ -833,7 +835,7 @@ textarea:focus-visible,
   gap: 9px;
   margin: 10px -20px -12px;
   padding: 9px 20px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
   background: color-mix(in srgb, var(--success) 11%, transparent);
   border-top: 1px solid var(--border);
@@ -900,7 +902,7 @@ textarea:focus-visible,
   gap: 6px;
   margin: -6px 20px 12px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .qa-chip {
@@ -954,13 +956,13 @@ textarea:focus-visible,
 }
 
 .qa-image-name {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
 }
 
 .qa-image-size {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -993,16 +995,15 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-muted);
   padding: 6px 10px 4px;
 }
 
 .group-count {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -1050,8 +1051,8 @@ textarea:focus-visible,
 
 .task-id {
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   user-select: none;
@@ -1078,8 +1079,8 @@ textarea:focus-visible,
 }
 
 .status-pill {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--doing);
   border: 1px solid color-mix(in srgb, var(--doing) 45%, transparent);
   background: color-mix(in srgb, var(--doing) 10%, transparent);
@@ -1090,8 +1091,8 @@ textarea:focus-visible,
 /* Reserved-tag states. Same shape as .status-pill — these read as states, not
    as one more tag chip, which is the whole point of pulling them out. */
 .state-pill {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   border-radius: 999px;
   padding: 0 6px;
   white-space: nowrap;
@@ -1131,7 +1132,7 @@ textarea:focus-visible,
 }
 
 .due-chip {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   background: var(--bg-inset);
   border-radius: 999px;
@@ -1142,7 +1143,7 @@ textarea:focus-visible,
 .due-chip.overdue {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .priority-flag {
@@ -1153,7 +1154,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   max-width: 140px;
   overflow: hidden;
@@ -1174,7 +1175,7 @@ textarea:focus-visible,
   border: 1px solid color-mix(in srgb, var(--goal-color) 40%, transparent);
   color: color-mix(in srgb, var(--goal-color) 85%, var(--text));
   background: color-mix(in srgb, var(--goal-color) 12%, transparent);
-  font-size: 11px;
+  font-size: 12px;
   max-width: 140px;
   transition: background 150ms;
 }
@@ -1185,7 +1186,7 @@ textarea:focus-visible,
 
 .goal-chip.mini {
   padding: 0 6px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .goal-chip-glyph {
@@ -1221,8 +1222,8 @@ textarea:focus-visible,
 }
 
 .empty-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -1245,9 +1246,8 @@ textarea:focus-visible,
   min-width: 210px;
   max-width: 340px;
   background: var(--bg-inset);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  padding: 8px;
+  border-radius: 12px;
+  padding: 6px 8px 8px;
 }
 
 .column-header {
@@ -1255,8 +1255,8 @@ textarea:focus-visible,
   align-items: center;
   gap: 7px;
   padding: 4px 6px 8px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .column-dot {
@@ -1276,7 +1276,7 @@ textarea:focus-visible,
 
 .column-count {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -1297,7 +1297,7 @@ textarea:focus-visible,
   border: 1.5px dashed var(--border-strong);
   border-radius: var(--radius);
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .board-card {
@@ -1305,13 +1305,13 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 9px 11px;
+  padding: 10px 12px;
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   cursor: grab;
-  transition: border-color 150ms;
+  transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* The unseen mark: the Tildone mark held one beat before its end, while an
@@ -1444,7 +1444,7 @@ textarea:focus-visible,
 }
 
 .board-card:hover {
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--bg-card) 96%, var(--text));
 }
 
 .board-card.overlay {
@@ -1489,8 +1489,8 @@ textarea:focus-visible,
 }
 
 .card-id {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   margin-right: 4px;
@@ -1542,7 +1542,7 @@ textarea:focus-visible,
 }
 
 .card-progress-count {
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
@@ -1554,7 +1554,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
@@ -1572,7 +1572,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   min-width: 0;
 }
@@ -1603,8 +1603,6 @@ textarea:focus-visible,
   align-items: center;
   gap: 6px 8px;
   margin-top: 1px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
   min-width: 0;
 }
 
@@ -1737,7 +1735,7 @@ textarea:focus-visible,
 /* The agent's last word, on its own row: it cannot share the provenance strip
    without evicting the worktree chip. */
 .card-log {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1769,8 +1767,8 @@ textarea:focus-visible,
   gap: 4px;
   padding: 1px 4px;
   border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--review);
 }
@@ -1806,10 +1804,9 @@ textarea:focus-visible,
 .verify-popover-head {
   display: flex;
   align-items: center;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--review);
 }
 
@@ -1839,7 +1836,7 @@ textarea:focus-visible,
   align-items: flex-start;
   gap: 8px;
   width: 100%;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   color: var(--text);
 }
@@ -1849,8 +1846,8 @@ textarea:focus-visible,
   width: 14px;
   margin-top: 1px;
   text-align: center;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--review);
 }
@@ -1862,7 +1859,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--warn);
 }
 
@@ -1907,7 +1904,7 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-card);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   opacity: 0;
   pointer-events: none;
@@ -1998,7 +1995,7 @@ textarea:focus-visible,
 }
 
 .done-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -2009,10 +2006,9 @@ textarea:focus-visible,
   align-items: center;
   gap: 8px;
   padding: 8px 4px 2px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -2049,10 +2045,9 @@ textarea:focus-visible,
 }
 
 .backfill-tag {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--accent);
   background: var(--bg-active);
   padding: 0 5px;
@@ -2073,7 +2068,7 @@ textarea:focus-visible,
   background: transparent;
   color: var(--accent);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: background 120ms;
@@ -2102,10 +2097,9 @@ textarea:focus-visible,
 }
 
 .editor-heading {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -2125,7 +2119,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-card);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .editor-notes {
@@ -2151,10 +2145,9 @@ textarea:focus-visible,
 }
 
 .field-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -2168,7 +2161,7 @@ textarea:focus-visible,
   background: var(--bg-card);
   color: var(--text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   resize: vertical;
 }
 
@@ -2184,7 +2177,7 @@ textarea:focus-visible,
 }
 
 .field-hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.4;
 }
@@ -2192,13 +2185,13 @@ textarea:focus-visible,
 /* A store rejection surfaced in a modal (e.g. GoalDialog's duplicate-name
    guard) — same size as .field-hint, danger ink instead of muted. */
 .field-error {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--danger);
   line-height: 1.4;
 }
 
 .field-hint code {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 4px;
   border-radius: 4px;
   background: var(--bg-hover);
@@ -2219,7 +2212,7 @@ textarea:focus-visible,
 }
 
 .icon-preview-status {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2230,7 +2223,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   cursor: pointer;
 }
@@ -2295,7 +2288,7 @@ textarea:focus-visible,
 }
 
 .modal-header h2 {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
 }
 
@@ -2418,8 +2411,8 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.4px;
   text-align: center;
   overflow: hidden;
@@ -2453,7 +2446,7 @@ textarea:focus-visible,
 }
 
 .ai-intro {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -2471,12 +2464,12 @@ textarea:focus-visible,
 
 .ai-lane-title {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: normal;
 }
 
 .ai-lane-sub {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
   margin-top: -4px;
@@ -2488,7 +2481,7 @@ textarea:focus-visible,
   gap: 4px;
   margin: 0;
   padding-left: 18px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -2549,12 +2542,12 @@ textarea:focus-visible,
 }
 
 .ai-mode-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .ai-mode-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.45;
@@ -2573,13 +2566,13 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
 .ai-hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -2593,7 +2586,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-card);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ai-server.selected {
@@ -2605,18 +2598,18 @@ textarea:focus-visible,
 }
 
 .ai-server-name {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .ai-server-url {
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ai-server-count {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ai-model-field {
@@ -2635,7 +2628,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-card);
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ai-custom input:focus {
@@ -2675,7 +2668,7 @@ textarea:focus-visible,
 }
 
 .ai-error {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--danger);
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -2685,13 +2678,13 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--success);
 }
 
 .btn.small {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .btn.ai-action {
@@ -2746,7 +2739,7 @@ textarea:focus-visible,
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -2802,13 +2795,13 @@ textarea:focus-visible,
 }
 
 .chart-day {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 
 .chart-count {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   min-height: 14px;
   font-variant-numeric: tabular-nums;
@@ -2842,7 +2835,7 @@ textarea:focus-visible,
 }
 
 .review-project-counts {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -2864,8 +2857,8 @@ textarea:focus-visible,
 }
 
 .review-project-pct {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   width: 34px;
   text-align: right;
@@ -2920,12 +2913,12 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .goal-row-outcome {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
   overflow: hidden;
@@ -2934,7 +2927,7 @@ textarea:focus-visible,
 }
 
 .goal-row-project {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-faint);
   display: flex;
   align-items: center;
@@ -2957,13 +2950,13 @@ textarea:focus-visible,
 }
 
 .goal-row-num {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
 .goal-row-num small {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-faint);
 }
@@ -2986,19 +2979,19 @@ textarea:focus-visible,
 }
 
 .goal-row-when {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   margin-top: 3px;
 }
 
 .goal-row-when.late {
   color: var(--doing);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .review-clear {
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: 14px;
   padding: 2px 10px;
 }
 
@@ -3031,8 +3024,8 @@ textarea:focus-visible,
 .review-overdue-when {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--danger);
 }
 
@@ -3052,7 +3045,7 @@ textarea:focus-visible,
 }
 
 .completed-blurb {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
   margin-bottom: 16px;
 }
@@ -3095,7 +3088,7 @@ textarea:focus-visible,
 }
 
 .history-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -3127,7 +3120,7 @@ textarea:focus-visible,
 .task-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .task-table th {
@@ -3141,10 +3134,9 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-muted);
   padding: 2px 4px;
   border-radius: 4px;
@@ -3204,7 +3196,7 @@ textarea:focus-visible,
   padding: 2px 4px;
   color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   max-width: 140px;
 }
 
@@ -3216,7 +3208,7 @@ textarea:focus-visible,
 
 .table-date.overdue {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .table-dot {
@@ -3225,7 +3217,7 @@ textarea:focus-visible,
 
 .col-created {
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -3313,7 +3305,7 @@ textarea:focus-visible,
 }
 
 .palette-esc {
-  font-size: 10px;
+  font-size: 11px;
   font-family: inherit;
   color: var(--text-faint);
   border: 1px solid var(--border);
@@ -3329,10 +3321,9 @@ textarea:focus-visible,
 }
 
 .palette-section-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
   padding: 8px 10px 3px;
 }
@@ -3367,7 +3358,7 @@ textarea:focus-visible,
 .palette-hint {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -3399,10 +3390,9 @@ textarea:focus-visible,
 }
 
 .settings-heading {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -3420,7 +3410,7 @@ textarea:focus-visible,
 }
 
 .settings-sub {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 400;
   color: var(--text-faint);
 }
@@ -3431,7 +3421,7 @@ textarea:focus-visible,
 }
 
 .settings-message {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
@@ -3477,7 +3467,7 @@ textarea:focus-visible,
 }
 
 .manager-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   width: 56px;
   flex-shrink: 0;
@@ -3501,7 +3491,7 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* ---------- First run ---------- */
@@ -3562,15 +3552,15 @@ textarea:focus-visible,
 }
 
 .firstrun-emoji {
-  font-size: 27px;
+  font-size: 32px;
 }
 
 .firstrun-template-title {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .firstrun-template-blurb {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -3581,7 +3571,7 @@ textarea:focus-visible,
 }
 
 .firstrun-hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -3638,7 +3628,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
   min-width: 0;
 }
@@ -3696,7 +3686,7 @@ textarea:focus-visible,
   border: none;
   background: none;
   resize: none;
-  font-size: 27px;
+  font-size: 32px;
   font-weight: 700;
   letter-spacing: -0.5px;
   line-height: 1.25;
@@ -3713,7 +3703,7 @@ textarea:focus-visible,
   grid-template-columns: 118px 1fr;
   row-gap: 2px;
   align-items: center;
-  font-size: 13px;
+  font-size: 14px;
   margin-bottom: 14px;
 }
 
@@ -3730,7 +3720,7 @@ textarea:focus-visible,
   background: none;
   border-radius: var(--radius-sm);
   padding: 2px 7px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   cursor: pointer;
   max-width: 220px;
@@ -3773,17 +3763,17 @@ textarea:focus-visible,
 
 .detail-value-select.prio-3 {
   color: var(--danger);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .detail-value-select.prio-2 {
   color: var(--doing);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .detail-value-select.prio-1 {
   color: #0075de;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .detail-due {
@@ -3793,7 +3783,7 @@ textarea:focus-visible,
 }
 
 .detail-due-relative {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -3817,7 +3807,7 @@ textarea:focus-visible,
 .detail-tag-add {
   border: none;
   background: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
   width: 64px;
   padding: 1px 6px;
@@ -3835,7 +3825,7 @@ textarea:focus-visible,
 }
 
 .detail-created {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -3913,7 +3903,7 @@ textarea:focus-visible,
 }
 
 .detail-agent-miss {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -3976,18 +3966,18 @@ textarea:focus-visible,
 .detail-notes-rendered h2,
 .detail-notes-rendered h3,
 .detail-notes-rendered h4 {
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.3;
   margin: 16px 0 4px;
   color: var(--text);
 }
 
 .detail-notes-rendered h1 {
-  font-size: 19px;
+  font-size: 24px;
 }
 
 .detail-notes-rendered h2 {
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .detail-notes-rendered h3 {
@@ -4017,7 +4007,7 @@ textarea:focus-visible,
 }
 
 .detail-notes-rendered strong {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .detail-notes-rendered a {
@@ -4060,7 +4050,7 @@ textarea:focus-visible,
 /* A brace set is several files behind one token; say how many rather than
    pretending the click opens one thing. */
 .md-evidence-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -4117,7 +4107,7 @@ textarea:focus-visible,
 .detail-notes-rendered pre code {
   background: none;
   padding: 0;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .detail-notes-rendered blockquote {
@@ -4136,7 +4126,7 @@ textarea:focus-visible,
 .detail-notes-rendered table {
   border-collapse: collapse;
   margin: 8px 0;
-  font-size: 13px;
+  font-size: 14px;
   /* A wide table scrolls in its own box (like `pre`), never the whole pane. */
   display: block;
   max-width: 100%;
@@ -4152,7 +4142,7 @@ textarea:focus-visible,
 
 .detail-notes-rendered th {
   background: var(--bg-hover);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 /* remark-gfm task-list items render a checkbox — drop the bullet */
@@ -4288,7 +4278,7 @@ textarea:focus-visible,
   flex: none;
   margin-left: auto;
   padding-left: 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -4325,7 +4315,7 @@ textarea:focus-visible,
   max-width: 100%;
   border: 1px solid var(--border);
   background: var(--bg-card);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
   padding: 3px 8px;
@@ -4389,7 +4379,7 @@ textarea:focus-visible,
   text-align: left;
   border: none;
   background: none;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
   padding: 5px 8px;
   border-radius: var(--radius-sm);
@@ -4415,7 +4405,7 @@ textarea:focus-visible,
 
 .notes-nav-item.action {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .notes-nav-sep {
@@ -4437,8 +4427,8 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
   margin-bottom: 8px;
 }
@@ -4473,10 +4463,9 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--review);
 }
 
@@ -4484,7 +4473,7 @@ textarea:focus-visible,
   margin-left: auto;
   color: var(--text-faint);
   font-weight: 500;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: normal;
   text-transform: none;
 }
@@ -4501,22 +4490,21 @@ textarea:focus-visible,
 .review-band-evidence li {
   display: flex;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
 }
 
 .review-band-evidence li::before {
   content: "·";
   color: var(--text-faint);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .review-band-sub {
   margin: 4px 0 0;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 
@@ -4535,7 +4523,7 @@ textarea:focus-visible,
 }
 
 .detail-section-count {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -4639,7 +4627,7 @@ textarea:focus-visible,
 .detail-activity-row {
   display: flex;
   gap: 10px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .detail-activity-time {
@@ -4671,7 +4659,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* The author byline. Same rule as card presence: the agent's brand colour tints
@@ -4681,7 +4669,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
 }
 
@@ -4702,7 +4690,7 @@ textarea:focus-visible,
   padding-left: 10px;
   border-left: 2px solid var(--border);
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -4728,7 +4716,7 @@ textarea:focus-visible,
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
   flex: 1;
   min-width: 180px;
@@ -4747,7 +4735,7 @@ textarea:focus-visible,
 }
 
 .detail-footer-hint {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -4767,7 +4755,7 @@ textarea:focus-visible,
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .ai-model.active {
@@ -4791,12 +4779,12 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 7px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .ai-model-detail {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4804,25 +4792,25 @@ textarea:focus-visible,
 
 .ai-model-warn {
   color: var(--warn);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .ai-model-size {
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 
 .ai-model-state {
   flex-shrink: 0;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
 .ai-model-state.active {
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .ai-model-state.ready {
@@ -4845,7 +4833,7 @@ textarea:focus-visible,
 .ai-disk {
   margin: 0 0 4px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ai-tier-badge {
@@ -4854,13 +4842,13 @@ textarea:focus-visible,
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .ai-warn {
   margin: 0 0 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--warn);
 }
 
@@ -4869,7 +4857,7 @@ textarea:focus-visible,
   align-items: center;
   gap: 7px;
   margin-top: 10px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -4901,7 +4889,7 @@ textarea:focus-visible,
   color: var(--text);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   padding: 2px 3px;
   border-radius: 4px;
@@ -4945,7 +4933,7 @@ textarea:focus-visible,
 /* Why the add box refused a link/file — sits under the chips, in the danger ink. */
 .detail-link-error {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--danger);
 }
 .detail-link-add {
@@ -4962,7 +4950,7 @@ textarea:focus-visible,
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   outline: none;
   min-width: 180px;
 }
@@ -4985,8 +4973,8 @@ textarea:focus-visible,
   padding: 1px 4px;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -5023,7 +5011,7 @@ textarea:focus-visible,
 }
 .pr-draft-tag {
   color: var(--text-faint);
-  font-weight: 600;
+  font-weight: 500;
 }
 /* The merged badge is an icon, not a self-coloured span, so it needs an explicit
    tint to read green both as a plain chip and inside the review-door — whose
@@ -5190,8 +5178,8 @@ textarea:focus-visible,
 
 .session-pane-peek-label {
   writing-mode: vertical-rl;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.04em;
 }
 
@@ -5211,14 +5199,14 @@ textarea:focus-visible,
 }
 
 .session-pane-ref {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--accent);
 }
 
 .session-pane-name {
   flex: 1;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5243,7 +5231,7 @@ textarea:focus-visible,
   gap: 4px 12px;
   padding: 4px 12px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -5271,7 +5259,7 @@ textarea:focus-visible,
 
 .session-pane-keys kbd {
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.4;
   color: var(--text-muted);
   background: var(--bg-inset);
@@ -5327,7 +5315,7 @@ textarea:focus-visible,
   background: none;
   border-radius: var(--radius-sm);
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -5351,7 +5339,7 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -5370,7 +5358,7 @@ textarea:focus-visible,
   background: none;
   padding: 2px 6px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
   cursor: pointer;
 }
@@ -5388,8 +5376,8 @@ textarea:focus-visible,
   gap: 3px;
   padding: 1px 4px;
   border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1;
   color: var(--success);
 }
@@ -5407,7 +5395,7 @@ textarea:focus-visible,
 .quit-warning-text {
   margin: 0;
   padding: 0 16px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -5424,7 +5412,7 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .quit-warning-name {
@@ -5441,7 +5429,7 @@ textarea:focus-visible,
    Same voice as .card-log — 11px muted single line — because both are ambient
    facts, not affordances. */
 .card-artifacts {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5464,21 +5452,21 @@ textarea:focus-visible,
   -webkit-user-select: text;
 }
 .detail-artifacts-head {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 .detail-artifacts-when {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-faint);
 }
 .detail-artifacts-msg {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
@@ -5494,7 +5482,7 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 .detail-artifacts-commits li {
@@ -5532,8 +5520,8 @@ textarea:focus-visible,
 
 /* --- Restart survival (F3) ------------------------------------------------ */
 .quit-warning-resumable {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-faint);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -5577,8 +5565,8 @@ textarea:focus-visible,
 }
 
 .card-thumb-more {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -5625,8 +5613,8 @@ textarea:focus-visible,
 .detail-image-note {
   align-self: center;
   color: var(--danger);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 /* Reveal/insert/remove surface on hover only — resting tiles stay quiet. */
@@ -5678,8 +5666,8 @@ textarea:focus-visible,
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm);
   background: none;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-faint);
   cursor: pointer;
   transition: background 150ms, color 150ms;
@@ -5767,8 +5755,8 @@ textarea:focus-visible,
   border-radius: 999px;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -5792,7 +5780,7 @@ textarea:focus-visible,
   display: grid;
   place-items: center;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   background: var(--bg-main);
   border: 1px solid var(--border);
@@ -5806,8 +5794,8 @@ textarea:focus-visible,
 
 .sess-label small {
   display: block;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5957,8 +5945,8 @@ textarea:focus-visible,
   gap: 6px;
   flex-wrap: wrap;
   margin: 0 8px 2px 33px;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 
@@ -5967,8 +5955,8 @@ textarea:focus-visible,
 }
 
 .sess-hint-act {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--text-muted);
   background: var(--bg-main);
   border: 1px solid var(--border);
@@ -5993,7 +5981,7 @@ textarea:focus-visible,
 
 .sess-new-cwd {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text);
   background: var(--bg-main);
   border: 1px solid var(--border);
@@ -6008,8 +5996,8 @@ textarea:focus-visible,
 }
 
 .sess-new-adapter {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   background: var(--bg-main);
   border: 1px solid var(--border);
@@ -6029,7 +6017,7 @@ textarea:focus-visible,
 }
 
 .sess-error {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--danger);
 }
 
@@ -6084,8 +6072,8 @@ textarea:focus-visible,
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .session-pane-tab:hover {
@@ -6123,8 +6111,8 @@ textarea:focus-visible,
   border-bottom: 1px solid var(--border);
 }
 .rail-ref {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -6142,8 +6130,8 @@ textarea:focus-visible,
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .rail-roster:hover {
@@ -6177,8 +6165,8 @@ textarea:focus-visible,
   gap: 8px;
   padding: 7px 8px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
   text-align: left;
 }
@@ -6216,10 +6204,9 @@ textarea:focus-visible,
   min-height: 0;
 }
 .rail-label {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
   color: var(--text-faint);
 }
 .rail-chips {
@@ -6228,8 +6215,8 @@ textarea:focus-visible,
   gap: 6px;
 }
 .rail-status {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   padding: 1px 8px;
   border-radius: 999px;
   text-transform: capitalize;
@@ -6247,8 +6234,8 @@ textarea:focus-visible,
   background: color-mix(in srgb, var(--success) 14%, transparent);
 }
 .rail-chip {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   padding: 1px 8px;
   border: 1px solid var(--border);
@@ -6256,8 +6243,8 @@ textarea:focus-visible,
   text-transform: capitalize;
 }
 .rail-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
   line-height: 1.35;
   color: var(--text);
 }
@@ -6282,8 +6269,8 @@ textarea:focus-visible,
   transition: transform 150ms;
 }
 .rail-progress-count {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -6300,7 +6287,7 @@ textarea:focus-visible,
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text);
 }
 .rail-check-box {
@@ -6334,8 +6321,8 @@ textarea:focus-visible,
   gap: 6px;
 }
 .rail-link {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   text-decoration: none;
   padding: 2px 9px;
@@ -6359,7 +6346,7 @@ textarea:focus-visible,
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 .rail-ev-dot {
@@ -6374,7 +6361,7 @@ textarea:focus-visible,
   background: var(--accent);
 }
 .rail-empty-feed {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -6385,8 +6372,8 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .rail-open-card:hover {
@@ -6410,12 +6397,12 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 .rail-empty-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
   color: var(--text);
 }
 .rail-empty-cwd {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 .rail-make-task {
@@ -6425,8 +6412,8 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-contrast);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 .rail-make-task:hover {
   background: color-mix(in srgb, var(--accent) 88%, black);
@@ -6460,7 +6447,7 @@ textarea:focus-visible,
 }
 
 .town-toolbar-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -6471,7 +6458,7 @@ textarea:focus-visible,
   padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   transition: background 150ms, color 150ms;
 }
@@ -6483,7 +6470,7 @@ textarea:focus-visible,
 .town-focusbar button.active {
   background: var(--bg-active);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .town-dot {
@@ -6533,7 +6520,7 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
   pointer-events: none;
 }
@@ -6548,15 +6535,15 @@ textarea:focus-visible,
   border-radius: var(--radius);
   background: var(--bg-card);
   box-shadow: var(--shadow-pop);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text);
   pointer-events: none;
 }
 
 .town-card-name {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .town-card-meta {
@@ -6564,11 +6551,11 @@ textarea:focus-visible,
 }
 
 .town-card-title {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .town-card-state {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-faint);
 }
 
@@ -6582,7 +6569,7 @@ textarea:focus-visible,
 
 .town-legend {
   gap: 4px 16px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -6597,7 +6584,7 @@ textarea:focus-visible,
 /* The neutral diamond on agent-owned work. Never violet: it marks who owns the
    task, not an action. */
 .owner-glyph {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   color: var(--text-muted);
 }
@@ -6610,7 +6597,7 @@ textarea:focus-visible,
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 13px;
+  font-size: 14px;
   color: inherit;
 }
 
@@ -6619,14 +6606,14 @@ textarea:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
 .from-ref {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -6654,7 +6641,7 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-inset);
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
   text-align: left;
   cursor: pointer;
@@ -6665,7 +6652,7 @@ textarea:focus-visible,
 }
 
 .queue-strip-label {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
 }
 
@@ -6674,13 +6661,13 @@ textarea:focus-visible,
 }
 
 .queue-strip-stat b {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
 }
 
 .queue-strip-open {
   margin-left: auto;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
   text-decoration: underline;
   text-decoration-color: var(--border-strong);
@@ -6690,7 +6677,7 @@ textarea:focus-visible,
 .queue-lede {
   margin: 0 0 10px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -6723,7 +6710,7 @@ textarea:focus-visible,
 }
 
 .observe-sub {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -6747,8 +6734,8 @@ textarea:focus-visible,
   display: flex;
   gap: 6px;
   margin: 14px 0 6px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -6786,7 +6773,7 @@ textarea:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .observe-row.observed .observe-q {
@@ -6795,7 +6782,7 @@ textarea:focus-visible,
 }
 
 .observe-trig {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -6807,14 +6794,14 @@ textarea:focus-visible,
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
 .observe-ref {
   flex: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 
@@ -6877,8 +6864,8 @@ textarea:focus-visible,
   padding: 0 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1.6;
   color: var(--text-muted);
   white-space: nowrap;
@@ -6914,14 +6901,14 @@ textarea:focus-visible,
 
 .observe-proj {
   flex: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
 .observe-question {
   margin: 0 0 2px;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
 }
 
 .observe-why {
@@ -6937,8 +6924,8 @@ textarea:focus-visible,
 
 .observe-blk h4 {
   margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-faint);
 }
 
@@ -6948,7 +6935,7 @@ textarea:focus-visible,
   border-radius: var(--radius-sm);
   background: var(--bg-inset);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text);
   white-space: pre-wrap;
   overflow-x: auto;
@@ -6957,7 +6944,7 @@ textarea:focus-visible,
 .observe-log {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .observe-log td {
@@ -6974,24 +6961,24 @@ textarea:focus-visible,
 
 .observe-log td.observe-log-session {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   white-space: nowrap;
 }
 
 .observe-log td.yes {
   color: var(--success-ink);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .observe-log td.no {
   color: var(--danger-ink);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .observe-empty {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
 }
 
@@ -7023,7 +7010,7 @@ textarea:focus-visible,
 }
 
 .observe-opt span {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -7048,7 +7035,7 @@ textarea:focus-visible,
   align-items: center;
   gap: 4px;
   margin-bottom: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -7064,7 +7051,7 @@ textarea:focus-visible,
 
 .observe-check-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .observe-trigger-row,
@@ -7107,7 +7094,7 @@ textarea:focus-visible,
 .observe-seg button.active {
   background: var(--bg-hover);
   color: var(--text);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .observe-add-option {
@@ -7119,8 +7106,8 @@ textarea:focus-visible,
   padding: 0 6px;
   border: 1px solid currentColor;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1.6;
   color: var(--warn);
 }
@@ -7174,7 +7161,7 @@ textarea:focus-visible,
 }
 
 .ws-meta {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 400;
   letter-spacing: 0;
   color: var(--text-muted);
@@ -7186,24 +7173,24 @@ textarea:focus-visible,
 }
 .ws-heading {
   margin: 14px 0 4px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .ws-empty {
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: 14px;
   padding: 6px 0;
 }
 .ws-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 13.5px;
+  font-size: 14px;
 }
 .ws-table th {
   text-align: left;
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
@@ -7240,8 +7227,8 @@ textarea:focus-visible,
   background: none;
   padding: 0;
   color: var(--accent);
-  font-weight: 600;
-  font-size: 12.5px;
+  font-weight: 500;
+  font-size: 13px;
   cursor: pointer;
 }
 .ws-open:hover {
@@ -7256,7 +7243,7 @@ textarea:focus-visible,
   margin-bottom: 6px;
   border-radius: var(--radius);
   background: var(--bg-inset);
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 .ws-banner .ws-dot {
@@ -7264,13 +7251,13 @@ textarea:focus-visible,
 }
 .ws-banner-why {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-faint);
   overflow-wrap: anywhere;
 }
 .ws-action-error {
   margin-bottom: 6px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--danger);
   overflow-wrap: anywhere;
 }
@@ -7287,7 +7274,7 @@ textarea:focus-visible,
   border-radius: 999px;
   background: var(--bg-card);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
 }
 .ws-pill:hover {
@@ -7309,7 +7296,7 @@ textarea:focus-visible,
   border-radius: 10px;
   background: var(--bg-card);
   box-shadow: var(--shadow-pop);
-  font-size: 13px;
+  font-size: 14px;
   z-index: 30;
 }
 .ws-pop-head {
@@ -7318,13 +7305,13 @@ textarea:focus-visible,
   padding: 4px 8px 8px;
   margin-bottom: 4px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 .ws-pop-section {
   margin: 8px 8px 2px;
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 .ws-pop-empty {
