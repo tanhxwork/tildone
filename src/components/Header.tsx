@@ -60,7 +60,7 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
       title = "Completed";
       break;
     case "goals":
-      title = "Goals";
+      title = "Where you’re going";
       break;
     case "town":
       title = "Town";

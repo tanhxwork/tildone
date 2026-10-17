@@ -92,6 +92,10 @@ interface Store {
   /** Comment count per task_id, for the card badge. Bodies load only on open
    * (loadComments); this is refreshed by the same reload every agent write triggers. */
   commentCounts: Record<number, number>;
+  /** Newest activity row per task_id (any actor), raw timestamp — parse with
+   * toIsoUtc. Feeds focusViews' "what moved"; recordActivity bumps it at once for
+   * an edit made in the app, a reload refreshes it for everything an agent wrote. */
+  lastActivity: Record<number, string>;
   /** Observe cards (migration 029): task rows with kind 'observe', kept out of
    *  `tasks` so no board, list or count shows them. Refreshed by every reload. */
   observeCards: ObserveCard[];
@@ -264,59 +268,29 @@ function colorForName(name: string): string {
 const TRASH_RETENTION_DAYS = 30;
 
 /**
- * Last-viewed selection + view mode, persisted so relaunch lands where the user
- * left off instead of resetting to Mine/list. A project selection is validated
- * against the loaded projects in `init` — a deleted project falls back to Mine.
- * A stored selection or view mode that no longer exists also loads as Mine/list.
+ * The saved view mode, so a relaunch keeps list/board/table. The selection is not
+ * saved: the app opens on "Where you're going" (goals) at every launch, so a stored
+ * `selection` key from an older build is simply ignored. A view mode that no longer
+ * exists loads as list.
  */
 const NAV_STORAGE_KEY = "tildone-nav";
 const VIEW_MODES: ViewMode[] = ["list", "board", "table"];
-const SELECTION_TYPES: Selection["type"][] = [
-  "mine",
-  "queue",
-  "observe",
-  "all",
-  "review",
-  "completed",
-  "goals",
-  "servers",
-  "project",
-  "goal",
-  "ungoaled",
-];
 
 export function loadNav(): { selection: Selection; viewMode: ViewMode } {
-  const fallback = { selection: { type: "mine" } as Selection, viewMode: "list" as ViewMode };
+  const selection: Selection = { type: "goals" };
   try {
     const raw = localStorage.getItem(NAV_STORAGE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    const viewMode: ViewMode = VIEW_MODES.includes(parsed.viewMode)
-      ? parsed.viewMode
-      : "list";
-    const sel = parsed.selection;
-    let selection: Selection = fallback.selection;
-    if (sel && SELECTION_TYPES.includes(sel.type)) {
-      if (sel.type === "project") {
-        if (typeof sel.projectId === "number") selection = { type: "project", projectId: sel.projectId };
-      } else if (sel.type === "goal") {
-        if (typeof sel.goalId === "number") selection = { type: "goal", goalId: sel.goalId };
-      } else if (sel.type === "ungoaled") {
-        if (typeof sel.projectId === "number")
-          selection = { type: "ungoaled", projectId: sel.projectId };
-      } else {
-        selection = { type: sel.type };
-      }
-    }
+    const parsed = raw ? JSON.parse(raw) : null;
+    const viewMode: ViewMode = VIEW_MODES.includes(parsed?.viewMode) ? parsed.viewMode : "list";
     return { selection, viewMode };
   } catch {
-    return fallback;
+    return { selection, viewMode: "list" };
   }
 }
 
-function persistNav(selection: Selection, viewMode: ViewMode) {
+function persistViewMode(viewMode: ViewMode) {
   try {
-    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ selection, viewMode }));
+    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ viewMode }));
   } catch {
     // ignore quota/serialization errors — persistence is best-effort
   }
@@ -383,6 +357,7 @@ export const useStore = create<Store>()((set, get) => ({
   reviewFlaggedAt: null,
   comments: [],
   commentCounts: {},
+  lastActivity: {},
   observeCards: [],
   presence: {},
   live: {},
@@ -438,29 +413,6 @@ export const useStore = create<Store>()((set, get) => ({
         const data = await db.fetchAll();
         db.trace(`init: attempt ${attempt} loaded ok`);
         set({ ...data, loaded: true, initError: null });
-        // A restored project selection may point at a project deleted in another
-        // session; fall back to Mine so we never land on a dead view.
-        const { selection } = get();
-        if (
-          selection.type === "project" &&
-          !data.projects.some((p) => p.id === selection.projectId)
-        ) {
-          set({ selection: { type: "mine" } });
-        }
-        // Same guard for a restored goal — deleted in another session, or gone
-        // with its project.
-        if (
-          selection.type === "goal" &&
-          !data.goals.some((g) => g.id === selection.goalId)
-        ) {
-          set({ selection: { type: "mine" } });
-        }
-        if (
-          selection.type === "ungoaled" &&
-          !data.projects.some((p) => p.id === selection.projectId)
-        ) {
-          set({ selection: { type: "mine" } });
-        }
         // Icons resolve async off the main load — the dot shows until they land.
         void get().loadProjectIcons();
         return;
@@ -1113,6 +1065,10 @@ export const useStore = create<Store>()((set, get) => ({
         position: u.position,
         completed_at: u.completed_at,
       });
+      // Same log line as an editor status change, so a dragged card counts as moved.
+      if (u.status !== prev.status) {
+        void recordActivity(u.id, `Status changed to ${STATUS_LABELS[u.status]}`);
+      }
       if (u.status === "done" && prev.status !== "done") {
         const kept = tagIdsAfterDone(prev, get().tags);
         if (kept) {
@@ -1393,15 +1349,12 @@ export const useStore = create<Store>()((set, get) => ({
   },
 }));
 
-// Persist the last-viewed selection + view mode whenever either changes, so a
-// relaunch lands where the user left off (validated in `init`).
-let lastSelection = useStore.getState().selection;
+// Persist the view mode whenever it changes, so a relaunch keeps it.
 let lastViewMode = useStore.getState().viewMode;
 useStore.subscribe((state) => {
-  if (state.selection !== lastSelection || state.viewMode !== lastViewMode) {
-    lastSelection = state.selection;
+  if (state.viewMode !== lastViewMode) {
     lastViewMode = state.viewMode;
-    persistNav(state.selection, state.viewMode);
+    persistViewMode(state.viewMode);
   }
 });
 
@@ -1414,7 +1367,9 @@ function patchObserveCard(id: number, fn: (card: ObserveCard) => ObserveCard): v
 
 /** Persist an activity entry and refresh the log if that task's details are open. */
 async function recordActivity(taskId: number, label: string): Promise<void> {
-  await db.insertActivity(taskId, label);
+  const at = new Date().toISOString();
+  await db.insertActivity(taskId, label, at);
+  useStore.setState((s) => ({ lastActivity: { ...s.lastActivity, [taskId]: at } }));
   const s = useStore.getState();
   if (s.editingTaskId === taskId) await s.loadActivity(taskId);
 }

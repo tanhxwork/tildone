@@ -2876,7 +2876,6 @@ textarea:focus-visible,
 
 .goals-view {
   padding-top: 8px;
-  max-width: 780px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -7351,4 +7350,212 @@ textarea:focus-visible,
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---------- Focus compass in the sidebar (spec focus-compass, mockup D) ---------- */
+
+.focus-section .section-header {
+  margin-bottom: 4px;
+}
+
+.focus-subheader {
+  margin-top: 14px;
+}
+
+/* The right-hand "3 goals" / "4 moving" note: a count, not a label, so it drops
+   the header's uppercase. */
+.focus-header-n {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.focus-goal {
+  padding: 4px 0 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.focus-goal + .focus-goal {
+  margin-top: 4px;
+}
+
+.focus-goal:hover {
+  background: var(--bg-hover);
+}
+
+.focus-goal.active {
+  background: var(--bg-active);
+}
+
+.focus-goal-head {
+  display: block;
+  width: 100%;
+  padding: 2px 8px 0;
+  text-align: left;
+  color: var(--text);
+}
+
+.focus-goal-top,
+.focus-goal-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.focus-goal-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.focus-goal.active .focus-goal-name {
+  color: var(--accent);
+}
+
+.focus-count {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.focus-goal.finished .focus-count {
+  color: var(--success-ink);
+}
+
+.focus-goal-meta {
+  margin: 2px 0 5px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.focus-goal-meta-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The project dot is user data (its colour), sized down to sit in the meta line. */
+.focus-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.focus-bar {
+  display: block;
+  margin: 0 0 4px;
+  height: 4px;
+  background: var(--border);
+}
+
+.focus-goal.finished .goal-row-bar-fill {
+  background: var(--success);
+}
+
+/* A card line under a goal, or loose. Same 22px rhythm either way. */
+.focus-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 22px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--text);
+}
+
+.focus-card.loose {
+  padding-left: 8px;
+}
+
+.focus-card:hover {
+  background: var(--bg-hover);
+}
+
+.focus-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.focus-ref {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.focus-card .owner-mark {
+  flex: none;
+}
+
+.focus-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--doing);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--doing) 15%, transparent);
+}
+
+.focus-tick {
+  width: 6px;
+  flex: none;
+  font-size: 10px;
+  text-align: center;
+  color: var(--success-ink);
+}
+
+/* "you": the card or count waits on the user. Warn ink on a faint doing wash. */
+.focus-you {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--doing) 9%, transparent);
+}
+
+.focus-more {
+  padding: 0 8px 2px 24px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.focus-divider {
+  height: 1px;
+  margin: 8px 8px;
+  background: var(--border);
+}
+
+.focus-fold {
+  gap: 4px;
+}
+
+.focus-fold.quiet {
+  color: var(--text-faint);
+}
+
+.focus-fold-chevron {
+  color: var(--text-faint);
+}
+
+/* A stalled card's marker: a still, muted dot where a moving card pulses. */
+.focus-idle {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--border-strong);
 }

@@ -185,11 +185,13 @@ describe("task owner", () => {
     await announceDbChange();
   });
 
-  it("opens Mine on a fresh install", async () => {
-    // The per-spec reset pins All Tasks for the other specs; with no saved nav at
-    // all, the app must fall back to Mine.
+  it("opens on the Goals view at launch", async () => {
+    // The per-spec reset steps off the launch view for the other specs; with no
+    // saved nav at all, the app opens on Where you're going.
     await remount(() => localStorage.removeItem("tildone-nav"));
-    await expect($('[data-nav="mine"]')).toHaveElementClass("active");
+    await expect($('[data-nav="goals"]')).toHaveElementClass("active");
+    // The next cases work in Mine.
+    await $('[data-nav="mine"]').click();
   });
 
   it("groups Mine and works the agent queue", async () => {
@@ -275,6 +277,8 @@ describe("task owner", () => {
     await expect($('[data-lane="agent"]')).toHaveElementClass("collapsed");
 
     await remount(() => {});
+    // A relaunch opens on Goals; the view mode (board) is what persists.
+    await $(`.nav-project*=${PROJECT}`).click();
     await $('[data-lane="agent"]').waitForExist({ timeout: 10000 });
     await expect($('[data-lane="agent"]')).toHaveElementClass("collapsed");
     await expect($(`.board-card*=${AGENT_TODO}`)).not.toBeExisting();

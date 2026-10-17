@@ -40,6 +40,7 @@ export type Board = {
   links: Record<number, TaskLink[]>;
   images: Record<number, TaskImage[]>;
   commentCounts: Record<number, number>;
+  lastActivity: Record<number, string>;
   observeCards: ObserveCard[];
 };
 
@@ -55,6 +56,7 @@ export function emptyBoard(): Board {
     links: {},
     images: {},
     commentCounts: {},
+    lastActivity: {},
     observeCards: [],
   };
 }
