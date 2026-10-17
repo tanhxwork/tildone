@@ -230,9 +230,9 @@ describe("regressions from the Codex verify pass on TIL-204", () => {
   });
 
   it("drops a dead goal selection when a reload no longer has it", async () => {
-    // Finding 4. An agent calling delete_goal arrives as a reload; init validated
-    // the restored selection but reload did not, leaving the view pointed at a
-    // goal that no longer exists — empty board, no band, no way back.
+    // Finding 4. An agent calling delete_goal arrives as a reload; without this
+    // guard the view stays pointed at a goal that no longer exists — empty board,
+    // no band, no way back.
     db.fetchAll.mockImplementation(async () => ({
       ...emptyBoard(),
       projects: [{ id: 7, name: "p", color: "#000", position: 0, folder_path: null, code: "P" }],

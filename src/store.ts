@@ -1065,6 +1065,10 @@ export const useStore = create<Store>()((set, get) => ({
         position: u.position,
         completed_at: u.completed_at,
       });
+      // Same log line as an editor status change, so a dragged card counts as moved.
+      if (u.status !== prev.status) {
+        void recordActivity(u.id, `Status changed to ${STATUS_LABELS[u.status]}`);
+      }
       if (u.status === "done" && prev.status !== "done") {
         const kept = tagIdsAfterDone(prev, get().tags);
         if (kept) {
