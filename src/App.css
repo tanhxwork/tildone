@@ -223,7 +223,7 @@ textarea:focus-visible,
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 20px 24px;
+  padding: 8px 40px 32px;
 }
 
 /* ---------- Sidebar ---------- */
@@ -563,7 +563,7 @@ textarea:focus-visible,
 /* ---------- Header ---------- */
 
 .header {
-  padding: 8px 20px 0;
+  padding: 20px 40px 0;
 }
 
 .header-top {
@@ -579,9 +579,10 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 24px;
+  font-size: 32px;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.5px;
+  line-height: 1.2;
 }
 
 /* The goal view's breadcrumb suffix: "ProjectName / GoalName" — same secondary
@@ -607,12 +608,16 @@ textarea:focus-visible,
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-card);
+  background: transparent;
   color: var(--text-faint);
   width: 190px;
-  transition: border-color 150ms;
+  transition: background-color 150ms, border-color 150ms;
+}
+
+.search-box:hover {
+  background: var(--bg-hover);
 }
 
 .search-box:focus-within {
@@ -858,13 +863,17 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 20px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-card);
+  margin: 12px 34px 4px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-faint);
   transition: border-color 150ms, box-shadow 150ms;
+}
+
+.quick-add:hover {
+  background: var(--bg-hover);
 }
 
 .quick-add:focus-within {
@@ -1235,7 +1244,7 @@ textarea:focus-visible,
 
 .board {
   display: flex;
-  gap: 14px;
+  gap: 16px;
   align-items: flex-start;
   min-height: 100%;
   padding-top: 8px;
@@ -1499,11 +1508,17 @@ textarea:focus-visible,
 /* On a live card the id becomes a kicker line above the title, leaving the card
    body free for the repo/agent status row. On the compact done card it stays
    inline, so the one-line collapsed layout is preserved. */
+/* Title first, ref under it: the column-reverse flips the id span and the
+   title text node without touching the markup. */
+.board-card .card-title {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+}
+
 .card-title .card-id {
   display: block;
   margin-right: 0;
-  margin-bottom: 1px;
-  letter-spacing: 0.03em;
 }
 
 .board-card .task-meta {
