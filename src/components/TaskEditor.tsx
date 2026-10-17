@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
+import { CircleDot, Flag, Calendar, Folder, Target, User, Tag, Image, Clock, SquareTerminal, Bot } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
@@ -641,7 +642,10 @@ export function TaskEditor() {
           </div>
 
           <div className="detail-props">
-            <span className="detail-prop-label">Status</span>
+            <span className="detail-prop-label">
+              <CircleDot className="detail-prop-icon" size={16} aria-hidden="true" />
+              Status
+            </span>
             <span>
               <select
                 className={`detail-status ${task.status}`}
@@ -657,7 +661,10 @@ export function TaskEditor() {
               </select>
             </span>
 
-            <span className="detail-prop-label">Priority</span>
+            <span className="detail-prop-label">
+              <Flag className="detail-prop-icon" size={16} aria-hidden="true" />
+              Priority
+            </span>
             <span>
               <select
                 className={`detail-value-select ${task.priority > 0 ? `prio-${task.priority}` : "empty"}`}
@@ -673,7 +680,10 @@ export function TaskEditor() {
               </select>
             </span>
 
-            <span className="detail-prop-label">Due date</span>
+            <span className="detail-prop-label">
+              <Calendar className="detail-prop-icon" size={16} aria-hidden="true" />
+              Due date
+            </span>
             <span className="detail-due">
               <input
                 type="date"
@@ -696,7 +706,10 @@ export function TaskEditor() {
               )}
             </span>
 
-            <span className="detail-prop-label">Project</span>
+            <span className="detail-prop-label">
+              <Folder className="detail-prop-icon" size={16} aria-hidden="true" />
+              Project
+            </span>
             <span>
               <select
                 className="detail-value-select"
@@ -721,7 +734,10 @@ export function TaskEditor() {
                 task rather than a disabled control with nothing to pick. */}
             {project && (
               <>
-                <span className="detail-prop-label">Goal</span>
+                <span className="detail-prop-label">
+              <Target className="detail-prop-icon" size={16} aria-hidden="true" />
+              Goal
+            </span>
                 <span>
                   <select
                     className="detail-value-select"
@@ -752,7 +768,10 @@ export function TaskEditor() {
               </>
             )}
 
-            <span className="detail-prop-label">Owner</span>
+            <span className="detail-prop-label">
+              <User className="detail-prop-icon" size={16} aria-hidden="true" />
+              Owner
+            </span>
             <span>
               <select
                 className="detail-value-select"
@@ -785,7 +804,10 @@ export function TaskEditor() {
               )}
             </span>
 
-            <span className="detail-prop-label">Tags</span>
+            <span className="detail-prop-label">
+              <Tag className="detail-prop-icon" size={16} aria-hidden="true" />
+              Tags
+            </span>
             <span className="detail-tags">
               {taskTags.map((tag) => (
                 <span
@@ -824,7 +846,10 @@ export function TaskEditor() {
               </datalist>
             </span>
 
-            <span className="detail-prop-label">Images</span>
+            <span className="detail-prop-label">
+              <Image className="detail-prop-icon" size={16} aria-hidden="true" />
+              Images
+            </span>
             <span className="detail-images">
               {taskImages.map((img, i) => {
                 const src = imageSrc(img);
@@ -882,7 +907,10 @@ export function TaskEditor() {
               {dropNote && <span className="detail-image-note">{dropNote}</span>}
             </span>
 
-            <span className="detail-prop-label">Created</span>
+            <span className="detail-prop-label">
+              <Clock className="detail-prop-icon" size={16} aria-hidden="true" />
+              Created
+            </span>
             <span className="detail-created">{createdLabel}</span>
 
             {/* Board-hosted session (spec 2026-07-19-hosted-agent-sessions):
@@ -892,7 +920,10 @@ export function TaskEditor() {
                 with the ref as the opening prompt. */}
             {(hosted || hostAdapters.length > 0) && (
               <>
-                <span className="detail-prop-label">Session</span>
+                <span className="detail-prop-label">
+              <SquareTerminal className="detail-prop-icon" size={16} aria-hidden="true" />
+              Session
+            </span>
                 <span className="detail-session">
                   {hosted ? (
                     <>
@@ -996,7 +1027,10 @@ export function TaskEditor() {
 
             {presence && presenceAgent && (
               <>
-                <span className="detail-prop-label">Agent</span>
+                <span className="detail-prop-label">
+              <Bot className="detail-prop-icon" size={16} aria-hidden="true" />
+              Agent
+            </span>
                 <span className="detail-agent">
                   <span
                     className="detail-agent-id"

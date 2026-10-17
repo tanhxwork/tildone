@@ -321,8 +321,8 @@ export const PRIORITY_LABELS: Record<number, string> = {
   3: "High",
 };
 
-// Priority and project/tag colors come from the Notion design system's brand
-// palette (docs/design/notion-DESIGN.md).
+// Priority and project/tag colors are the semantic fills in docs/DESIGN.md
+// (the Colors section); text in these hues takes the -ink tokens.
 export const PRIORITY_COLORS: Record<number, string> = {
   1: "#0075de",
   2: "#dd5b00",

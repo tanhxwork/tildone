@@ -558,8 +558,7 @@ function Column({
     >
       {showHeader && (
         <div className={`column-header ${status}`}>
-          <span className="column-dot" />
-          {STATUS_LABELS[status]}
+          <span className="column-pill">{STATUS_LABELS[status]}</span>
           <span className="column-count">{ids.length}</span>
         </div>
       )}
@@ -909,9 +908,7 @@ function CardContent({
       {showMark && (
         <UnseenMark key={settleKey ?? "unseen"} settling={settling} onDone={onSettleDone} />
       )}
-      <span className="card-title">
-        <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span> {task.title}
-      </span>
+      <span className="card-title">{task.title}</span>
       {cardImages.length > 0 && <CardThumbs images={cardImages} />}
       {(build.length > 0 || verifySteps.length > 0) && (
         <span
@@ -1046,11 +1043,9 @@ function CardThumbs({ images }: { images: TaskImage[] }) {
 }
 
 /**
- * The card's provenance footer: project · repo links · which agent last touched it.
- *
- * Separated from the classification row (state / priority / tags) by a hairline so
- * the two never blur together — human labels above, tooling facts below. Renders
- * nothing when the task has no project, no links, and no recent agent presence.
+ * The card's meta line: ref · project · repo links · artifact trail · which agent
+ * last touched it. One row, Notion's card footer: the ref leads, the time and
+ * counts trail, so no fact needs a row of its own.
  */
 function CardProvenance({
   task,
@@ -1083,8 +1078,6 @@ function CardProvenance({
   // File evidence lives in the task detail's Evidence section, never as a card
   // chip — the card carries only the git-workflow "state of play".
   const chipLinks = links.filter((l) => asLinkKind(l.kind) !== "file");
-  if (!project && chipLinks.length === 0 && !entry && !hosted && !resumable && !facts)
-    return null;
   // The agent's worktree, from its claim. Suppressed when the task already carries a
   // hand-attached worktree link, which is a real URL and therefore strictly more
   // useful than a bare name.
@@ -1106,9 +1099,20 @@ function CardProvenance({
       })
       .map((l) => ({ kind: asLinkKind(l.kind), name: l.label })),
   ];
+  const factsText =
+    facts && (facts.last_active || facts.commits_ahead > 0)
+      ? [
+          facts.last_active ? timeAgo(facts.last_active) : null,
+          facts.turns > 0 ? `${facts.turns} turns` : null,
+          facts.commits_ahead > 0 ? `${facts.commits_ahead}↑` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
   return (
     <>
     <span className="card-provenance">
+      <span className="card-id" aria-hidden="true">{taskRefLabel(task)}</span>
       {project && (
         <span className="project-label" title={project.name}>
           <ProjectGlyph project={project} size={14} />
@@ -1198,6 +1202,18 @@ function CardProvenance({
         </span>
       )}
       <SecretaryBadge taskId={task.id} />
+      {factsText && (
+        // The artifact trail (F1): stable truths read off the filesystem, so a
+        // card can still answer "when did anything last happen" after every
+        // process and heartbeat is gone. Quiet by design, and on the meta line
+        // beside the ref and chips rather than a row of its own.
+        <span
+          className={`card-artifacts${facts?.last_active ? " has-time" : ""}`}
+          title={`${factsText} — artifact trail: transcript activity and commits, survives the session`}
+        >
+          {factsText}
+        </span>
+      )}
       <AgentPresence taskId={task.id} />
     </span>
     {revealNames.length > 0 && (
@@ -1216,23 +1232,6 @@ function CardProvenance({
       // both and this is the one that keeps all three signals.
       <span className="card-log" title={entry.last_log}>
         {entry.last_log}
-      </span>
-    )}
-    {facts && (facts.last_active || facts.commits_ahead > 0) && (
-      // The artifact trail (F1): stable truths read off the filesystem, so a
-      // card can still answer "when did anything last happen" after every
-      // process and heartbeat is gone. Quiet by design — pure meta.
-      <span
-        className="card-artifacts"
-        title="Artifact trail — transcript activity and commits, survives the session"
-      >
-        {[
-          facts.last_active ? timeAgo(facts.last_active) : null,
-          facts.turns > 0 ? `${facts.turns} turns` : null,
-          facts.commits_ahead > 0 ? `${facts.commits_ahead}↑` : null,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
       </span>
     )}
     </>

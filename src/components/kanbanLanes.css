@@ -1,7 +1,7 @@
 /* ---------- Board swimlanes (task owner, spec 2026-10-01) ----------
    A single-project board splits its columns into You over Agents. The lane
    label is a slim row above its columns, so the columns keep the full width;
-   column headers appear once, on the You lane. Agents reads as secondary: transparent columns with a dashed edge. */
+   column headers appear once, on the You lane. Agents reads as secondary: transparent columns. */
 
 .board.board-lanes {
   flex-direction: column;
@@ -29,13 +29,13 @@
 }
 
 .lane-name {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
 .lane-count {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -48,7 +48,7 @@
   border: 0;
   background: none;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-faint);
   cursor: pointer;
 }
@@ -59,13 +59,12 @@
 
 .lane.agents .board-column {
   background: transparent;
-  border: 1px dashed var(--border-strong);
 }
 
 /* Collapsed, the lane is one quiet line: name, count, and the way back. */
 .lane.agents.collapsed .lane-who {
   padding: 8px 10px;
-  border: 1px dashed var(--border-strong);
+  background: var(--bg-inset);
   border-radius: var(--radius-card);
 }
 
