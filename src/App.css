@@ -1483,7 +1483,7 @@ textarea:focus-visible,
 /* The card itself carries the state — a chip among chips was too easy to miss,
    and these two are exactly the ones the user needs to catch at a glance.
    A tint, not a thick side border: tinted cards are how the Notion system marks
-   a card (docs/design/notion-DESIGN.md card-tint-*), and the only border-lefts
+   a card (docs/DESIGN.md card tints), and the only border-lefts
    in this file are 1px structural dividers. color-mix against the theme's own
    tokens so both themes stay legible without a dark-mode override. */
 .board-card.state-blocked {
