@@ -143,7 +143,7 @@ fn open_vetted(path: &Path, home: &Path) -> Result<std::fs::File, String> {
 
 /// The bytes of a vetted handle, bounded regardless of what it turns out to
 /// hold — `take` caps the allocation rather than trusting the size just read.
-fn read_vetted(mut file: std::fs::File) -> Result<Vec<u8>, String> {
+fn read_vetted(file: std::fs::File) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1)
