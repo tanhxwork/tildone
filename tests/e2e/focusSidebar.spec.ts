@@ -76,10 +76,13 @@ interface Seeded {
  * sidebar-focus: three goals in three projects with cards moved today (a human
  * "you" card, agent cards, needs-approval cards), one of them finished but open,
  * and two loose doing cards. `stalled` adds two doing cards untouched for days;
- * `quiet` adds two projects whose only cards are just as old; `finishedStale`
- * adds a finished goal whose cards were all closed weeks ago.
+ * `quiet` adds two projects whose only cards are just as old; `quietGoal` is
+ * `quiet` plus an open goal on Archive One; `finishedStale` adds a finished goal
+ * whose cards were all closed weeks ago.
  */
-async function seed(level: "focus" | "stalled" | "quiet" | "finishedStale"): Promise<Seeded> {
+async function seed(
+  level: "focus" | "stalled" | "quiet" | "quietGoal" | "finishedStale",
+): Promise<Seeded> {
   const url = `${await endpoint()}/mcp`;
   mcpSession = "";
   await rpc(url, "initialize", {
@@ -149,18 +152,30 @@ async function seed(level: "focus" | "stalled" | "quiet" | "finishedStale"): Pro
       backdateActivity(t.id, 20);
     }
   }
-  if (level === "stalled" || level === "quiet") {
+  const quiet = level === "quiet" || level === "quietGoal";
+  if (level === "stalled" || quiet) {
     const old1 = await task("s1", { project: "Factory", title: "Old spike A", status: "doing" });
     const old2 = await task("s2", { project: "Worklane", title: "Old spike B", status: "doing" });
     backdateActivity(old1.id, 12);
     backdateActivity(old2.id, 10);
   }
-  if (level === "quiet") {
+  if (quiet) {
     for (const [key, project] of [["q1", "Archive One"], ["q2", "Archive Two"]]) {
       await tool(url, "create_project", { name: project });
       const t = await task(key, { project, title: `${project} leftovers`, status: "doing" });
       backdateActivity(t.id, 10);
     }
+  }
+  if (level === "quietGoal") {
+    const g = await tool(url, "create_goal", { project: "Archive One", name: "Dormant migration" });
+    out.goals["Dormant migration"] = g.id;
+    const t = await task("q3", {
+      project: "Archive One",
+      goal: "Dormant migration",
+      title: "Cut over the old tenant",
+      status: "doing",
+    });
+    backdateActivity(t.id, 10);
   }
   await announceDbChange();
   await $("[data-focus-goal]").waitForExist({ timeout: 10000 });
@@ -176,6 +191,46 @@ async function scrollSidebarToEnd(): Promise<void> {
     if (list) list.scrollTop = list.scrollHeight;
   });
 }
+
+/**
+ * Force a project row's hover reveal on or off. WebDriver's moveTo cannot drive CSS
+ * :hover in this webview (see sessions.spec), so the shot forces the styles, and the
+ * caller clears them again so the next shot does not show a hovered row. Returns the
+ * number of hover-revealed buttons on the row.
+ */
+async function forceRowHover(project: string, on: boolean): Promise<number> {
+  return browser.execute(
+    (name: string, show: boolean) => {
+      const row = [...document.querySelectorAll<HTMLElement>(".nav-project")].find(
+        (r) => r.querySelector(".nav-label")?.textContent === name,
+      );
+      const actions = row?.querySelectorAll<HTMLElement>(".row-action") ?? [];
+      actions.forEach((b) => {
+        if (show) {
+          b.style.transition = "none";
+          b.style.opacity = "1";
+        } else {
+          // Snap back with no transition: this webview can leave a running
+          // opacity transition stuck at 1, which a later shot would show.
+          b.style.transition = "none";
+          b.style.removeProperty("opacity");
+          void getComputedStyle(b).opacity;
+          b.style.removeProperty("transition");
+        }
+      });
+      if (show) row?.style.setProperty("background", "var(--bg-hover)");
+      else row?.style.removeProperty("background");
+      return actions.length;
+    },
+    project,
+    on,
+  );
+}
+
+/** XPath of a project's "No goal" row: the nav-goals block follows the project row. */
+const noGoalRow = (project: string) =>
+  `//*[contains(@class,"nav-project")][.//*[contains(@class,"nav-label")][normalize-space()="${project}"]]` +
+  `/following-sibling::div[1]//*[contains(@class,"nav-goal-none")]`;
 
 describe("Focus sidebar", () => {
   beforeEach(async () => {
@@ -293,26 +348,14 @@ describe("Focus sidebar", () => {
     await scrollSidebarToEnd();
     await shot("sidebar-quiet-collapsed");
 
-    // A project row shows its +goal and edit buttons on hover. WebDriver's moveTo
-    // cannot drive CSS :hover in this webview (see sessions.spec), so the reveal is
-    // forced on for the shot; the buttons must exist on the row.
+    // A project row shows its +goal and edit buttons on hover; the reveal is forced
+    // on for the shot (see forceRowHover) and off again before the next one.
     const crest = $(".nav-project*=Crestlink");
     await expect(crest.$('[aria-label="New goal in Crestlink"]')).toBeExisting();
     await expect(crest.$('[aria-label="Edit Crestlink"]')).toBeExisting();
-    const revealed = await browser.execute(() => {
-      const row = [...document.querySelectorAll(".nav-project")].find((r) =>
-        r.textContent?.includes("Crestlink"),
-      ) as HTMLElement | undefined;
-      const actions = row?.querySelectorAll<HTMLElement>(".row-action") ?? [];
-      actions.forEach((b) => {
-        b.style.transition = "none";
-        b.style.opacity = "1";
-      });
-      if (row) row.style.background = "var(--bg-hover)";
-      return actions.length;
-    });
-    expect(revealed).toBe(2);
+    expect(await forceRowHover("Crestlink", true)).toBe(2);
     await shot("sidebar-project-hover");
+    await forceRowHover("Crestlink", false);
 
     await fold.click();
     await expect($(".nav-project*=Archive One")).toBeExisting();
@@ -340,6 +383,55 @@ describe("Focus sidebar", () => {
     await expect($(".nav-project*=Archive One")).toBeExisting();
     await scrollSidebarToEnd();
     await shot("sidebar-quiet-auto-open");
+  });
+
+  it("selecting a quiet project's goal from outside the fold opens it", async () => {
+    await seed("quietGoal");
+    await expect($(".nav-project*=Archive One")).not.toBeExisting();
+
+    // A goal chip on a card in All tasks is a way to a goal that skips the fold.
+    await $("[data-nav=all]").click();
+    const chip = $(".goal-chip*=Dormant migration");
+    await chip.scrollIntoView();
+    await chip.click();
+    await expect($(".view-title-sub")).toHaveText("Dormant migration");
+    await expect($('[data-nav="quiet"]')).toHaveAttribute("aria-expanded", "true");
+    await expect($(".nav-goal*=Dormant migration")).toHaveElementClass("active");
+    await scrollSidebarToEnd();
+    await shot("sidebar-quiet-goal-auto-open");
+
+    // A row inside the open fold keeps its goal chevron, +goal and edit controls.
+    const archive = $(".nav-project*=Archive One");
+    await expect(archive.$('[aria-label="Collapse Archive One goals"]')).toBeExisting();
+    await expect(archive.$('[aria-label="New goal in Archive One"]')).toBeExisting();
+    await expect(archive.$('[aria-label="Edit Archive One"]')).toBeExisting();
+    expect(await forceRowHover("Archive One", true)).toBe(2);
+    await shot("sidebar-quiet-row-controls");
+    await forceRowHover("Archive One", false);
+  });
+
+  // No route reaches a quiet project's No goal list from outside the fold: the
+  // palette lists projects only, selection is not restored at launch, and the home
+  // view's chip lists projects that moved. So the project goes quiet under the
+  // selection instead: the fold must open itself rather than drop the selected row.
+  it("a project going quiet under its No goal list opens the fold", async () => {
+    const s = await seed("focus");
+    const noGoal = $(noGoalRow("Crestlink"));
+    await noGoal.click();
+    await expect(noGoal).toHaveElementClass("active");
+    await expect($('[data-nav="quiet"]')).not.toExist();
+
+    backdateActivity(s.refs.m1, 10);
+    backdateActivity(s.refs.l2, 10);
+    await announceDbChange();
+
+    const fold = $('[data-nav="quiet"]');
+    await fold.waitForExist({ timeout: 10000 });
+    await expect(fold).toHaveText("Quiet · 1 project");
+    await expect(fold).toHaveAttribute("aria-expanded", "true");
+    await expect($(noGoalRow("Crestlink"))).toHaveElementClass("active");
+    await scrollSidebarToEnd();
+    await shot("sidebar-quiet-nogoal-auto-open");
   });
 
   it("an empty board says nothing moved", async () => {
