@@ -254,6 +254,52 @@ describe("compass home view", () => {
     await expect($(".view-title-sub")).toHaveText("No goal");
     await $(".task-row*=Loose one").waitForExist({ timeout: 10000 });
     await expect($(".task-row*=Inbox loose")).not.toExist();
+    await shot("compass-chip-click");
+  });
+
+  it("caps the moved lane at five rows and clamps a long outcome", async () => {
+    await tool(url, "create_project", { name: "Harbor" });
+    await tool(url, "create_goal", {
+      project: "Harbor",
+      name: "Map the shoals",
+      // One paragraph, long enough to pass three lines at any window width.
+      notes: Array.from(
+        { length: 6 },
+        () =>
+          "Every shoal between the island and the mainland is charted, with depth soundings at low and high tide, so a pilot can plan a crossing from the atlas alone.",
+      ).join(" "),
+    });
+    await cards(
+      url,
+      "Harbor",
+      [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+        title: `Sound shoal ${n}`,
+        goal: "Map the shoals",
+        status: "doing",
+      })),
+    );
+    await announce();
+
+    const band = $("[data-compass-goal]");
+    await band.waitForExist({ timeout: 10000 });
+    expect(await band.$$("[data-compass-card]")).toHaveLength(5);
+    await expect(band.$(".compass-more")).toHaveText("+2 more");
+    // Clamped at 3 lines: the box is shorter than its full text.
+    const [shown, full] = (await browser.execute(
+      (el: HTMLElement) => [el.clientHeight, el.scrollHeight],
+      await band.$(".compass-outcome"),
+    )) as [number, number];
+    expect(full).toBeGreaterThan(shown);
+    await shot("compass-more");
+    await shot("compass-clamp");
+  });
+
+  it("offers QuickAdd on the home view and adds to the Inbox", async () => {
+    await $(".quick-add input").setValue("Water the plants");
+    await browser.keys("Enter");
+    await $(".compass-sub").waitForExist();
+    await $('[data-nav="all"]').click();
+    await $(".task-row*=Water the plants").waitForExist({ timeout: 10000 });
   });
 
   it("closes a finished goal from its band", async () => {
@@ -273,12 +319,15 @@ describe("compass home view", () => {
     await wrap.waitForExist({ timeout: 10000 });
     await expect(wrap).toHaveText(expect.stringContaining("All cards done."));
     await shot("compass-finished");
+    await expect($("[data-focus-goal]")).toExist();
     await wrap.$("button=Close goal").click();
     await $("[data-compass-goal]").waitForExist({
       timeout: 10000,
       reverse: true,
     });
     await expect($(".compass-empty")).toHaveText("Nothing moved this week");
+    await expect($("[data-focus-goal]")).not.toExist();
+    await shot("compass-closed");
   });
 
   it("shows one quiet line when nothing moved", async () => {

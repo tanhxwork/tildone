@@ -98,9 +98,10 @@ span.compass-name:hover {
   overflow: hidden;
 }
 
-.compass-bar {
+.goal-row-bar.compass-bar {
   height: 4px;
   margin: 7px 0 8px;
+  background: var(--border);
 }
 
 .compass-bar.finished .goal-row-bar-fill {

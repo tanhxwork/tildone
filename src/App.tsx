@@ -414,7 +414,7 @@ function App() {
       <main className="main">
         <Header searchRef={searchRef} />
         {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
-        {!paneActive && (!isPage || selection.type === "mine") && (
+        {!paneActive && (!isPage || selection.type === "mine" || selection.type === "goals") && (
           <QuickAdd inputRef={quickAddRef} />
         )}
         <div className="content">{content}</div>
