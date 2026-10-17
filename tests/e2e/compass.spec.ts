@@ -247,6 +247,18 @@ describe("compass home view", () => {
     await expect(loose.$(".compass-more-text")).toHaveText("+2 more doing");
     await shot("compass");
 
+    // The Inbox chip is not a door: the click changes nothing.
+    await loose.$('[data-compass-chip="inbox"]').click();
+    await browser.pause(300);
+    await expect($(".view-title")).toHaveText("Where you’re going");
+    await expect($(".view-title-sub")).not.toExist();
+    expect(await bandTexts()).toEqual([
+      "Ship the island",
+      "Wrap the sprint",
+      "Plan the atlas",
+    ]);
+    await shot("compass-inbox-chip");
+
     const harbor = (await loose.$$("[data-compass-chip]"))[0];
     await expect(harbor).toHaveText(expect.stringContaining("Harbor"));
     await expect(harbor).toHaveText(expect.stringContaining("3"));
@@ -291,15 +303,77 @@ describe("compass home view", () => {
     )) as [number, number];
     expect(full).toBeGreaterThan(shown);
     await shot("compass-more");
-    await shot("compass-clamp");
+  });
+
+  it("opens the goal from a band's name and from its +N more row", async () => {
+    await tool(url, "create_project", { name: "Harbor" });
+    await tool(url, "create_goal", {
+      project: "Harbor",
+      name: "Map the shoals",
+    });
+    await cards(
+      url,
+      "Harbor",
+      [1, 2, 3, 4, 5, 6].map((n) => ({
+        title: `Sound shoal ${n}`,
+        goal: "Map the shoals",
+        status: "doing",
+      })),
+    );
+    await announce();
+
+    const band = $("[data-compass-goal]");
+    await band.waitForExist({ timeout: 10000 });
+    await band.$(".compass-name").click();
+    await expect($(".view-title-sub")).toHaveText("Map the shoals");
+    await shot("compass-name-click");
+
+    await $('[data-nav="goals"]').click();
+    await $("[data-compass-goal]").waitForExist({ timeout: 10000 });
+    await expect($(".view-title-sub")).not.toExist();
+    await $("[data-compass-goal] .compass-more").click();
+    await expect($(".view-title-sub")).toHaveText("Map the shoals");
+    await shot("compass-more-click");
+  });
+
+  it("uses the singular in the sub-line", async () => {
+    await tool(url, "create_project", { name: "Harbor" });
+    await tool(url, "create_goal", {
+      project: "Harbor",
+      name: "Chart the tide",
+    });
+    await cards(url, "Harbor", [
+      {
+        title: "Pick the buoy",
+        goal: "Chart the tide",
+        owner: "human",
+        tags: ["blocked"],
+      },
+      { title: "Sound the tide", goal: "Chart the tide", status: "doing" },
+    ]);
+    await announce();
+
+    await $("[data-compass-goal]").waitForExist({ timeout: 10000 });
+    await expect($(".compass-sub")).toHaveText(
+      "1 goal moved this week · 1 card needs you",
+    );
+    await shot("compass-singular");
   });
 
   it("offers QuickAdd on the home view and adds to the Inbox", async () => {
+    await tool(url, "create_project", { name: "Harbor" });
+    await cards(url, "Harbor", [{ title: "Harbor control" }]);
     await $(".quick-add input").setValue("Water the plants");
     await browser.keys("Enter");
     await $(".compass-sub").waitForExist();
     await $('[data-nav="all"]').click();
     await $(".task-row*=Water the plants").waitForExist({ timeout: 10000 });
+    // Control: a project card shows its project, so the new card's bare row
+    // means it has none.
+    await expect($(".task-row*=Harbor control").$(".project-label")).toExist();
+    await expect(
+      $(".task-row*=Water the plants").$(".project-label"),
+    ).not.toExist();
   });
 
   it("closes a finished goal from its band", async () => {
