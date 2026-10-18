@@ -483,7 +483,17 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  select: (selection) => set({ selection, editingTaskId: null }),
+  // Town is a page, so opening it would drop the goal the user was looking at;
+  // carry the goal along instead. An explicit { type: "town" } from Town itself
+  // ("Whole town") clears it.
+  select: (selection) => {
+    const current = get().selection;
+    const next =
+      selection.type === "town" && selection.goalId === undefined && current.type === "goal"
+        ? { type: "town" as const, goalId: current.goalId }
+        : selection;
+    set({ selection: next, editingTaskId: null });
+  },
   setViewMode: (viewMode) => set({ viewMode }),
   setSearch: (search) => set({ search }),
   toggleTagFilter: (tagId) =>

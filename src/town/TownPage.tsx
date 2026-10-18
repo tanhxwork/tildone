@@ -45,9 +45,16 @@ export function TownPage() {
   const tasks = useStore((s) => s.tasks);
   const live = useStore((s) => s.live);
   const presence = useStore((s) => s.presence);
+  const goals = useStore((s) => s.goals);
+  const selection = useStore((s) => s.selection);
+  const select = useStore((s) => s.select);
+  // Opened from a goal, the town shows that goal alone; a goal deleted under us
+  // falls back to the whole town.
+  const goalId = selection.type === "town" ? selection.goalId : undefined;
+  const goal = goals.find((g) => g.id === goalId);
   const model = useMemo(
-    () => townModel(projects, tasks, live, presence),
-    [projects, tasks, live, presence],
+    () => townModel(projects, tasks, live, presence, goal),
+    [projects, tasks, live, presence, goal],
   );
   const dark = useDarkTheme();
 
@@ -161,6 +168,11 @@ export function TownPage() {
   return (
     <div className="town-page">
       <div className="town-toolbar">
+        {goal && (
+          <button className="btn" onClick={() => select({ type: "town" })}>
+            Whole town
+          </button>
+        )}
         <div className="segmented" role="group" aria-label="Buildings">
           <button
             className={noneOpen ? "active" : ""}
@@ -196,7 +208,7 @@ export function TownPage() {
           aria-pressed={focused === null}
           onClick={() => setFocusId(null)}
         >
-          All projects
+          {goal ? goal.name : "All projects"}
         </button>
         {islands.map((r) => (
           <button
