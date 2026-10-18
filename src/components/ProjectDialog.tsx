@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Environment, Project, ProjectIcon } from "../types";
 import { COLOR_CHOICES, ENVIRONMENT_LABELS, ENVIRONMENTS } from "../types";
+import { OfflineHint } from "./HubStatus";
 import { nextEnvironment } from "../utils/environment";
 import { IconX } from "./Icons";
 
@@ -19,6 +21,7 @@ export function ProjectDialog({
   onClose: () => void;
 }) {
   const { addProject, editProject, removeProject, projects } = useStore();
+  const offline = useOffline((s) => s.offline);
   const [name, setName] = useState(project?.name ?? "");
   const [color, setColor] = useState(project?.color ?? COLOR_CHOICES[0]);
   const [environment, setEnvironment] = useState<Environment>(
@@ -92,7 +95,7 @@ export function ProjectDialog({
             value={name}
             placeholder="Project name"
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && save()}
+            onKeyDown={(e) => e.key === "Enter" && !offline && save()}
           />
         </label>
 
@@ -140,7 +143,7 @@ export function ProjectDialog({
               placeholder={preview?.folder ?? `~/projects/${project.name}`}
               disabled={iconOff}
               onChange={(e) => setFolder(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && save()}
+              onKeyDown={(e) => e.key === "Enter" && !offline && save()}
             />
             <div className="icon-preview">
               {iconOff ? (
@@ -182,15 +185,28 @@ export function ProjectDialog({
                 Delete project and its tasks?
               </button>
             ) : (
-              <button className="btn ghost-danger" onClick={() => setConfirmDelete(true)}>
-                Delete
-              </button>
+              <>
+                <button
+                  className="btn ghost-danger"
+                  disabled={offline}
+                  title={offline ? NOT_AVAILABLE : undefined}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Delete
+                </button>
+                <OfflineHint />
+              </>
             ))}
           <div className="spacer" />
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" disabled={!name.trim()} onClick={save}>
+          <button
+            className="btn primary"
+            disabled={!name.trim() || offline}
+            title={offline ? NOT_AVAILABLE : undefined}
+            onClick={save}
+          >
             {project ? "Save" : "Create"}
           </button>
         </div>

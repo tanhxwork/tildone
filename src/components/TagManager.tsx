@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import { liveTasks } from "../selectors";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import { COLOR_CHOICES } from "../types";
+import { OfflineHint } from "./HubStatus";
 import { IconChevronDown, IconChevronUp, IconX } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
 
@@ -20,6 +22,7 @@ export function TagManager() {
   const [renamingTag, setRenamingTag] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [mergingTag, setMergingTag] = useState<number | null>(null);
+  const offline = useOffline((s) => s.offline);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [renamingProject, setRenamingProject] = useState<number | null>(null);
 
@@ -50,6 +53,7 @@ export function TagManager() {
       <div className="modal manager-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Tags & projects</h2>
+          <OfflineHint />
           <button
             className="icon-btn"
             aria-label="Close manager"
@@ -59,6 +63,8 @@ export function TagManager() {
           </button>
         </div>
 
+        {/* Offline every edit here is refused, so the whole list is switched off at once. */}
+        <fieldset className="offline-fieldset" disabled={offline}>
         <section className="settings-section">
           <h3 className="settings-heading">
             Tags <span className="group-count">{tags.length}</span>
@@ -135,7 +141,8 @@ export function TagManager() {
                 ) : (
                   <button
                     className="btn small"
-                    disabled={tags.length < 2}
+                    disabled={tags.length < 2 || offline}
+                    title={offline ? NOT_AVAILABLE : undefined}
                     onClick={() => setMergingTag(tag.id)}
                   >
                     Merge
@@ -225,6 +232,7 @@ export function TagManager() {
             )}
           </div>
         </section>
+        </fieldset>
       </div>
     </div>
   );

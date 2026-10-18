@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Goal } from "../types";
 import { COLOR_CHOICES } from "../types";
+import { OfflineHint } from "./HubStatus";
 import { IconX } from "./Icons";
 
 /**
@@ -24,6 +26,7 @@ export function GoalDialog({
   onClose: () => void;
 }) {
   const { addGoal, editGoal, setGoalCompleted, removeGoal, projects } = useStore();
+  const offline = useOffline((s) => s.offline);
   // Asked for only when the caller had no project to give. Defaulting to the
   // first project rather than to "none" keeps Create reachable in one move,
   // and the select is right there when it guessed wrong.
@@ -73,6 +76,8 @@ export function GoalDialog({
       >
         <div className="modal-header">
           <h2>{goal ? "Edit Goal" : "New Goal"}</h2>
+          {/* In the header: the footer has no room beside its four buttons. */}
+          <OfflineHint />
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
             <IconX />
           </button>
@@ -177,12 +182,19 @@ export function GoalDialog({
                   Tasks stay — delete this goal?
                 </button>
               ) : (
-                <button className="btn ghost-danger" onClick={() => setConfirmDelete(true)}>
+                <button
+                  className="btn ghost-danger"
+                  disabled={offline}
+                  title={offline ? NOT_AVAILABLE : undefined}
+                  onClick={() => setConfirmDelete(true)}
+                >
                   Delete goal
                 </button>
               )}
               <button
                 className="btn"
+                disabled={offline}
+                title={offline ? NOT_AVAILABLE : undefined}
                 onClick={async () => {
                   await setGoalCompleted(goal.id, goal.completed_at === null);
                   onClose();
@@ -198,7 +210,8 @@ export function GoalDialog({
           </button>
           <button
             className="btn primary"
-            disabled={!name.trim() || (needsProject && chosenProjectId === null)}
+            disabled={!name.trim() || (needsProject && chosenProjectId === null) || offline}
+            title={offline ? NOT_AVAILABLE : undefined}
             onClick={save}
           >
             {goal ? "Save" : "Create"}

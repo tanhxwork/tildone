@@ -32,29 +32,38 @@ function freePort(): Promise<number> {
   });
 }
 
-/** Start the hub process and wait until its MCP server answers. */
+/** What a restarted hub reuses: its dirs (so its database) and its ports (so its URL). */
+/** The real ref the offline-made task got on replay; the relaunch from the copy must show it. */
+let replayedRef = "";
+
+let hubRun: { root: string; agentPort: number; webdriverPort: number } | null = null;
+
+/** Start the hub process (again, on the same dirs and ports, after stopHub) and wait until its MCP server answers. */
 async function startHub() {
-  const root = mkdtempSync(join(tmpdir(), "tildone-hub-"));
+  const restart = hubRun !== null;
+  if (!hubRun) {
+    const root = mkdtempSync(join(tmpdir(), "tildone-hub-"));
+    hubDirs.push(root);
+    // The app dirs move with XDG_* on Linux; the folder name is the e2e identifier.
+    const appConfig = join(root, "config", basename(E2E_CONFIG_DIR));
+    mkdirSync(appConfig, { recursive: true });
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(
+      join(appConfig, "settings.json"),
+      JSON.stringify({ agent_server: true, _migrated: true }),
+    );
+    writeFileSync(join(appConfig, "hub-token"), TOKEN, { mode: 0o600 });
+    hubRun = { root, agentPort: await freePort(), webdriverPort: await freePort() };
+  }
+  const { root, agentPort, webdriverPort } = hubRun;
   const config = join(root, "config");
   const data = join(root, "data");
-  hubDirs.push(root);
-  // The app dirs move with XDG_* on Linux; the folder name is the e2e identifier.
-  const appConfig = join(config, basename(E2E_CONFIG_DIR));
-  mkdirSync(appConfig, { recursive: true });
-  mkdirSync(data, { recursive: true });
-  writeFileSync(
-    join(appConfig, "settings.json"),
-    JSON.stringify({ agent_server: true, _migrated: true }),
-  );
-  writeFileSync(join(appConfig, "hub-token"), TOKEN, { mode: 0o600 });
-
-  const agentPort = await freePort();
-  const webdriverPort = await freePort();
   hubUrl = `http://127.0.0.1:${agentPort}`;
+  mcpSession = ""; // the new process knows no session
 
   const binary = process.env.TAURI_E2E_BINARY ?? "./src-tauri/target-e2e/debug/tildone";
   mkdirSync("./.test-artifacts", { recursive: true });
-  const log = openSync("./.test-artifacts/hub-process.log", "w");
+  const log = openSync("./.test-artifacts/hub-process.log", restart ? "a" : "w");
   hub = spawn(binary, [], {
     env: {
       ...process.env,
@@ -92,6 +101,17 @@ async function startHub() {
     if (Date.now() > deadline) throw new Error("the hub did not start listening within 60s");
     await new Promise((r) => setTimeout(r, 500));
   }
+}
+
+/** Stop the hub process and wait until it is gone, so the port refuses connections. */
+async function stopHub() {
+  const proc = hub!;
+  if (proc.exitCode !== null) return;
+  const gone = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+  proc.kill("SIGTERM");
+  const killer = setTimeout(() => proc.kill("SIGKILL"), 10_000);
+  await gone;
+  clearTimeout(killer);
 }
 
 let mcpSession = "";
@@ -306,6 +326,180 @@ describe("hub: another Tildone as the board", () => {
     await browser.saveScreenshot(`${SHOTS}/client-review-file-chip.png`);
     await browser.keys("Escape");
     await $(".detail-card").waitForExist({ reverse: true });
+  });
+
+  it("queues while the hub is down, survives a restart, and replays when it is back", async () => {
+    const title = "Made while the hub was down";
+    // Something to switch off: a project (goal and delete controls), and a second tag to merge into.
+    await hubTool("create_project", { name: "Offline Proj" });
+    await hubTool("create_goal", { project: "Offline Proj", name: "Offline Goal" });
+    await hubTool("create_task", {
+      title: "Tagged on the hub",
+      project: "Offline Proj",
+      goal: "Offline Goal",
+      tags: ["alpha"],
+    });
+    await $('button[aria-label="New goal in Offline Proj"]').waitForExist({ timeout: 10_000 });
+    await stopHub();
+    await $(".hub-banner*=Offline").waitForExist({
+      timeout: 15_000,
+      timeoutMsg: "the client never said it was offline",
+    });
+
+    // One create is one change waiting, not the activity line that rides along.
+    await $(".quick-add input").setValue(title);
+    await browser.keys("Enter");
+    const row = $(`.task-row*=${title}`);
+    await row.waitForExist({ timeout: 10_000 });
+    expect(await row.$(".task-id").getText()).toMatch(/-\?$/);
+    await $(".hub-banner*=1 change waiting").waitForExist({ timeout: 5_000 });
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 1 change waiting$/);
+    await browser.saveScreenshot(`${SHOTS}/offline-queued-one.png`);
+
+    // A subtask and an edit on the task that has no real id yet.
+    await $(`.task-title*=${title}`).click();
+    await $(".detail-card").waitForExist();
+    // Images need the hub: the tile is off, with the reason beside it.
+    expect(await $(".detail-image-add").isEnabled()).toBe(false);
+    await $(".detail-image-add").scrollIntoView();
+    await browser.saveScreenshot(`${SHOTS}/offline-image-disabled.png`);
+    await $('input[aria-label="Add subtask"]').setValue("Queued step");
+    await browser.keys("Enter");
+    await $(".detail-subtask-title*=Queued step").waitForExist({ timeout: 5_000 });
+    const edited = `${title} (edited)`;
+    await $('textarea[aria-label="Task title"]').setValue(edited);
+    await browser.keys("Enter");
+    await $(".hub-banner*=changes waiting").waitForExist({ timeout: 5_000 });
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 3 changes waiting$/);
+    await browser.keys("Escape");
+    await $(".detail-card").waitForExist({ reverse: true });
+    await $(`.task-row*=${edited}`).waitForExist();
+    await browser.saveScreenshot(`${SHOTS}/offline-queued.png`);
+
+    // What cannot be queued is switched off, dimmed, with the reason written beside it.
+    const newProject = $('button[aria-label="New project"]');
+    expect(await newProject.isEnabled()).toBe(false);
+    expect(await newProject.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-disabled.png`);
+
+    // The project's own controls: its goal "+", and Delete in its dialog.
+    const projectGoal = $('button[aria-label="New goal in Offline Proj"]');
+    expect(await projectGoal.isEnabled()).toBe(false);
+    expect(await projectGoal.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-project-goal-disabled.png`);
+    await $('button[aria-label="Edit Offline Proj"]').click();
+    const del = $(".modal-footer").$("button=Delete");
+    await del.waitForExist({ timeout: 5_000 });
+    expect(await del.isEnabled()).toBe(false);
+    expect(await del.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-project-delete-disabled.png`);
+    await $(".modal-footer").$("button=Cancel").click();
+
+    // Merging tags needs the hub too.
+    await $(".nav-item*=Tags & projects").click();
+    const merge = $("button=Merge");
+    await merge.waitForExist({ timeout: 5_000 });
+    expect(await merge.isEnabled()).toBe(false);
+    expect(await merge.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-tag-merge-disabled.png`);
+    await $('button[aria-label="Close manager"]').click();
+    await $(".modal-header").waitForExist({ reverse: true });
+
+    await $('[data-nav="goals"]').click();
+    const newGoal = $("button.goals-new");
+    await newGoal.waitForExist({ timeout: 10_000 });
+    expect(await newGoal.isEnabled()).toBe(false);
+    expect(await newGoal.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-goal-disabled.png`);
+
+    // A goal's own dialog: deleting it, and saving an edit, need the hub.
+    await $(".goal-row*=Offline Goal").click();
+    await $('button[aria-label="Edit goal"]').click();
+    const delGoal = $(".modal-footer").$("button=Delete goal");
+    await delGoal.waitForExist({ timeout: 5_000 });
+    expect(await delGoal.isEnabled()).toBe(false);
+    expect(await $(".modal-footer").$("button=Save").isEnabled()).toBe(false);
+    await browser.saveScreenshot(`${SHOTS}/offline-goal-delete-disabled.png`);
+    await $(".modal-footer").$("button=Cancel").click();
+
+    // Trash a card (queued), then the trash itself cannot be emptied.
+    await openAllTasks();
+    await $(".task-title*=Made in the client").click();
+    await $(".detail-card").waitForExist();
+    await $("button*=Delete task").click();
+    await $("button*=Move to trash").click();
+    await $(".detail-card").waitForExist({ reverse: true, timeout: 10_000 });
+    await $('[data-nav="completed"]').click();
+    await $(".completed-view").waitForExist();
+    await $("button*=Trash").click();
+    const empty = $("button*=Empty trash");
+    await empty.waitForDisplayed({ timeout: 10_000 });
+    expect(await empty.isEnabled()).toBe(false);
+    expect(await empty.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-trash-disabled.png`);
+
+    // Restart while offline: the queue and the board it changed come back from disk.
+    await browser.execute(() => location.reload());
+    await $(".hub-banner*=changes waiting").waitForExist({
+      timeout: 30_000,
+      timeoutMsg: "the restart lost the queue",
+    });
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 4 changes waiting$/);
+    await openAllTasks();
+    await $(`.task-row*=${edited}`).waitForExist({ timeout: 10_000 });
+    expect(await $(`.task-row*=${edited}`).$(".task-id").getText()).toMatch(/-\?$/);
+    await expect($(".task-row*=Made in the client")).not.toBeExisting(); // it is in the trash
+    await browser.saveScreenshot(`${SHOTS}/offline-restart-queued.png`);
+
+    // The hub comes back: the queue replays, the task gets its real ref.
+    await startHub();
+    await browser.waitUntil(async () => (await hubTitles(edited)).length === 1, {
+      timeout: 30_000,
+      timeoutMsg: "the queued task never reached the hub",
+    });
+    const [made] = await hubSelect<{ id: number; ref: string }>(
+      "SELECT id, ref FROM tasks WHERE title = $1",
+      [edited],
+    );
+    expect(made.ref).toMatch(/^[A-Z]+-\d+$/);
+    replayedRef = made.ref;
+    const subs = await hubSelect<{ title: string }>("SELECT title FROM subtasks WHERE task_id = $1", [
+      made.id,
+    ]);
+    expect(subs.map((r) => r.title)).toEqual(["Queued step"]);
+    await browser.waitUntil(
+      async () =>
+        (
+          await hubSelect<{ deleted_at: string | null }>(
+            "SELECT deleted_at FROM tasks WHERE title = 'Made in the client'",
+          )
+        )[0]?.deleted_at != null,
+      { timeout: 15_000, timeoutMsg: "the queued trash never reached the hub" },
+    );
+    await $(".hub-banner").waitForExist({ reverse: true, timeout: 15_000 });
+    await browser.waitUntil(
+      async () => (await $(`.task-row*=${edited}`).$(".task-id").getText()) === made.ref,
+      { timeout: 10_000, timeoutMsg: "the board still shows the temporary ref" },
+    );
+    await browser.saveScreenshot(`${SHOTS}/offline-replayed.png`);
+  });
+
+  it("opens offline from the last synced copy", async () => {
+    await stopHub();
+    await browser.execute(() => location.reload());
+    await $(".hub-banner*=Offline · last synced").waitForExist({
+      timeout: 30_000,
+      timeoutMsg: "the client did not open from its copy",
+    });
+    await openAllTasks(); // a reload lands on Goals
+    await $(`.task-row*=${SECOND}`).waitForExist({ timeout: 10_000 });
+    // The copy was written when the replay's reload landed: the real ref, not "-?".
+    expect(await $(".task-row*=Made while the hub was down").$(".task-id").getText()).toBe(replayedRef);
+    await browser.saveScreenshot(`${SHOTS}/offline-launch.png`);
+
+    // Back online, the same window picks the hub up without a restart.
+    await startHub();
+    await $(".hub-banner").waitForExist({ reverse: true, timeout: 30_000 });
   });
 
   it("wrong token shows the error, and this machine's board is one click away", async () => {

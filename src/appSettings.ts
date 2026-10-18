@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAI } from "./ai";
+import { flushCopy } from "./offline";
 import { setBoardHubUrl } from "./hubMode";
 import { applyTheme, STORAGE_KEY, useSettings } from "./settings";
 import {
@@ -114,6 +115,7 @@ function runEffects(prev: AppSettings | null, next: AppSettings) {
   // Which board this window shows is picked once, at init (db.ts, the hub connect).
   // A change of hub or token starts the window over rather than switching live.
   if (!first && changed("board_hub_url", "board_hub_token")) {
+    flushCopy(); // the copy belongs to the hub being left
     window.location.reload();
     return;
   }

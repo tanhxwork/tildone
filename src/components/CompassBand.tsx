@@ -1,5 +1,6 @@
 import type { KeyboardEvent, ReactNode } from "react";
 import type { FocusGoal, MovingCard, NeedsYouKind } from "../focusViews";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Project, Task } from "../types";
 
@@ -103,6 +104,7 @@ function MovedRow({ card }: { card: MovingCard }) {
 function GoalBandView({ entry }: { entry: FocusGoal }) {
   const select = useStore((s) => s.select);
   const setGoalCompleted = useStore((s) => s.setGoalCompleted);
+  const offline = useOffline((s) => s.offline);
   const { goal, project, done, total, finished } = entry;
   const moved = entry.moving.filter((c) => c.needsYou === null);
   const shown = moved.slice(0, MOVED_ROWS);
@@ -140,6 +142,8 @@ function GoalBandView({ entry }: { entry: FocusGoal }) {
           <span>All cards done.</span>
           <button
             className="btn small"
+            disabled={offline}
+            title={offline ? NOT_AVAILABLE : undefined}
             onClick={() => void setGoalCompleted(goal.id, true)}
           >
             Close goal

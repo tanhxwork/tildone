@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { FOCUS_WINDOW_MS, focusModel } from "../focusViews";
 import { goalProgress, goalsPageOrder } from "../selectors";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import { useNow } from "../useNow";
 import { dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
 import { GoalBands, LooseBand } from "./CompassBand";
 import { GoalDialog } from "./GoalDialog";
+import { OfflineHint } from "./HubStatus";
 import { IconPlus } from "./Icons";
 import "./compass.css";
 
@@ -24,6 +26,7 @@ type Filter = "open" | "all";
 export function GoalsView() {
   const goals = useStore((s) => s.goals);
   const projects = useStore((s) => s.projects);
+  const offline = useOffline((s) => s.offline);
   const tasks = useStore((s) => s.tasks);
   const tags = useStore((s) => s.tags);
   const lastActivity = useStore((s) => s.lastActivity);
@@ -81,10 +84,13 @@ export function GoalsView() {
             All
           </button>
         </div>
+        <OfflineHint />
         <button
           className="btn small primary goals-new"
-          disabled={projects.length === 0}
-          title={projects.length === 0 ? "Create a project first" : "New goal"}
+          disabled={projects.length === 0 || offline}
+          title={
+            offline ? NOT_AVAILABLE : projects.length === 0 ? "Create a project first" : "New goal"
+          }
           onClick={() => setCreating(true)}
         >
           <IconPlus size={12} />
@@ -97,9 +103,11 @@ export function GoalsView() {
           <TildoneMark width={36} className="empty-mark" />
           <p className="empty-title">{filter === "open" ? "No open goals" : "No goals yet"}</p>
           <p className="empty-hint">
-            {projects.length === 0
-              ? "Create a project first — a goal always lives inside one."
-              : "New goal, or the + on any project in the sidebar."}
+            {offline
+              ? "Goals can be added once the hub is back."
+              : projects.length === 0
+                ? "Create a project first — a goal always lives inside one."
+                : "New goal, or the + on any project in the sidebar."}
           </p>
         </div>
       )}

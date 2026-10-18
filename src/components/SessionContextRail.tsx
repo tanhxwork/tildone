@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { fetchActivity } from "../db";
+import { db } from "../offline";
 import { useHostStore } from "../hostStore";
 import { usePaneStore } from "../paneStore";
 import { useStore } from "../store";
@@ -52,7 +52,7 @@ export function SessionContextRail() {
     if (taskId == null) return;
     let alive = true;
     const load = () => {
-      fetchActivity(taskId)
+      db.fetchActivity(taskId)
         .then((a) => {
           if (alive) setActivity(a);
         })

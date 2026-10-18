@@ -6,6 +6,7 @@ import { observeCounts } from "../observeViews";
 import { mineGroups } from "../ownerViews";
 import { goalProgress, townModel, ungoaledOpenCount } from "../selectors";
 import { useSettings } from "../settings";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Project, Selection } from "../types";
 import { useNow } from "../useNow";
@@ -31,6 +32,7 @@ import {
   IconTown,
   IconX,
 } from "./Icons";
+import { OfflineHint } from "./HubStatus";
 import { ProjectDialog } from "./ProjectDialog";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { SessionsSection } from "./SessionsSection";
@@ -68,6 +70,7 @@ export function Sidebar() {
   } = useStore();
   const [dialog, setDialog] = useState<Project | "new" | null>(null);
   const [newGoalProjectId, setNewGoalProjectId] = useState<number | null>(null);
+  const offline = useOffline((s) => s.offline);
   const aiMode = useAI((s) => s.config.mode);
   const openAISettings = useAI((s) => s.openSettings);
   const openSettings = useSettings((s) => s.openSettings);
@@ -236,7 +239,8 @@ export function Sidebar() {
           <button
             className="icon-btn row-action"
             aria-label={`New goal in ${project.name}`}
-            title="New goal"
+            title={offline ? NOT_AVAILABLE : "New goal"}
+            disabled={offline}
             onClick={(e) => {
               e.stopPropagation();
               setNewGoalProjectId(project.id);
@@ -357,10 +361,12 @@ export function Sidebar() {
       <div className="sidebar-section">
         <div className="section-header">
           <span>Projects</span>
+          <OfflineHint />
           <button
             className="icon-btn"
             aria-label="New project"
-            title="New project"
+            title={offline ? NOT_AVAILABLE : "New project"}
+            disabled={offline}
             onClick={() => setDialog("new")}
           >
             <IconPlus size={14} />
@@ -386,7 +392,9 @@ export function Sidebar() {
           </>
         )}
         {projects.length === 0 && (
-          <p className="sidebar-hint">No projects yet — create one with +</p>
+          <p className="sidebar-hint">
+            {offline ? "No projects yet." : "No projects yet — create one with +"}
+          </p>
         )}
       </div>
 
