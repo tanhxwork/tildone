@@ -17,6 +17,8 @@
     "preview": "vite preview",
     "tauri": "./scripts/tauri.sh",
     "dev:clean": "./scripts/dev-clean.sh",
+    "cli:sidecar": "./scripts/cli-sidecar.sh",
+    "cli:install": "./scripts/cli-install.sh",
     "e2e:build": "./scripts/e2e-build.sh",
     "e2e": "wdio run wdio.conf.ts"
   },
