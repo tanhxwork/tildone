@@ -395,7 +395,12 @@ pub async fn new(
 ) -> Res<()> {
     let project = project.unwrap_or_else(git::default_project);
     let mut a = args(&[("title", json!(title)), ("project", json!(project))]);
-    let mut tags = extra.tags;
+    let mut tags: Vec<String> = extra
+        .tags
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     if follow_up {
         if !force {
             let search = args(&[

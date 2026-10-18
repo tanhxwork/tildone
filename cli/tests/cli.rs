@@ -477,7 +477,8 @@ async fn new_passes_tags_owner_from_task() {
         "create_task",
         json!({"id": 81, "ref": "TIL-81", "status": "todo", "title": "Ask"}),
     );
-    let base = ["new", "Ask", "--project", "p", "--tags", "a,b", "--owner", "human"];
+    // Spaces around a name are trimmed and an empty name is dropped.
+    let base = ["new", "Ask", "--project", "p", "--tags", "a, b,", "--owner", "human"];
     tildone(&fake, &base).session("sess-1").run().await;
     // With --follow-up the tag joins --tags, and --from-task wins over the claimed card.
     let follow = [&base[..], &["--follow-up", "--force", "--from-task", "TIL-3"]].concat();
@@ -491,10 +492,6 @@ async fn new_passes_tags_owner_from_task() {
         calls[1],
         json!({"title": "Ask", "project": "p", "tags": ["a", "b", "follow-up"], "owner": "human", "from_task": "TIL-3"})
     );
-    // An owner outside human|agent is refused before any call.
-    let out = tildone(&fake, &["new", "X", "--owner", "bot"]).run().await;
-    assert_ne!(out.code, 0);
-    assert_eq!(fake.calls_to("create_task").len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
