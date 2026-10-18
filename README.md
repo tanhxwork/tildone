@@ -56,6 +56,8 @@ npm run tauri dev     # run the app with hot reload
 npm run tauri build   # produce a distributable .app / .dmg
 ```
 
+The e2e specs, their helpers and their gotchas are described in [`tests/e2e/README.md`](tests/e2e/README.md).
+
 ## Architecture
 
 - `src-tauri/` — Rust shell. Registers `tauri-plugin-sql` with the schema migration in `src-tauri/migrations/`. The SQLite file lives in the app's data directory (`~/Library/Application Support/com.tildone.desktop/tildone.db` on macOS).

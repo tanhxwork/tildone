@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import Database from "@tauri-apps/plugin-sql";
 import type {
   ActivityEntry,
@@ -338,6 +339,12 @@ export async function fetchComments(taskId: number): Promise<Comment[]> {
  * the live claim, then the `task_cwds` snapshot, which is what survives
  * completion (completing a task releases every claim on it, and a finished
  * card is where an Evidence block lives).
+ *
+ * A task nobody ever claimed (a bug report or follow-up an agent filed) has
+ * neither, so the last source is its project's folder (migration 010). Only a
+ * folder the user set counts: NULL is the icon's ~/projects/<name> guess and
+ * '' turns the folder off. A leading ~/ is expanded, as icons.rs does; any
+ * other relative folder would hang off the app's own cwd, so it is no base.
  */
 export async function fetchClaimCwd(taskId: number): Promise<string | null> {
   const d = await getDb();
@@ -351,7 +358,17 @@ export async function fetchClaimCwd(taskId: number): Promise<string | null> {
     "SELECT cwd FROM task_cwds WHERE task_id = $1",
     [taskId],
   );
-  return snapshot[0]?.cwd ?? null;
+  if (snapshot[0]?.cwd) return snapshot[0].cwd;
+  const project = await d.select<{ folder_path: string | null }[]>(
+    `SELECT p.folder_path FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.id = $1`,
+    [taskId],
+  );
+  const folder = project[0]?.folder_path?.trim();
+  if (!folder) return null;
+  if (folder.startsWith("/")) return folder;
+  if (!folder.startsWith("~/")) return null;
+  return `${(await homeDir()).replace(/\/+$/, "")}/${folder.slice(2)}`;
 }
 
 export async function addLink(
