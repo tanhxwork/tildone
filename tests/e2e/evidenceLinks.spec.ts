@@ -1,6 +1,6 @@
 import { browser, $, $$, expect } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { E2E_DB as DB } from "./support/dataDir.js";
@@ -82,6 +82,8 @@ describe("evidence links", () => {
     writeFileSync(join(SHOTS, "shot-dark.png"), PNG);
     mkdirSync(join(ROOT, "docs"), { recursive: true });
     writeFileSync(join(ROOT, "docs", "report.md"), "# report\n");
+    mkdirSync(join(ROOT, "docs", "artifacts"), { recursive: true });
+    writeFileSync(join(ROOT, "docs", "artifacts", "x.png"), PNG);
 
     await $("#root").waitForExist();
     const input = $(".quick-add input");
@@ -199,4 +201,70 @@ describe("evidence links", () => {
     expect(hrefs).toContain("https://github.com/tanhxwork/tildone/commit/e4548660");
     expect(hrefs).toContain("https://github.com/tanhxwork/tildone/pull/84");
   });
+
+  // A bug report or follow-up an agent filed has no claim and no task_cwds
+  // row — only its project knows where the repo is (TIL-220).
+  it("resolves a relative path via the project folder when nobody claimed the card", async () => {
+    // Written with ~/ on purpose: that is how a user types it in the dialog.
+    const id = await unclaimedTaskInProject("Unclaimed evidence task", "~/.tildone-e2e-evidence");
+    await showNotes(id, `${MARKER}\n\nscreenshot: docs/artifacts/x.png`);
+
+    const link = $(".detail-notes-rendered a.md-evidence");
+    await link.waitForExist({ timeout: 10000 });
+    expect(await link.getText()).toContain("docs/artifacts/x.png");
+    await shot("evidence-unclaimed-project-folder.png");
+
+    await link.click();
+    await $(".lightbox-overlay").waitForExist({ timeout: 10000 });
+    await shot("evidence-unclaimed-project-folder-lightbox.png");
+    await browser.keys("Escape");
+    await $(".lightbox-overlay").waitForExist({ reverse: true, timeout: 5000 });
+  });
+
+  // '' is the dialog's "no folder" (migration 010), so nothing anchors the path.
+  it("leaves the path inert when the project has no folder", async () => {
+    const id = await unclaimedTaskInProject("Folderless evidence task", "");
+    await showNotes(id, `${MARKER}\n\nscreenshot: docs/artifacts/x.png`);
+
+    const inert = $(".detail-notes-rendered .md-evidence-inert");
+    await inert.waitForExist({ timeout: 10000 });
+    expect(await inert.getText()).toContain("docs/artifacts/x.png");
+    expect(await $(".detail-notes-rendered a.md-evidence").isExisting()).toBe(false);
+  });
 });
+
+const ARTIFACTS_DIR = "./tests/e2e/artifacts";
+
+/** Save a screenshot and fail loudly if the file never actually landed. */
+async function shot(name: string) {
+  mkdirSync(ARTIFACTS_DIR, { recursive: true });
+  const path = `${ARTIFACTS_DIR}/${name}`;
+  await browser.saveScreenshot(path);
+  if (!existsSync(path) || statSync(path).size === 0) {
+    throw new Error(`screenshot ${path} was not written, or is empty`);
+  }
+}
+
+/** Quick-add a task, open it, then move it into a fresh project whose folder
+ *  is `folder` — with no claim and no task_cwds row, as an agent files one. */
+async function unclaimedTaskInProject(title: string, folder: string): Promise<number> {
+  const input = $(".quick-add input");
+  await input.setValue(title);
+  await browser.keys("Enter");
+  await $(`.task-title*=${title}`).waitForExist({ timeout: 10000 });
+  await $(`.task-title*=${title}`).click();
+  await $(".detail-card").waitForExist();
+
+  const id = taskIdByTitle(title);
+  sql(
+    `INSERT INTO projects (name, color, position, folder_path)
+     VALUES (${q(`${title} project`)}, '#6366f1', 99, ${q(folder)});`,
+  );
+  sql(
+    `UPDATE tasks SET project_id = (SELECT id FROM projects WHERE name = ${q(`${title} project`)})
+     WHERE id = ${id};`,
+  );
+  sql(`DELETE FROM agent_claims WHERE task_id = ${id};`);
+  sql(`DELETE FROM task_cwds WHERE task_id = ${id};`);
+  return id;
+}
