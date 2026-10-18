@@ -9,6 +9,12 @@
 # through untouched — release bundles keep the real name, identifier and
 # icons.
 #
+# A release `build` (no --debug) also gets src-tauri/tauri.release.conf.json,
+# which bundles the tildone-axi sidecar. It lives in an overlay because
+# tauri-build fails any cargo build of src-tauri when an externalBin file is
+# missing, and plain `cargo test`, `dev` and the e2e debug build have none.
+# An explicit --config (CI, e2e) is left alone.
+#
 # TILDONE_DEV_DB=fresh          start with an empty database instead of a
 #                               copy of the installed app's data
 # TILDONE_DEV_PRINT_CONFIG=1    print the generated overlay and exit before
@@ -16,6 +22,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tauri=./node_modules/.bin/tauri
+
+if [ "${1:-}" = "build" ]; then
+  release=1
+  for arg in "$@"; do
+    case "$arg" in --debug | -d | --config | --config=* | -c) release= ;; esac
+  done
+  [ -z "$release" ] || exec "$tauri" build --config src-tauri/tauri.release.conf.json "${@:2}"
+fi
 
 [ "${1:-}" = "dev" ] || exec "$tauri" "$@"
 shift

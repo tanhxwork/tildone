@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 mod artifacts;
+mod clilink;
 mod drops;
 mod evidence;
 mod forge;
@@ -260,6 +261,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // Off the main thread: it reads two ~3 MB files and is rarely needed.
+            std::thread::spawn(clilink::refresh_appimage_copy);
             // The default window size (tauri.conf.json) is chosen so the board's
             // three columns render at their full 340px width. On a display whose
             // work area is smaller than that default, shrink to fit instead of
@@ -391,6 +394,8 @@ pub fn run() {
             hookinstall::hook_status,
             hookinstall::hook_install,
             hookinstall::hook_uninstall,
+            clilink::cli_status,
+            clilink::cli_install,
             icons::discover_project_icon,
             evidence::read_evidence_image,
             evidence::git_remote_url,

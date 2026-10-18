@@ -44,3 +44,7 @@ AGENTS.md
 
 # Test runs: screenshots, spilled tool output. Never committed.
 .test-artifacts/
+
+# tildone-axi sidecar, built by scripts/cli-sidecar.sh for release bundles.
+src-tauri/binaries/
+cli/target/

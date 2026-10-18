@@ -17,6 +17,19 @@ interface HookStatus {
   settings: string;
 }
 
+/** Mirrors `CliStatus` in src-tauri/src/clilink.rs. */
+interface CliStatus {
+  /** The tildone-axi binary ships next to the app. False in dev and e2e builds. */
+  bundled: boolean;
+  linked: boolean;
+  /** False on Windows: there is no link to make, the user adds the app folder to PATH. */
+  can_link: boolean;
+  /** Where the symlink goes. Shown so the user can go look. */
+  link_path: string;
+  /** Whether the link's folder is on $PATH. */
+  on_path: boolean;
+}
+
 const EXT: Record<ExportFormat, string> = { json: "json", csv: "csv", markdown: "md" };
 
 export function SettingsDialog() {
@@ -50,6 +63,10 @@ export function SettingsDialog() {
   const [hook, setHook] = useState<HookStatus | null>(null);
   const [hookBusy, setHookBusy] = useState(false);
   const [hookMessage, setHookMessage] = useState<string | null>(null);
+  // The bundled CLI: whether it ships and whether it is linked is read from disk, not remembered.
+  const [cli, setCli] = useState<CliStatus | null>(null);
+  const [cliBusy, setCliBusy] = useState(false);
+  const [cliMessage, setCliMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void invoke<string | null>("agent_server_endpoint")
@@ -58,7 +75,22 @@ export function SettingsDialog() {
     void invoke<HookStatus>("hook_status")
       .then(setHook)
       .catch(() => setHook(null));
+    void invoke<CliStatus>("cli_status")
+      .then(setCli)
+      .catch(() => setCli(null));
   }, []);
+
+  async function installCli() {
+    setCliBusy(true);
+    setCliMessage(null);
+    try {
+      setCli(await invoke<CliStatus>("cli_install"));
+    } catch (e) {
+      setCliMessage(String(e));
+    } finally {
+      setCliBusy(false);
+    }
+  }
 
   async function toggleHook() {
     setHookBusy(true);
@@ -346,6 +378,44 @@ export function SettingsDialog() {
             </p>
           )}
           {hookMessage && <p className="settings-message">{hookMessage}</p>}
+
+          {cli && (
+            <div className="settings-row">
+              <div className="settings-label">
+                Command-line tool
+                <span className="settings-sub">
+                  {!cli.bundled ? (
+                    <>
+                      Not bundled in this build. From the repo: <code>bun run cli:install</code>
+                    </>
+                  ) : !cli.can_link ? (
+                    "Add the Tildone app folder to PATH to use tildone-axi."
+                  ) : cli.linked ? (
+                    <>
+                      Installed at <code>{cli.link_path}</code>
+                    </>
+                  ) : (
+                    "Links tildone-axi into ~/.local/bin for agents."
+                  )}
+                </span>
+              </div>
+              {cli.bundled && cli.can_link && (
+                <button
+                  className="btn small"
+                  disabled={cliBusy}
+                  onClick={() => void installCli()}
+                >
+                  {cliBusy ? "Working…" : cli.linked ? "Reinstall" : "Install CLI"}
+                </button>
+              )}
+            </div>
+          )}
+          {cli?.bundled && cli.linked && !cli.on_path && (
+            <p className="settings-message">
+              ~/.local/bin is not on your PATH. Add it to your shell profile to run tildone-axi.
+            </p>
+          )}
+          {cliMessage && <p className="settings-message">{cliMessage}</p>}
 
           {endpoint && (
             <p className="settings-sub">

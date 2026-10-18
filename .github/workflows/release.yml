@@ -42,7 +42,9 @@ jobs:
       - name: cache Rust build
         uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            cli
 
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -66,4 +68,7 @@ jobs:
           releaseBody: 'Download the installer for your platform below.'
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          # The overlay bundles the tildone-axi sidecar (scripts/cli-sidecar.sh builds it
+          # for the matrix target). Passed here so it applies even where the runner
+          # calls the tauri binary rather than scripts/tauri.sh.
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
