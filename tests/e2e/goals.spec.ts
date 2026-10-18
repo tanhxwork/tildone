@@ -2,6 +2,7 @@ import { browser, $, $$, expect } from "@wdio/globals";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { E2E_DB as DB } from "./support/dataDir.js";
+import { selectOption } from "./support/select.js";
 
 // Exercises the goals feature (docs/specs/2026-08-20-goals-inside-projects.md)
 // through the real UI end to end: create a goal, assign tasks to it, watch the
@@ -83,24 +84,6 @@ async function closeTask() {
   await $(".detail-card").waitForExist({ reverse: true, timeout: 10000 });
 }
 
-/**
- * `selectByVisibleText` is a no-op against this WKWebView WebDriver — it
- * resolves without error but never actually changes the control (option
- * click emulation on a native <select> is notoriously unreliable across
- * WebDriver implementations). Set the value and dispatch a real bubbling
- * "change" event instead, which is what React's select onChange listens for.
- */
-async function selectGoalOption(visibleText: string) {
-  await browser.execute((text: string) => {
-    const select = document.querySelector('select[aria-label="Goal"]') as HTMLSelectElement | null;
-    if (!select) throw new Error("no goal select on screen");
-    const option = Array.from(select.options).find((o) => o.text === text);
-    if (!option) throw new Error(`no goal option "${text}"`);
-    select.value = option.value;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  }, visibleText);
-}
-
 const ARTIFACTS_DIR = "./tests/e2e/artifacts";
 
 /** Save a screenshot and fail loudly if the file never actually landed —
@@ -144,7 +127,7 @@ describe("goals", () => {
     for (const title of [TASK_1, TASK_2]) {
       await openTask(title);
       await $('select[aria-label="Goal"]').waitForExist();
-      await selectGoalOption(GOAL_NAME);
+      await selectOption('select[aria-label="Goal"]', GOAL_NAME);
       await closeTask();
     }
 
