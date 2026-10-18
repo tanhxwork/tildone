@@ -276,8 +276,9 @@ export type Selection =
   | { type: "review" }
   | { type: "completed" }
   | { type: "goals" }
-  /** Every project as an island, agents placed by state. */
-  | { type: "town" }
+  /** Every project as an island, agents placed by state. goalId narrows it to
+   *  one goal's island and agents; the store carries it over from a goal view. */
+  | { type: "town"; goalId?: number }
   /** Dev servers on the Linux workstation; present only while the ws hub URL is set. */
   | { type: "servers" }
   | { type: "project"; projectId: number }

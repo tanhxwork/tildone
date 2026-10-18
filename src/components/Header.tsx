@@ -62,9 +62,12 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
     case "goals":
       title = "Where you’re going";
       break;
-    case "town":
+    case "town": {
       title = "Town";
+      const goal = goals.find((g) => g.id === selection.goalId);
+      if (goal) headerGoalName = goal.name;
       break;
+    }
     case "servers":
       title = "Servers";
       break;

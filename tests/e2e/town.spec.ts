@@ -257,4 +257,41 @@ describe("town page", () => {
     await expect(desert()).toHaveAttribute("aria-checked", "true");
     await browser.keys("Escape");
   });
+
+  // TIL-216: opening Town while a goal is selected narrows it to that goal.
+  it("narrows to the selected goal, and Whole town brings the rest back", async () => {
+    const url = `${base}/mcp`;
+    await tool(url, "create_goal", { project: "Atlas", name: "Bridge" });
+    await tool(url, "update_task", { id: seeded.blocked.id, goal: "Bridge" });
+    await nudge();
+
+    const buildings = () => $$('.town-stage [aria-label$=" building"]');
+    const agent = (key: string) => $(`[data-testid="town-agent-${seeded[key].id}"]`);
+    const whole = () => $(".town-toolbar").$("button=Whole town");
+
+    await $(".nav-project*=Atlas").click();
+    await $(".nav-goal*=Bridge").waitForExist({ timeout: 10000 });
+    await $(".nav-goal*=Bridge").click();
+    await $('[data-nav="town"]').click();
+
+    await expect($(".view-title-sub")).toHaveText("Bridge");
+    await expect(buildings()).toBeElementsArrayOfSize(1);
+    await expect(buildings()[0]).toHaveAttribute("aria-label", "Atlas building");
+    await expect(agent("blocked")).toBeExisting();
+    // Same project, no goal: gone. Other project: gone.
+    await expect(agent("quiet")).not.toBeExisting();
+    await expect(agent("working")).not.toBeExisting();
+    await expect($$(".town-focusbar button")).toBeElementsArrayOfSize(2);
+    await shot("goal-filtered");
+
+    await whole().click();
+    await expect($(".view-title")).toHaveText("Town");
+    await expect($(".view-title-sub")).not.toBeExisting();
+    await expect(whole()).not.toBeExisting();
+    await expect(buildings()).toBeElementsArrayOfSize(2);
+    for (const key of ["working", "blocked", "quiet"]) {
+      await expect(agent(key)).toBeExisting();
+    }
+    await shot("goal-cleared");
+  });
 });
