@@ -284,6 +284,9 @@ export interface TownModel {
  * ordered by project `position` then id, Inbox last. Within a room characters are
  * ordered newest-activity first so the layout is stable across reloads.
  *
+ * Given a goal, the town narrows to it: one room, the goal's project, holding
+ * only the goal's tasks. No Inbox, since a goal always belongs to a project.
+ *
  * Pure: no store, no clock beyond what `cardPresence` already consults for the
  * fallback recency window. Tested in tests/townModel.test.ts.
  */
@@ -292,10 +295,11 @@ export function townModel(
   tasks: Task[],
   live: Record<number, LivePresence>,
   fallback: Record<number, FallbackPresence>,
+  goal?: Pick<Goal, "id" | "project_id">,
 ): TownModel {
-  const ordered = [...projects].sort(
-    (a, b) => a.position - b.position || a.id - b.id,
-  );
+  const ordered = [...projects]
+    .filter((p) => !goal || p.id === goal.project_id)
+    .sort((a, b) => a.position - b.position || a.id - b.id);
 
   const rooms = new Map<number | null, TownRoom>();
   for (const p of ordered) {
@@ -320,6 +324,7 @@ export function townModel(
 
   for (const t of tasks) {
     if (t.deleted_at !== null) continue;
+    if (goal && t.goal_id !== goal.id) continue;
     // An unknown project_id (orphan row) lands in Inbox rather than vanishing.
     const room = rooms.get(t.project_id) ?? inbox;
     // Backlog size counts every open card, present agent or not.
@@ -345,5 +350,6 @@ export function townModel(
     );
   }
 
-  return { rooms: [...ordered.map((p) => rooms.get(p.id)!), inbox] };
+  const projectRooms = ordered.map((p) => rooms.get(p.id)!);
+  return { rooms: goal ? projectRooms : [...projectRooms, inbox] };
 }

@@ -184,4 +184,30 @@ describe("townModel", () => {
     const model = townModel([p], [older, newer], live, {});
     expect(room(model, p.id).characters.map((c) => c.taskId)).toEqual([newer.id, older.id]);
   });
+
+  it("filters to one goal: only its project's room, only its tasks' characters", () => {
+    const alpha = project("alpha");
+    const beta = project("beta");
+    const goal = { id: 900, project_id: alpha.id };
+    const inGoal = task({ project_id: alpha.id, goal_id: goal.id });
+    const otherGoal = task({ project_id: alpha.id, goal_id: 901 });
+    const noGoal = task({ project_id: alpha.id, goal_id: null });
+    const elsewhere = task({ project_id: beta.id });
+    const inbox = task({ project_id: null });
+    const all = [inGoal, otherGoal, noGoal, elsewhere, inbox];
+    const live = liveMap(all.map((t) => livePresence({ task_id: t.id })));
+
+    const model = townModel([alpha, beta], all, live, {}, goal);
+    expect(model.rooms.map((r) => r.projectId)).toEqual([alpha.id]);
+    expect(room(model, alpha.id).characters.map((c) => c.taskId)).toEqual([inGoal.id]);
+    expect(room(model, alpha.id).openTaskCount).toBe(1);
+  });
+
+  it("keeps the goal's room when no goal task has an agent", () => {
+    const alpha = project("alpha");
+    const goal = { id: 902, project_id: alpha.id };
+    const model = townModel([alpha], [task({ project_id: alpha.id, goal_id: goal.id })], {}, {}, goal);
+    expect(model.rooms.map((r) => r.projectId)).toEqual([alpha.id]);
+    expect(room(model, alpha.id).characters).toHaveLength(0);
+  });
 });
