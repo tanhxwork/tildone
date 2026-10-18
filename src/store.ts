@@ -412,6 +412,16 @@ export const useStore = create<Store>()((set, get) => ({
         step(`Loading your board…${nth}`, `init: attempt ${attempt} fetchAll`);
         const data = await db.fetchAll();
         db.trace(`init: attempt ${attempt} loaded ok`);
+        // Settings come from Rust's settings.json (the old localStorage values go
+        // over once). Imported here, not at the top: the settings module touches
+        // window.matchMedia and must stay out of every test that imports the store.
+        // A failure keeps the defaults rather than keeping the board from loading.
+        step(`Loading settings…${nth}`, `init: attempt ${attempt} settings`);
+        try {
+          await (await import("./appSettings")).loadAppSettings();
+        } catch (err) {
+          db.trace(`init: attempt ${attempt} settings FAILED: ${String(err)}`);
+        }
         set({ ...data, loaded: true, initError: null });
         // Icons resolve async off the main load — the dot shows until they land.
         void get().loadProjectIcons();

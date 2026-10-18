@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { prunedGoalDismissals } from "./selectors";
+import { settingsPatchToApp, type SyncedSettings } from "./settingsMap";
+import { writeSettings } from "./settingsIo";
 
 export type Theme = "auto" | "light" | "dark";
 export type WeekStart = "monday" | "sunday";
@@ -28,6 +30,11 @@ interface SettingsState {
    * dismiss at 3/3, add a fourth task, and finishing that one is a new
    * completion moment rather than a strip the user already said no to. */
   goalCloseDismissed: Record<number, number>;
+  /** The running MCP server's endpoint, or null when it is not up. Asked of Rust,
+   * never assumed: any writer (dialog, MCP, CLI) may start or stop the server. */
+  agentEndpoint: string | null;
+  /** Why the server failed to start, shown under the toggle. */
+  agentError: string | null;
   settingsOpen: boolean;
 
   setTheme: (theme: Theme) => void;
@@ -46,32 +53,23 @@ interface SettingsState {
   closeSettings: () => void;
 }
 
-const STORAGE_KEY = "tildone-settings";
+export const STORAGE_KEY = "tildone-settings";
 
-function loadPersisted(): Pick<
+type UiState = Pick<
   SettingsState,
-  | "theme"
-  | "weekStart"
-  | "defaultProjectId"
-  | "agentServer"
-  | "agentNotify"
-  | "wsHubUrl"
-  | "tagsCollapsed"
-  | "projectGoalsCollapsed"
-  | "agentLaneCollapsed"
-  | "goalCloseDismissed"
-> {
-  const defaults = {
-    theme: "auto" as Theme,
-    weekStart: "monday" as WeekStart,
-    defaultProjectId: null,
-    agentServer: false,
-    agentNotify: true,
-    wsHubUrl: "",
+  "tagsCollapsed" | "projectGoalsCollapsed" | "agentLaneCollapsed" | "goalCloseDismissed"
+>;
+
+// Theme, week start, default project, agent access and the ws hub URL used to live
+// here too. They are in settings.json now (see appSettings.ts); what stays in
+// localStorage is layout state. Old copies of the moved keys are left in place
+// until appSettings.ts has migrated them.
+function loadPersisted(): UiState {
+  const defaults: UiState = {
     tagsCollapsed: false,
-    projectGoalsCollapsed: {} as Record<number, boolean>,
-    agentLaneCollapsed: {} as Record<number, boolean>,
-    goalCloseDismissed: {} as Record<number, number>,
+    projectGoalsCollapsed: {},
+    agentLaneCollapsed: {},
+    goalCloseDismissed: {},
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -96,22 +94,10 @@ function loadPersisted(): Pick<
       }
       return out;
     };
-    const projectGoalsCollapsed = collapsedMap(parsed.projectGoalsCollapsed);
-    const agentLaneCollapsed = collapsedMap(parsed.agentLaneCollapsed);
     return {
-      theme: ["auto", "light", "dark"].includes(parsed.theme) ? parsed.theme : defaults.theme,
-      weekStart: ["monday", "sunday"].includes(parsed.weekStart)
-        ? parsed.weekStart
-        : defaults.weekStart,
-      defaultProjectId:
-        typeof parsed.defaultProjectId === "number" ? parsed.defaultProjectId : null,
-      agentServer: parsed.agentServer === true,
-      // Default on: absent (older settings) or any non-false value means notify.
-      agentNotify: parsed.agentNotify !== false,
-      wsHubUrl: typeof parsed.wsHubUrl === "string" ? parsed.wsHubUrl : "",
       tagsCollapsed: parsed.tagsCollapsed === true,
-      projectGoalsCollapsed,
-      agentLaneCollapsed,
+      projectGoalsCollapsed: collapsedMap(parsed.projectGoalsCollapsed),
+      agentLaneCollapsed: collapsedMap(parsed.agentLaneCollapsed),
       goalCloseDismissed,
     };
   } catch {
@@ -120,15 +106,17 @@ function loadPersisted(): Pick<
 }
 
 function persist(state: SettingsState) {
+  // Merge over what is stored so the not-yet-migrated settings keys survive.
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") ?? {};
+  } catch {
+    // unreadable: start over with the UI keys
+  }
   localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify({
-      theme: state.theme,
-      weekStart: state.weekStart,
-      defaultProjectId: state.defaultProjectId,
-      agentServer: state.agentServer,
-      agentNotify: state.agentNotify,
-      wsHubUrl: state.wsHubUrl,
+      ...stored,
       tagsCollapsed: state.tagsCollapsed,
       projectGoalsCollapsed: state.projectGoalsCollapsed,
       agentLaneCollapsed: state.agentLaneCollapsed,
@@ -137,35 +125,31 @@ function persist(state: SettingsState) {
   );
 }
 
+// Show the change at once, then hand it to Rust; appSettings.ts settles the store
+// from the reply and runs the side effects.
+function save(patch: Partial<SyncedSettings>, set: (p: Partial<SyncedSettings>) => void) {
+  set(patch);
+  writeSettings(settingsPatchToApp(patch));
+}
+
 export const useSettings = create<SettingsState>()((set, get) => ({
+  theme: "auto",
+  weekStart: "monday",
+  defaultProjectId: null,
+  agentServer: false,
+  agentNotify: true,
+  wsHubUrl: "",
+  agentEndpoint: null,
+  agentError: null,
   ...loadPersisted(),
   settingsOpen: false,
 
-  setTheme: (theme) => {
-    set({ theme });
-    persist(get());
-    applyTheme(theme);
-  },
-  setWeekStart: (weekStart) => {
-    set({ weekStart });
-    persist(get());
-  },
-  setDefaultProjectId: (defaultProjectId) => {
-    set({ defaultProjectId });
-    persist(get());
-  },
-  setAgentServer: (agentServer) => {
-    set({ agentServer });
-    persist(get());
-  },
-  setAgentNotify: (agentNotify) => {
-    set({ agentNotify });
-    persist(get());
-  },
-  setWsHubUrl: (url) => {
-    set({ wsHubUrl: url.trim() });
-    persist(get());
-  },
+  setTheme: (theme) => save({ theme }, set),
+  setWeekStart: (weekStart) => save({ weekStart }, set),
+  setDefaultProjectId: (defaultProjectId) => save({ defaultProjectId }, set),
+  setAgentServer: (agentServer) => save({ agentServer }, set),
+  setAgentNotify: (agentNotify) => save({ agentNotify }, set),
+  setWsHubUrl: (url) => save({ wsHubUrl: url.trim() }, set),
   setTagsCollapsed: (tagsCollapsed) => {
     set({ tagsCollapsed });
     persist(get());

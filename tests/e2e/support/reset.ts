@@ -176,6 +176,42 @@ export async function remount(
 }
 
 /**
+ * Put settings.json back to the defaults. The settings no longer live in
+ * localStorage, so clearing it does not reset them: the file in the config dir
+ * outlives a spec file (the app relaunches on it) and a theme or Agent-access
+ * choice from one spec would open the next on a different screen. Written
+ * through the app's own command so Rust's copy changes too, not just the file.
+ */
+async function resetSettings(): Promise<void> {
+  const result = await browser.executeAsync((done: (v: unknown) => void) => {
+    const tauri = (window as never as { __TAURI__?: { core: { invoke: Function } } }).__TAURI__;
+    if (!tauri) return done("no __TAURI__");
+    tauri.core
+      .invoke("settings_set", {
+        patch: {
+          theme: "auto",
+          week_start: "monday",
+          default_project_id: null,
+          ws_hub_url: "",
+          agent_server: false,
+          agent_notify: true,
+          ai_mode: "off",
+          ai_base_url: "",
+          ai_model: "",
+          ai_engine_model: "default",
+          ai_auto_start: false,
+          ai_secretary: true,
+        },
+      })
+      .then(
+        () => done("ok"),
+        (e: unknown) => done(String(e)),
+      );
+  });
+  if (result !== "ok") throw new Error(`could not reset settings.json: ${String(result)}`);
+}
+
+/**
  * Reset the webview's own state and re-mount the app on the empty database.
  *
  * localStorage is the *second* leakage channel and the one onPrepare cannot
@@ -193,6 +229,7 @@ export async function remount(
  * launch view.
  */
 export async function resetUiState(): Promise<void> {
+  await resetSettings();
   await remount((dismissKey: unknown) => {
     localStorage.clear();
     localStorage.setItem(dismissKey as string, "1");
