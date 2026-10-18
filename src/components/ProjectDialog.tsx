@@ -95,7 +95,7 @@ export function ProjectDialog({
             value={name}
             placeholder="Project name"
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && save()}
+            onKeyDown={(e) => e.key === "Enter" && !offline && save()}
           />
         </label>
 
@@ -143,7 +143,7 @@ export function ProjectDialog({
               placeholder={preview?.folder ?? `~/projects/${project.name}`}
               disabled={iconOff}
               onChange={(e) => setFolder(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && save()}
+              onKeyDown={(e) => e.key === "Enter" && !offline && save()}
             />
             <div className="icon-preview">
               {iconOff ? (
