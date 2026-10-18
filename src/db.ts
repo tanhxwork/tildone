@@ -343,7 +343,8 @@ export async function fetchComments(taskId: number): Promise<Comment[]> {
  * A task nobody ever claimed (a bug report or follow-up an agent filed) has
  * neither, so the last source is its project's folder (migration 010). Only a
  * folder the user set counts: NULL is the icon's ~/projects/<name> guess and
- * '' turns the folder off. A leading ~/ is expanded, as icons.rs does.
+ * '' turns the folder off. A leading ~/ is expanded, as icons.rs does; any
+ * other relative folder would hang off the app's own cwd, so it is no base.
  */
 export async function fetchClaimCwd(taskId: number): Promise<string | null> {
   const d = await getDb();
@@ -365,7 +366,8 @@ export async function fetchClaimCwd(taskId: number): Promise<string | null> {
   );
   const folder = project[0]?.folder_path?.trim();
   if (!folder) return null;
-  if (!folder.startsWith("~/")) return folder;
+  if (folder.startsWith("/")) return folder;
+  if (!folder.startsWith("~/")) return null;
   return `${(await homeDir()).replace(/\/+$/, "")}/${folder.slice(2)}`;
 }
 
