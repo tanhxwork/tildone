@@ -113,7 +113,8 @@ pub struct HubConfig {
 pub fn router(cfg: HubConfig) -> axum::Router {
     // No database can be attached on this connection, so ATTACH and VACUUM INTO
     // fail in SQLite itself whatever text gets past `refused_statement`. The app
-    // never attaches a database.
+    // never attaches a database. Plain VACUUM needs one too, so it also fails on
+    // this connection (the MCP server's as well).
     cfg.db
         .lock()
         .unwrap_or_else(|e| e.into_inner())
