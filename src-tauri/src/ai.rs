@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -581,8 +582,35 @@ fn make_executable(dir: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+/// Set while an install runs. Two installs would write the same `.part` file, and an
+/// agent that retries a slow install would start the second.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Holds a "busy" flag until dropped, so every exit path of an install releases it.
+struct BusyGuard<'a>(&'a AtomicBool);
+
+impl<'a> BusyGuard<'a> {
+    fn acquire(flag: &'a AtomicBool) -> Result<Self, String> {
+        if flag.swap(true, Ordering::SeqCst) {
+            return Err("an engine install is already running".into());
+        }
+        Ok(Self(flag))
+    }
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
 pub async fn engine_install(app: AppHandle, model: String) -> Result<(), String> {
+    let _busy = BusyGuard::acquire(&INSTALLING)?;
+    install(app, model).await
+}
+
+async fn install(app: AppHandle, model: String) -> Result<(), String> {
     let spec = model_spec(&model)?;
     let dir = engine_dir(&app)?;
     let bin_dir = dir.join("bin");
@@ -948,5 +976,23 @@ pub fn kill_engine(app: &AppHandle) {
             let _ = ec.child.kill();
             let _ = ec.child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_install_is_refused_until_the_first_ends() {
+        let flag = AtomicBool::new(false);
+        let first = BusyGuard::acquire(&flag).unwrap();
+        let err = BusyGuard::acquire(&flag).err().expect("second must fail");
+        assert_eq!(err, "an engine install is already running");
+        drop(first);
+        assert!(
+            BusyGuard::acquire(&flag).is_ok(),
+            "the guard releases on drop"
+        );
     }
 }

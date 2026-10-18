@@ -826,27 +826,40 @@ impl AppActions for TauriActions {
     fn engine(&self, op: EngineOp) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
         let app = self.0.clone();
         Box::pin(async move {
-            let process = app.state::<crate::ai::EngineProcess>();
-            match op {
-                EngineOp::Status(model) => {
-                    let status = crate::ai::engine_status(app.clone(), process, model).await?;
-                    serde_json::to_value(status).map_err(|e| e.to_string())
-                }
-                EngineOp::Install(model) => crate::ai::engine_install(app.clone(), model)
-                    .await
-                    .map(|_| Value::Null),
-                EngineOp::Start(model) => crate::ai::engine_start(app.clone(), process, model)
-                    .await
-                    .map(|_| Value::Null),
-                EngineOp::Stop => {
-                    crate::ai::engine_stop(process);
-                    Ok(Value::Null)
-                }
-                EngineOp::Delete(file) => crate::ai::engine_delete(app.clone(), process, file)
-                    .await
-                    .map(|_| Value::Null),
+            let changes_engine = !matches!(op, EngineOp::Status(_));
+            let result = Self::run_engine(&app, op).await;
+            // The window refreshes its engine state and secretary route, as it does
+            // after the dialog's own install/start/stop/delete.
+            if changes_engine {
+                let _ = app.emit(crate::appsettings::ENGINE_CHANGED, ());
             }
+            result
         })
+    }
+}
+
+impl TauriActions {
+    async fn run_engine(app: &AppHandle, op: EngineOp) -> Result<Value, String> {
+        let process = app.state::<crate::ai::EngineProcess>();
+        match op {
+            EngineOp::Status(model) => {
+                let status = crate::ai::engine_status(app.clone(), process, model).await?;
+                serde_json::to_value(status).map_err(|e| e.to_string())
+            }
+            EngineOp::Install(model) => crate::ai::engine_install(app.clone(), model)
+                .await
+                .map(|_| Value::Null),
+            EngineOp::Start(model) => crate::ai::engine_start(app.clone(), process, model)
+                .await
+                .map(|_| Value::Null),
+            EngineOp::Stop => {
+                crate::ai::engine_stop(process);
+                Ok(Value::Null)
+            }
+            EngineOp::Delete(file) => crate::ai::engine_delete(app.clone(), process, file)
+                .await
+                .map(|_| Value::Null),
+        }
     }
 }
 

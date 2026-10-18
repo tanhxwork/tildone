@@ -17,6 +17,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Event emitted with the full `Settings` after any change, from any writer.
 pub const SETTINGS_CHANGED: &str = "settings-changed";
+/// Event emitted (no payload) after an engine install, start, stop or delete run by an
+/// agent, so the window refreshes its engine state and re-points the secretary.
+pub const ENGINE_CHANGED: &str = "engine-changed";
 /// File name inside the app config dir.
 pub const FILE_NAME: &str = "settings.json";
 
@@ -268,18 +271,28 @@ impl Store {
         self.inner.lock().unwrap().settings.clone()
     }
 
-    /// Apply a patch and save. Returns the settings after it and the keys that changed;
-    /// nothing is written when none did.
-    pub fn set(&self, patch: &Map<String, Value>) -> Result<(Settings, Vec<String>), String> {
+    /// Apply a patch and save. Returns the settings after it, the keys that changed
+    /// (nothing is written when none did), and whether an outside write the poll had
+    /// not yet seen was picked up first: the caller emits then too, so the window does
+    /// not miss the outside value. A rejected patch leaves an outside write for the poll.
+    pub fn set(&self, patch: &Map<String, Value>) -> Result<(Settings, Vec<String>, bool), String> {
         let mut inner = self.inner.lock().unwrap();
+        let before = (inner.settings.clone(), inner.seen);
+        let outside = inner.refresh(&self.path).is_some();
         let mut next = inner.settings.clone();
-        let changed = next.apply_patch(patch)?;
+        let changed = match next.apply_patch(patch) {
+            Ok(changed) => changed,
+            Err(e) => {
+                (inner.settings, inner.seen) = before;
+                return Err(e);
+            }
+        };
         if !changed.is_empty() {
             save(&self.path, &next)?;
             inner.seen = mtime(&self.path);
             inner.settings = next.clone();
         }
-        Ok((next, changed))
+        Ok((next, changed, outside))
     }
 
     /// Copy the window's old localStorage values in, once. Only keys the file itself
@@ -287,6 +300,7 @@ impl Store {
     /// wins. A bad value is skipped. Returns `None` when `_migrated` was already set.
     pub fn migrate(&self, values: &Map<String, Value>) -> Result<Option<Settings>, String> {
         let mut inner = self.inner.lock().unwrap();
+        inner.refresh(&self.path);
         if inner.settings.migrated {
             return Ok(None);
         }
@@ -314,16 +328,23 @@ impl Store {
     /// changed the file's content since we last looked. A file that does not parse
     /// (caught mid-write, or hand-edited badly) is ignored until it changes again.
     pub fn poll(&self) -> Option<Settings> {
-        let mut inner = self.inner.lock().unwrap();
-        let now = mtime(&self.path);
-        if now == inner.seen {
+        self.inner.lock().unwrap().refresh(&self.path)
+    }
+}
+
+impl Inner {
+    /// Re-read the file if its mtime moved since we last looked. Returns the new
+    /// settings when the content differs from memory; a deleted file means defaults,
+    /// as at load, and a file that does not parse is skipped.
+    fn refresh(&mut self, path: &Path) -> Option<Settings> {
+        let now = mtime(path);
+        if now == self.seen {
             return None;
         }
-        inner.seen = now;
-        // A deleted file means defaults, as at load.
-        match read(&self.path).map(Option::unwrap_or_default) {
-            Ok(next) if next != inner.settings => {
-                inner.settings = next.clone();
+        self.seen = now;
+        match read(path).map(Option::unwrap_or_default) {
+            Ok(next) if next != self.settings => {
+                self.settings = next.clone();
                 Some(next)
             }
             Ok(_) => None,
@@ -354,8 +375,8 @@ pub fn set(
     app: &AppHandle,
     patch: &Map<String, Value>,
 ) -> Result<(Map<String, Value>, Vec<String>), String> {
-    let (settings, changed) = store(app).set(patch)?;
-    if !changed.is_empty() {
+    let (settings, changed, outside) = store(app).set(patch)?;
+    if !changed.is_empty() || outside {
         emit(app, &settings);
     }
     Ok((settings.public(), changed))
@@ -529,13 +550,13 @@ mod tests {
     fn set_saves_and_reports_changed_keys_only() {
         let d = dir("set");
         let store = Store::open(d.join(FILE_NAME));
-        let (s, changed) = store
+        let (s, changed, _) = store
             .set(&patch(json!({"theme": "dark", "week_start": "monday"})))
             .unwrap();
         assert_eq!(changed, ["theme"], "week_start was already monday");
         assert_eq!(s.theme, "dark");
         assert_eq!(load(&d.join(FILE_NAME)).theme, "dark");
-        let (_, changed) = store.set(&patch(json!({"theme": "dark"}))).unwrap();
+        let (_, changed, _) = store.set(&patch(json!({"theme": "dark"}))).unwrap();
         assert!(changed.is_empty());
     }
 
@@ -603,5 +624,38 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         let s = store.poll().expect("deletion is picked up");
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn set_after_an_unpolled_outside_write_keeps_the_outside_key() {
+        let d = dir("outside-set");
+        let p = d.join(FILE_NAME);
+        let store = Store::open(p.clone());
+        store.set(&patch(json!({"theme": "light"}))).unwrap();
+
+        // The CLI writes ai_mode; the poll has not run yet. The dialog writes theme.
+        std::fs::write(&p, r#"{"theme":"light","ai_mode":"builtin"}"#).unwrap();
+        touch(&p, 5_000);
+        let (s, changed, outside) = store.set(&patch(json!({"theme": "dark"}))).unwrap();
+        assert_eq!(changed, ["theme"]);
+        assert!(outside, "the caller must emit so the window sees ai_mode");
+        assert_eq!(s.ai_mode, "builtin");
+        assert_eq!(load(&p).ai_mode, "builtin", "the file kept the outside key");
+
+        // A rejected patch leaves the outside write for the poll to report.
+        std::fs::write(&p, r#"{"theme":"dark","ai_mode":"off"}"#).unwrap();
+        touch(&p, 6_000);
+        assert!(store.set(&patch(json!({"theme": "neon"}))).is_err());
+        assert_eq!(store.poll().expect("poll still sees it").ai_mode, "off");
+
+        // migrate also starts from the file: an outside _migrated makes it a no-op.
+        std::fs::write(&p, r#"{"_migrated":true,"week_start":"sunday"}"#).unwrap();
+        touch(&p, 7_000);
+        assert!(store
+            .migrate(&patch(json!({"agent_notify": false})))
+            .unwrap()
+            .is_none());
+        assert_eq!(store.get().week_start, "sunday");
+        assert!(store.get().agent_notify);
     }
 }
