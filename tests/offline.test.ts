@@ -346,4 +346,45 @@ describe("offline queue", () => {
     await gated.updateTask(1, { title: "x" });
     expect(hub.sent).toEqual([{ sql: "UPDATE tasks SET title = $1", op: undefined }]);
   });
+  it("holds a write that is not queued until the replay is done, so it takes no key", async () => {
+    useOffline.setState({ offline: true });
+    const made = (await gated.insertTask({ project_id: 1, title: "a" } as never)) as { id: number };
+    await gated.insertSubtask(made.id, "s", 0);
+    // Launched with a leftover queue and the hub reachable: the replay runs with offline false.
+    useOffline.setState({ offline: false });
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    db.insertTask.mockImplementationOnce(async () => {
+      await gate; // the replay is mid-op
+      const r = await remoteDb.execute("INSERT INTO tasks", []);
+      return { id: r.lastInsertId!, number: 1, ref: "TIL-1", goal_id: null };
+    });
+    db.insertProject.mockImplementationOnce(async () => {
+      await remoteDb.execute("INSERT INTO projects", []);
+      return { id: 1, code: "X" } as never;
+    });
+    const replay = comeBack();
+    await new Promise((r) => setTimeout(r, 0));
+    const project = gated.insertProject("New", "red", "meadow");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(hub.sent).toEqual([]); // the project waits
+    release();
+    await Promise.all([replay, project]);
+
+    expect(db.insertSubtask).toHaveBeenCalledWith(101, "s", 0);
+    expect(hub.sent.map((w) => w.sql)).toEqual(["INSERT INTO tasks", "INSERT INTO projects"]);
+    expect(hub.sent[0].op).toBeDefined();
+    expect(hub.sent[1].op).toBeUndefined();
+  });
+
+  it("gives a queue saved before keys existed its keys, and saves them", async () => {
+    files.set(
+      "outbox",
+      JSON.stringify({ hub: "http://hub", nextTemp: -1, ids: {}, ops: [{ fn: "deleteTask", args: [3] }] }),
+    );
+    await loadOutbox();
+    await filesSettled();
+    expect(saved().ops).toEqual([{ fn: "deleteTask", args: [3], key: expect.any(String) }]);
+  });
 });

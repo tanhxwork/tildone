@@ -11,8 +11,9 @@ let replayKey: { key: string; n: number } | null = null;
 /**
  * Run `fn` with each write it makes sent to the hub under the key `${key}:${n}`, so a
  * write the hub already ran (its response lost) is not run twice when `fn` is retried.
- * Only the offline replay uses it, and it is safe because writes during a replay are
- * held in the queue: nothing else can send a write while the key is set.
+ * Only the offline replay uses it. The key is module-wide, so it holds only while the
+ * replay is the sole writer: it runs one op at a time, task writes made meanwhile join
+ * the queue, and the other writes wait in offline.ts until the replay is done.
  */
 export async function withOpKey<T>(key: string, fn: () => Promise<T>): Promise<T> {
   replayKey = { key, n: 0 };

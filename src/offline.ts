@@ -259,8 +259,10 @@ export async function loadOutbox() {
       ? { hub: saved.hub ?? "another hub", count: changes(saved.ops) }
       : null;
   outbox = ours ? saved! : { nextTemp: -1, ops: [], ids: {} };
-  for (const op of outbox.ops) op.key ??= crypto.randomUUID(); // queued before keys existed
+  const unkeyed = outbox.ops.filter((op) => !op.key);
+  for (const op of unkeyed) op.key = crypto.randomUUID(); // queued before keys existed
   useOffline.setState({ waiting: countWaiting(), foreign });
+  if (unkeyed.length > 0) await saveOutbox(); // a quit before the next save must not re-key
 }
 
 /** Forget the temporary ids once the board on screen has the real ones (store.reload calls this). */
@@ -321,16 +323,17 @@ async function probe() {
   if (useOffline.getState().offline) await comeBack();
 }
 
-let replaying = false;
+/** The replay in flight, if any. A write that is not queued waits for it (see REFUSED below). */
+let replaying: Promise<void> | null = null;
 
 /** The hub answers again: send the queue, then show the hub's board. */
 export async function comeBack() {
   if (replaying || (!useOffline.getState().offline && outbox.ops.length === 0)) return;
-  replaying = true;
+  replaying = replay();
   try {
-    await replay();
+    await replaying;
   } finally {
-    replaying = false;
+    replaying = null;
   }
   if (outbox.ops.length > 0) return; // cut short by goOffline, which keeps knocking
   useOffline.setState({ offline: false });
@@ -462,6 +465,8 @@ for (const fn of REFUSED) {
   gated[fn] = async (...args) => {
     const call = () => (real as any)[fn](...args);
     if (!isClientMode()) return call();
+    // The replay keys every write it makes; a write of ours in between would take a key's slot.
+    await replaying?.catch(() => {});
     if (!useOffline.getState().offline) {
       try {
         return await call();
