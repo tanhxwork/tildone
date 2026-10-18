@@ -130,9 +130,34 @@ enum SubCmd {
 async fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(e) => {
+        Err(e) if !e.use_stderr() => {
+            // --help and --version
             let _ = e.print();
-            return ExitCode::from(if e.use_stderr() { 1 } else { 0 });
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            // Same shape as every other failure: `error:` then `help:`.
+            let text = e.render().to_string();
+            let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+            let mut msg = lines
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("error: ")
+                .to_string();
+            if msg.ends_with(':') {
+                if let Some(next) = lines.next() {
+                    msg = format!("{msg} {next}");
+                }
+            }
+            let verb = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
+            let help = match verb {
+                Some(v) if e.kind() != clap::error::ErrorKind::InvalidSubcommand => {
+                    format!("tildone-axi {v} --help")
+                }
+                _ => "tildone-axi help".to_string(),
+            };
+            eprintln!("error: {msg}\nhelp: {help}");
+            return ExitCode::from(1);
         }
     };
     match run(cli.cmd).await {

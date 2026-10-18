@@ -262,24 +262,64 @@ pub async fn claim(hub: &Hub, r: &str) -> Res<()> {
     if let Some(b) = git::branch() {
         a.insert("branch".into(), json!(b));
     }
-    say(&hub
+    let reply = hub
         .call("update_task", a, "tildone-axi call update_task --help")
-        .await?);
+        .await?;
+    say(&receipt(&reply));
     Ok(())
 }
 
-/// The card a verb acts on: `--id`, else the card this session holds.
-async fn target(id: Option<String>) -> Res<Value> {
+/// The card a verb acts on: `--id`, else the card this session holds. The second
+/// value is how the receipt names it.
+async fn target(id: Option<String>) -> Res<(Value, String)> {
     if let Some(id) = id {
-        return Ok(task_ref(&id));
+        return Ok((task_ref(&id), id));
     }
     match hub::claimed_card().await? {
-        Some(card) => Ok(card["task_id"].clone()),
+        Some(card) => {
+            let label = card
+                .get("ref")
+                .and_then(Value::as_str)
+                .map_or_else(|| card["task_id"].to_string(), str::to_string);
+            Ok((card["task_id"].clone(), label))
+        }
         None => Err(Fail::tool(
             "this session holds no card",
             "tildone-axi claim <ref>, or pass --id <ref>",
         )),
     }
+}
+
+/// `s` as one single-quoted shell word, so `$`, backticks and quotes stay literal.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A write's reply cut down to a one-line receipt: only id, ref, status and a short
+/// title survive, so a tool that echoes the input text back never reaches the output.
+fn receipt(text: &str) -> String {
+    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else {
+        return text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(120)
+            .collect();
+    };
+    let mut kept = Map::new();
+    for key in ["id", "ref", "status", "title"] {
+        if let Some(v) = o.get(key) {
+            let v = match v {
+                Value::String(s) if s.chars().count() > 80 => {
+                    json!(format!("{}...", s.chars().take(80).collect::<String>()))
+                }
+                v => v.clone(),
+            };
+            kept.insert(key.to_string(), v);
+        }
+    }
+    Value::Object(kept).to_string()
 }
 
 pub enum Verb {
@@ -290,35 +330,41 @@ pub enum Verb {
 }
 
 pub async fn verb(hub: &Hub, v: Verb, id: Option<String>) -> Res<()> {
-    let id = target(id).await?;
-    let (tool, a) = match v {
+    let (id, label) = target(id).await?;
+    let (tool, a, done) = match v {
         Verb::Log(text) => (
             "log_progress",
             args(&[("task_id", id), ("text", json!(text))]),
+            format!("logged on {label}"),
         ),
-        Verb::Note(text) => ("append_note", args(&[("id", id), ("text", json!(text))])),
+        Verb::Note(text) => (
+            "append_note",
+            args(&[("id", id), ("text", json!(text))]),
+            format!("noted on {label}"),
+        ),
         Verb::SubAdd(title) => (
             "add_subtask",
             args(&[("task_id", id), ("title", json!(title))]),
+            format!("subtask added on {label}"),
         ),
-        Verb::Done => ("complete_task", args(&[("id", id)])),
+        Verb::Done => (
+            "complete_task",
+            args(&[("id", id)]),
+            format!("done {label}"),
+        ),
     };
-    say(&hub
-        .call(
-            tool,
-            a,
-            &format!("tildone-axi call {} --help", tool.replace('_', "-")),
-        )
-        .await?);
+    let help = format!("tildone-axi call {} --help", tool.replace('_', "-"));
+    hub.call(tool, a, &help).await?;
+    say(&done);
     Ok(())
 }
 
 /// `sub done <id>`: the id is the subtask's own, as `show` and bare list it.
 pub async fn sub_done(hub: &Hub, n: i64) -> Res<()> {
     let a = args(&[("id", json!(n)), ("done", json!(true))]);
-    say(&hub
-        .call("set_subtask", a, "tildone-axi show <ref> lists subtask ids")
-        .await?);
+    hub.call("set_subtask", a, "tildone-axi show <ref> lists subtask ids")
+        .await?;
+    say(&format!("subtask {n} done"));
     Ok(())
 }
 
@@ -353,8 +399,9 @@ pub async fn new(
                     &matches,
                 ));
                 say(&format!(
-                    "help: nothing created. If this is a new task: tildone-axi new \"{}\" --follow-up --force",
-                    title.replace('"', "\\\"")
+                    "help: nothing created. If this is a new task: tildone-axi new {} --follow-up --force --project {}",
+                    shell_quote(title),
+                    shell_quote(&project)
                 ));
                 return Ok(());
             }
@@ -364,9 +411,10 @@ pub async fn new(
             a.insert("from_task".into(), card["task_id"].clone());
         }
     }
-    say(&hub
+    let reply = hub
         .call("create_task", a, "tildone-axi call create-task --help")
-        .await?);
+        .await?;
+    say(&receipt(&reply));
     Ok(())
 }
 
@@ -394,19 +442,22 @@ pub async fn next(hub: &Hub, project: Option<String>) -> Res<()> {
 }
 
 pub async fn wait(hub: &Hub, since: Option<i64>, ms: u64) -> Res<()> {
-    let mut a = args(&[("wait_ms", json!(ms))]);
-    if let Some(s) = since {
-        a.insert("since".into(), json!(s));
-    }
+    let help = "tildone-axi call list_changes --help";
+    // The server only parks when it has a cursor to compare against, so without
+    // --since take the current one first.
+    let since = match since {
+        Some(s) => s,
+        None => {
+            let baseline = hub.call("list_changes", Map::new(), help).await?;
+            parse(&baseline)
+                .get("cursor")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| Fail::tool("the hub sent no change cursor", help))?
+        }
+    };
+    let a = args(&[("since", json!(since)), ("wait_ms", json!(ms))]);
     let limit = Duration::from_millis(ms) + Duration::from_secs(30);
-    say(&hub
-        .call_within(
-            "list_changes",
-            a,
-            "tildone-axi call list_changes --help",
-            limit,
-        )
-        .await?);
+    say(&hub.call_within("list_changes", a, help, limit).await?);
     Ok(())
 }
 

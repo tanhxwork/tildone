@@ -19,6 +19,9 @@ pub fn string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') => {
+                out.push_str(&format!("\\u{:04X}", c as u32))
+            }
             c => out.push(c),
         }
     }
@@ -32,8 +35,11 @@ fn needs_quotes(s: &str) -> bool {
         || matches!(s, "true" | "false" | "null")
         || looks_numeric(s)
         || s.starts_with('-')
-        || s.chars()
-            .any(|c| matches!(c, ',' | ':' | '"' | '\\' | '[' | ']' | '{' | '}') || c.is_control())
+        || s.chars().any(|c| {
+            matches!(c, ',' | ':' | '"' | '\\' | '[' | ']' | '{' | '}')
+                || c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}')
+        })
 }
 
 /// True when a parser would read the text as a number (`42`, `-1.5`, `1e3`, `007`).
@@ -138,6 +144,11 @@ mod tests {
             );
         }
         assert_eq!(string("inf"), "inf");
+        // Control characters other than \n \r \t are escaped, never left raw in the quotes.
+        assert_eq!(
+            string("a\u{b}b\u{c}c\u{85}d\u{2028}e\u{2029}f\u{7f}"),
+            "\"a\\u000Bb\\u000Cc\\u0085d\\u2028e\\u2029f\\u007F\""
+        );
         assert_eq!(
             string("two\nlines \"q\" \\"),
             "\"two\\nlines \\\"q\\\" \\\\\""

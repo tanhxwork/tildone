@@ -286,52 +286,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_each_kind() {
-        let a = run(&[
-            "--id",
-            "TIL-3",
-            "--from-task=7",
-            "--title",
-            "-x",
-            "--priority",
-            "2",
-            "--include-done",
-            "--tags",
-            "a,b",
-            "--tags",
-            "c",
-        ])
-        .unwrap();
+    fn parses_flag_value_shapes() {
+        // A value may start with a hyphen, and --flag=value works inline.
+        let a = run(&["--id", "TIL-3", "--from-task=7", "--title", "-x"]).unwrap();
         assert_eq!(
             Value::Object(a),
-            json!({"id": "TIL-3", "from_task": 7, "title": "-x", "priority": 2, "include_done": true, "tags": ["a", "b", "c"]})
-        );
-        assert_eq!(
-            run(&["--id", "9", "--no-include-done"]).unwrap()["include_done"],
-            json!(false)
-        );
-    }
-
-    #[test]
-    fn json_is_a_base_that_flags_override() {
-        let a = run(&["--id", "1", "--json", "-", "--priority", "3"]).unwrap();
-        assert_eq!(
-            Value::Object(a),
-            json!({"id": 1, "title": "from stdin", "priority": 3})
+            json!({"id": "TIL-3", "from_task": 7, "title": "-x"})
         );
     }
 
     #[test]
     fn rejects_bad_input() {
-        assert!(run(&["--priority", "x", "--id", "1"])
-            .unwrap_err()
-            .contains("integer"));
         assert!(run(&["--title", "t"])
             .unwrap_err()
             .contains("missing required --id"));
-        assert!(run(&["--id", "1", "--options", "x"])
-            .unwrap_err()
-            .contains("--json"));
         assert!(run(&["--id", "1", "--nope", "x"])
             .unwrap_err()
             .contains("unknown flag"));

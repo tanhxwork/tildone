@@ -376,6 +376,19 @@ async fn new_follow_up_prints_matches() {
         out.stdout
     );
     assert!(out.stdout.contains("--force"));
+    // The re-run suggestion survives a paste into a shell: single-quoted, no expansion.
+    let out = tildone(
+        &fake,
+        &["new", "It's $HOME `x`", "--follow-up", "--project", "p"],
+    )
+    .run()
+    .await;
+    assert!(
+        out.stdout
+            .contains("tildone-axi new 'It'\\''s $HOME `x`' --follow-up --force --project 'p'"),
+        "{}",
+        out.stdout
+    );
     assert_eq!(
         fake.calls_to("list_tasks")[0],
         json!({"project": "p", "include_done": true, "search": "Fix the thing"})
@@ -658,4 +671,89 @@ async fn write_prints_receipt() {
         .run()
         .await;
     assert_eq!(out.stdout, format!("{receipt}\n"));
+
+    // Tools that echo the input back must not reach the output: every write verb
+    // prints one short line.
+    let long = "ECHOED ".repeat(200);
+    fake.reply_json("log_progress", json!({"task_id": 77, "logged": long}));
+    fake.reply_json("append_note", json!({"id": 77, "notes": long}));
+    fake.reply_json("add_subtask", json!({"id": 5, "title": long}));
+    fake.reply_json(
+        "complete_task",
+        json!({"id": 77, "ref": "TIL-77", "status": "done", "title": long}),
+    );
+    fake.reply_json(
+        "create_task",
+        json!({"id": 80, "ref": "TIL-80", "status": "todo", "title": long, "notes": long}),
+    );
+    let cases: [(&[&str], &str); 7] = [
+        (&["log", "--id", "TIL-77", "hello"], "logged on TIL-77"),
+        (&["note", "--id", "TIL-77", "hello"], "noted on TIL-77"),
+        (
+            &["sub", "add", "--id", "TIL-77", "Step"],
+            "subtask added on TIL-77",
+        ),
+        (&["sub", "done", "5"], "subtask 5 done"),
+        (&["done", "--id", "TIL-77"], "done TIL-77"),
+        (&["new", "A task", "--project", "p"], ""),
+        (&["claim", "TIL-77"], ""),
+    ];
+    for (args, want) in cases {
+        let out = tildone(&fake, args).session("sess-1").run().await;
+        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
+        assert_eq!(out.stdout.lines().count(), 1, "{args:?}: {}", out.stdout);
+        assert!(out.stdout.len() < 200, "{args:?}: {}", out.stdout);
+        if !want.is_empty() {
+            assert_eq!(out.stdout.trim_end(), want, "{args:?}");
+        }
+    }
+    // A claimed card is named by its ref.
+    fake.claim(
+        "sess-2",
+        json!({"task_id": 77, "ref": "TIL-77", "title": "T", "status": "doing"}),
+    );
+    let out = tildone(&fake, &["log", "hello"])
+        .session("sess-2")
+        .run()
+        .await;
+    assert_eq!(out.stdout.trim_end(), "logged on TIL-77");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_without_since_parks_from_the_current_cursor() {
+    let fake = Fake::start().await;
+    fake.reply_json("list_changes", json!({"cursor": 9, "changes": []}));
+    let out = tildone(&fake, &["wait", "--ms", "1500"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    // The hub only parks when it gets a cursor, so the baseline comes first.
+    assert_eq!(
+        fake.calls_to("list_changes"),
+        vec![json!({}), json!({"since": 9, "wait_ms": 1500})]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn usage_error_has_error_and_help_lines() {
+    let fake = Fake::start().await;
+    let out = tildone(&fake, &["show"]).run().await;
+    assert_eq!(out.code, 1);
+    assert!(out.stdout.is_empty());
+    assert!(
+        out.stderr
+            .starts_with("error: the following required arguments were not provided"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .trim_end()
+            .ends_with("help: tildone-axi show --help"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("For more information"),
+        "{}",
+        out.stderr
+    );
 }
