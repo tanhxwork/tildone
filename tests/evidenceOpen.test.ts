@@ -22,7 +22,11 @@ mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async () => {},
 }));
 
+// bun's mock.module is process-wide, so keep the real exports: plugin-fs
+// re-exports BaseDirectory from here, and other test files import it.
+const realPath = await import("@tauri-apps/api/path");
 mock.module("@tauri-apps/api/path", () => ({
+  ...realPath,
   homeDir: async () => "/Users/tester",
 }));
 
