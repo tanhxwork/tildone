@@ -422,6 +422,10 @@ textarea:focus-visible,
   opacity: 1;
 }
 
+.nav-project:hover .row-action:disabled {
+  opacity: 0.35;
+}
+
 .project-dot {
   width: 9px;
   height: 9px;
@@ -7629,6 +7633,18 @@ textarea:focus-visible,
 .icon-btn:disabled:hover {
   background: none;
   color: var(--text-muted);
+}
+
+.offline-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.offline-fieldset:disabled :is(button, input, select) {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .offline-hint {

@@ -76,6 +76,8 @@ export function GoalDialog({
       >
         <div className="modal-header">
           <h2>{goal ? "Edit Goal" : "New Goal"}</h2>
+          {/* In the header: the footer has no room beside its four buttons. */}
+          <OfflineHint />
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
             <IconX />
           </button>
@@ -200,7 +202,6 @@ export function GoalDialog({
               >
                 {goal.completed_at === null ? "Close goal" : "Reopen goal"}
               </button>
-              <OfflineHint />
             </>
           )}
           <div className="spacer" />
@@ -209,7 +210,8 @@ export function GoalDialog({
           </button>
           <button
             className="btn primary"
-            disabled={!name.trim() || (needsProject && chosenProjectId === null)}
+            disabled={!name.trim() || (needsProject && chosenProjectId === null) || offline}
+            title={offline ? NOT_AVAILABLE : undefined}
             onClick={save}
           >
             {goal ? "Save" : "Create"}

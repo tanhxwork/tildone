@@ -103,9 +103,11 @@ export function GoalsView() {
           <TildoneMark width={36} className="empty-mark" />
           <p className="empty-title">{filter === "open" ? "No open goals" : "No goals yet"}</p>
           <p className="empty-hint">
-            {projects.length === 0
-              ? "Create a project first — a goal always lives inside one."
-              : "New goal, or the + on any project in the sidebar."}
+            {offline
+              ? "Goals can be added once the hub is back."
+              : projects.length === 0
+                ? "Create a project first — a goal always lives inside one."
+                : "New goal, or the + on any project in the sidebar."}
           </p>
         </div>
       )}

@@ -332,7 +332,13 @@ describe("hub: another Tildone as the board", () => {
     const title = "Made while the hub was down";
     // Something to switch off: a project (goal and delete controls), and a second tag to merge into.
     await hubTool("create_project", { name: "Offline Proj" });
-    await hubTool("create_task", { title: "Tagged on the hub", project: "Offline Proj", tags: ["alpha"] });
+    await hubTool("create_goal", { project: "Offline Proj", name: "Offline Goal" });
+    await hubTool("create_task", {
+      title: "Tagged on the hub",
+      project: "Offline Proj",
+      goal: "Offline Goal",
+      tags: ["alpha"],
+    });
     await $('button[aria-label="New goal in Offline Proj"]').waitForExist({ timeout: 10_000 });
     await stopHub();
     await $(".hub-banner*=Offline").waitForExist({
@@ -405,6 +411,16 @@ describe("hub: another Tildone as the board", () => {
     expect(await newGoal.isEnabled()).toBe(false);
     expect(await newGoal.getAttribute("title")).toBe("Not available offline");
     await browser.saveScreenshot(`${SHOTS}/offline-goal-disabled.png`);
+
+    // A goal's own dialog: deleting it, and saving an edit, need the hub.
+    await $(".goal-row*=Offline Goal").click();
+    await $('button[aria-label="Edit goal"]').click();
+    const delGoal = $(".modal-footer").$("button=Delete goal");
+    await delGoal.waitForExist({ timeout: 5_000 });
+    expect(await delGoal.isEnabled()).toBe(false);
+    expect(await $(".modal-footer").$("button=Save").isEnabled()).toBe(false);
+    await browser.saveScreenshot(`${SHOTS}/offline-goal-delete-disabled.png`);
+    await $(".modal-footer").$("button=Cancel").click();
 
     // Trash a card (queued), then the trash itself cannot be emptied.
     await openAllTasks();

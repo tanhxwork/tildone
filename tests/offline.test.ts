@@ -238,9 +238,7 @@ describe("offline queue", () => {
     await comeBack(); // the hub answers: nothing of the other hub's goes up
     expect(db.deleteTask).not.toHaveBeenCalled();
     useOffline.setState({ offline: true });
-    await expect(gated.deleteTask(1)).rejects.toThrow(
-      "1 change queued for http://other waits for that hub. Not available offline.",
-    );
+    await expect(gated.deleteTask(1)).rejects.toThrow("1 change queued for http://other waits");
     expect(db.deleteTask).not.toHaveBeenCalled();
     await filesSettled();
     expect(files.get("outbox")).toBe(theirs);

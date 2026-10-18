@@ -201,7 +201,12 @@ export function ProjectDialog({
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" disabled={!name.trim()} onClick={save}>
+          <button
+            className="btn primary"
+            disabled={!name.trim() || offline}
+            title={offline ? NOT_AVAILABLE : undefined}
+            onClick={save}
+          >
             {project ? "Save" : "Create"}
           </button>
         </div>

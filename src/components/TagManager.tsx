@@ -63,6 +63,8 @@ export function TagManager() {
           </button>
         </div>
 
+        {/* Offline every edit here is refused, so the whole list is switched off at once. */}
+        <fieldset className="offline-fieldset" disabled={offline}>
         <section className="settings-section">
           <h3 className="settings-heading">
             Tags <span className="group-count">{tags.length}</span>
@@ -230,6 +232,7 @@ export function TagManager() {
             )}
           </div>
         </section>
+        </fieldset>
       </div>
     </div>
   );
