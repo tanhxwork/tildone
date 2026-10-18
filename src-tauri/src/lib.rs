@@ -262,6 +262,7 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            appsettings::init(app.handle());
             // Off the main thread: it reads two ~3 MB files and is rarely needed.
             std::thread::spawn(clilink::refresh_appimage_copy);
             // The default window size (tauri.conf.json) is chosen so the board's
@@ -350,6 +351,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             drops::read_dropped_image,
+            appsettings::settings_get,
+            appsettings::settings_set,
+            appsettings::settings_migrate,
             settingsfile::export_settings_file,
             settingsfile::import_settings_file,
             ai::ai_probe,
