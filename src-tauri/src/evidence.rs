@@ -24,7 +24,7 @@ const MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// The user's home, canonicalised. Every readable path must be inside it —
 /// which is also the scope `opener:allow-open-path` grants, so the click that
 /// opens a file and the click that previews it obey the same boundary.
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     std::fs::canonicalize(PathBuf::from(home)).ok()
 }
@@ -117,7 +117,7 @@ fn open_beneath(canonical: &Path) -> Result<std::fs::File, String> {
 /// every component — so anything that changes underneath fails the open rather
 /// than redirecting it. Size and bytes come from the handle, never from a second
 /// look at the name.
-fn open_vetted(path: &Path, home: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_vetted(path: &Path, home: &Path) -> Result<std::fs::File, String> {
     let real = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !real.starts_with(home) {
         return Err("outside the home directory".into());
@@ -143,7 +143,7 @@ fn open_vetted(path: &Path, home: &Path) -> Result<std::fs::File, String> {
 
 /// The bytes of a vetted handle, bounded regardless of what it turns out to
 /// hold — `take` caps the allocation rather than trusting the size just read.
-fn read_vetted(file: std::fs::File) -> Result<Vec<u8>, String> {
+pub(crate) fn read_vetted(file: std::fs::File) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1)

@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { hubFile, hubGitRemote } from "../hubClient";
+import { isClientMode } from "../hubMode";
 import type { TaskLink } from "../types";
 import { EVIDENCE_EXTENSIONS, isRevealOnlyEvidence } from "./links";
 import { braceExpand } from "./markdownEvidence";
@@ -62,7 +64,8 @@ export async function resolveEvidencePath(
   cwd: string | null,
 ): Promise<string | null> {
   if (raw.startsWith("/")) return raw;
-  if (raw.startsWith("~/")) return `${await home()}/${raw.slice(2)}`;
+  // Client mode: `~` is the hub's home, which the hub expands; this machine's would be wrong.
+  if (raw.startsWith("~/")) return isClientMode() ? raw : `${await home()}/${raw.slice(2)}`;
   if (!cwd) return null;
   return `${cwd.replace(/\/+$/, "")}/${raw.replace(/^\.\//, "")}`;
 }
@@ -108,6 +111,12 @@ export async function openEvidence(
   // must run per expanded path — `a.{md,html}` has no extension of its own.
   if (!paths.every(isEvidenceFile)) return null;
 
+  // Client mode: the file is on the hub. Only an image can come here, through hubFile;
+  // opening or revealing needs the file on this machine.
+  if (isClientMode() && (reveal || !paths.every(isPreviewableImage))) {
+    return "On the hub — open it there.";
+  }
+
   if (reveal) {
     try {
       await revealItemInDir(paths[0]);
@@ -122,7 +131,10 @@ export async function openEvidence(
     const missing: string[] = [];
     for (const path of paths) {
       try {
-        const bytes = await invoke<ArrayBuffer>("read_evidence_image", { path });
+        // Client mode: the shot lives on the hub, which serves evidence images only.
+        const bytes = isClientMode()
+          ? await hubFile(path)
+          : await invoke<ArrayBuffer>("read_evidence_image", { path });
         const type = MIME[extensionOf(path)] ?? "application/octet-stream";
         files.push({
           src: URL.createObjectURL(new Blob([bytes], { type })),
@@ -196,7 +208,9 @@ async function remoteBase(cwd: string): Promise<RepoBase | null> {
   }
   let base: RepoBase | null = null;
   try {
-    const remote = await invoke<string | null>("git_remote_url", { cwd });
+    const remote = isClientMode()
+      ? await hubGitRemote(cwd)
+      : await invoke<string | null>("git_remote_url", { cwd });
     base = remote ? repoBaseFromRemote(remote) : null;
   } catch {
     base = null;

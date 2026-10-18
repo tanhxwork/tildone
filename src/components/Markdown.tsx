@@ -5,6 +5,7 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
+import { isClientMode } from "../hubMode";
 import { fetchClaimCwd } from "../db";
 import { isHttpUrl } from "../utils/links";
 import {
@@ -170,7 +171,11 @@ function EvidenceLink({
       <a
         className="md-evidence"
         href="#"
-        title={`${evidence.value}${image ? "" : " · opens in its default app"} · ⌥-click to reveal in Finder`}
+        title={
+          isClientMode()
+            ? `${evidence.value} · on the hub${image ? "" : ", open it there"}`
+            : `${evidence.value}${image ? "" : " · opens in its default app"} · ⌥-click to reveal in Finder`
+        }
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();

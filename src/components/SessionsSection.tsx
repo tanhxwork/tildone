@@ -7,6 +7,8 @@
 
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { hubClaimCwds } from "../hubClient";
+import { isClientMode } from "../hubMode";
 import { useHostStore, type HostSession } from "../hostStore";
 import { usePaneStore } from "../paneStore";
 import { useStore } from "../store";
@@ -28,7 +30,9 @@ export function SessionsSection() {
     setError("");
     try {
       // Recent claim cwds — where the board already knows work happens.
-      const recent = await invoke<string[]>("recent_claim_cwds");
+      const recent = isClientMode()
+        ? await hubClaimCwds()
+        : await invoke<string[]>("recent_claim_cwds");
       setCwds(recent);
       if (!cwd && recent.length > 0) setCwd(recent[0]);
     } catch {
@@ -102,6 +106,9 @@ export function SessionsSection() {
     await invoke("host_kill", { sessionId: s.id }).catch(() => {});
     void refresh();
   }
+
+  // Client mode: sessions run on a machine that hosts them, not over the network.
+  if (isClientMode()) return null;
 
   return (
     <div className="sidebar-section">

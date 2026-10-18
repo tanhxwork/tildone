@@ -64,6 +64,7 @@ import { EvidenceNotice } from "./EvidenceNotice";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { isClientMode } from "../hubMode";
 import { lineageTask } from "../ownerViews";
 import { reservedState } from "./TaskRow";
 
@@ -344,6 +345,11 @@ export function TaskEditor() {
   // Finder instead — the user opens them deliberately if they trust the source.
   async function openLink(link: TaskLink) {
     if (asLinkKind(link.kind) === "file") {
+      // Client mode: the path is the hub's, not this machine's.
+      if (isClientMode()) {
+        setLinkError(`${link.label} is on the hub — open it there.`);
+        return;
+      }
       if (isRevealOnlyEvidence(link.url)) {
         void revealItemInDir(link.url);
         return;
@@ -864,17 +870,19 @@ export function TaskEditor() {
                       {src && <img src={src} alt={img.filename} loading="lazy" />}
                     </button>
                     <span className="detail-image-actions">
-                      <button
-                        type="button"
-                        aria-label={`Reveal ${img.filename} in Finder`}
-                        title="Reveal in Finder"
-                        onClick={() => {
-                          const abs = imageAbsPath(img);
-                          if (abs) void revealItemInDir(abs);
-                        }}
-                      >
-                        <IconFolderOpen size={12} />
-                      </button>
+                      {!isClientMode() && (
+                        <button
+                          type="button"
+                          aria-label={`Reveal ${img.filename} in Finder`}
+                          title="Reveal in Finder"
+                          onClick={() => {
+                            const abs = imageAbsPath(img);
+                            if (abs) void revealItemInDir(abs);
+                          }}
+                        >
+                          <IconFolderOpen size={12} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         aria-label={`Insert ${img.filename} in notes`}
@@ -918,7 +926,7 @@ export function TaskEditor() {
                 its open and stop/dismiss controls — or the launcher: one
                 button per installed CLI, launching in the task's directory
                 with the ref as the opening prompt. */}
-            {(hosted || hostAdapters.length > 0) && (
+            {!isClientMode() && (hosted || hostAdapters.length > 0) && (
               <>
                 <span className="detail-prop-label">
               <SquareTerminal className="detail-prop-icon" size={16} aria-hidden="true" />
@@ -1067,7 +1075,7 @@ export function TaskEditor() {
                       claude pid AND a terminal window to raise — a headless
                       background session never shows a button that could only
                       answer "not reachable". */}
-                  {(presence.reachable || presence.attachable) && (
+                  {!isClientMode() && (presence.reachable || presence.attachable) && (
                     <button
                       className="detail-agent-jump"
                       title={
@@ -1322,8 +1330,12 @@ export function TaskEditor() {
                   >
                     <button
                       className="link-chip-open"
+                      // Client mode: a file path is the hub's, not this machine's.
+                      disabled={isFile && isClientMode()}
                       title={
-                        isFile
+                        isFile && isClientMode()
+                          ? "On the hub"
+                          : isFile
                           ? isRevealOnlyEvidence(link.url)
                             ? `${link.url} — reveals in Finder (HTML/SVG can run scripts in a browser)`
                             : link.url
@@ -1339,7 +1351,7 @@ export function TaskEditor() {
                       <span className="link-chip-label">{link.label}</span>
                       {pr?.suffix}
                     </button>
-                    {isFile && (
+                    {isFile && !isClientMode() && (
                       <button
                         className="link-reveal"
                         aria-label={`Reveal ${link.label} in Finder`}

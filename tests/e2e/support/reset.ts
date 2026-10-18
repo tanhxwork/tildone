@@ -193,6 +193,8 @@ async function resetSettings(): Promise<void> {
           week_start: "monday",
           default_project_id: null,
           ws_hub_url: "",
+          board_hub_url: "",
+          board_hub_token: "",
           agent_server: false,
           agent_notify: true,
           ai_mode: "off",

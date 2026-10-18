@@ -18,6 +18,8 @@ export interface SyncedSettings {
   agentServer: boolean;
   agentNotify: boolean;
   wsHubUrl: string;
+  boardHubUrl: string;
+  boardHubToken: string;
 }
 
 /** The synced slice of the AI store (`useAI.config`). */
@@ -37,6 +39,8 @@ export const settingsFromApp = (a: AppSettings): SyncedSettings => ({
   agentServer: a.agent_server,
   agentNotify: a.agent_notify,
   wsHubUrl: a.ws_hub_url,
+  boardHubUrl: a.board_hub_url,
+  boardHubToken: a.board_hub_token,
 });
 
 export const aiFromApp = (a: AppSettings): SyncedAIConfig => ({
@@ -56,6 +60,8 @@ const SETTINGS_KEYS: { [K in keyof SyncedSettings]: keyof AppSettings } = {
   agentServer: "agent_server",
   agentNotify: "agent_notify",
   wsHubUrl: "ws_hub_url",
+  boardHubUrl: "board_hub_url",
+  boardHubToken: "board_hub_token",
 };
 
 const AI_KEYS: { [K in keyof SyncedAIConfig]: keyof AppSettings } = {

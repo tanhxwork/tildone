@@ -32,6 +32,9 @@ import { watchMoreTrigger } from "./observeViews";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
 import { nextEnvironment } from "./utils/environment";
 import { byTask, type LivePresence } from "./utils/presence";
+import { hubConnect, hubDisconnect, hubPresence } from "./hubClient";
+import { isClientMode } from "./hubMode";
+import { watchHubStatus } from "./hubStatus";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
   removeImageFile,
@@ -70,6 +73,8 @@ interface Store {
    * exactly how the stuck-loading incident stayed invisible.
    */
   initStatus: string;
+  /** Client mode: why the hub could not be reached (bad token, unreachable, other schema). */
+  hubError: string | null;
   projects: Project[];
   /** Every goal, all projects, ordered by (position, id) — migration 025. */
   goals: Goal[];
@@ -345,6 +350,7 @@ export const useStore = create<Store>()((set, get) => ({
   loaded: false,
   initError: null,
   initStatus: "Loading…",
+  hubError: null,
   projects: [],
   goals: [],
   projectIcons: {},
@@ -402,25 +408,47 @@ export const useStore = create<Store>()((set, get) => ({
     } catch (err) {
       db.trace(`init: settings FAILED: ${String(err)}`);
     }
+    // Client mode: the board is the hub's. Check it answers (token, schema) before
+    // any database step, and stop on a failure with the cause: the retry loop below
+    // is for a local database that is briefly locked, not for a wrong token.
+    const clientMode = isClientMode();
+    if (clientMode) {
+      step("Connecting to the hub…", "init: hubConnect");
+      try {
+        await hubConnect();
+        set({ hubError: null });
+        void watchHubStatus();
+      } catch (err) {
+        db.trace(`init: hubConnect FAILED: ${String(err)}`);
+        set({ hubError: String(err) });
+        return;
+      }
+    } else {
+      // Back on this machine's board: a follower left running from client mode stops.
+      void hubDisconnect().catch(() => {});
+    }
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
       const nth = attempt > 0 ? ` (attempt ${attempt + 1})` : "";
       try {
         step(`Opening the database…${nth}`, `init: attempt ${attempt} openDb`);
         await db.openDb();
-        step(`Cleaning up old trash…${nth}`, `init: attempt ${attempt} purge`);
-        await db.purgeTrashedBefore(cutoff);
-        // The purge above (and any earlier one) leaves attachment files behind —
-        // sweep them now that the surviving task ids are authoritative. Best-effort:
-        // a failed sweep must never keep the board from loading.
-        void sweepOrphanAttachments(db.allTaskIds)
-          .then((n) => {
-            if (n > 0) db.trace(`init: swept ${n} orphan attachment dir(s)`);
-          })
-          .catch(() => {});
-        // Give pre-migration-010 projects/tasks their code/number/ref before the
-        // first read, so nothing ever renders the raw #id fallback. Idempotent.
-        step(`Checking task references…${nth}`, `init: attempt ${attempt} backfillRefs`);
-        await db.backfillRefs();
+        // The hub purges, sweeps and backfills for itself; a client leaves them be.
+        if (!clientMode) {
+          step(`Cleaning up old trash…${nth}`, `init: attempt ${attempt} purge`);
+          await db.purgeTrashedBefore(cutoff);
+          // The purge above (and any earlier one) leaves attachment files behind —
+          // sweep them now that the surviving task ids are authoritative. Best-effort:
+          // a failed sweep must never keep the board from loading.
+          void sweepOrphanAttachments(db.allTaskIds)
+            .then((n) => {
+              if (n > 0) db.trace(`init: swept ${n} orphan attachment dir(s)`);
+            })
+            .catch(() => {});
+          // Give pre-migration-010 projects/tasks their code/number/ref before the
+          // first read, so nothing ever renders the raw #id fallback. Idempotent.
+          step(`Checking task references…${nth}`, `init: attempt ${attempt} backfillRefs`);
+          await db.backfillRefs();
+        }
         step(`Loading your board…${nth}`, `init: attempt ${attempt} fetchAll`);
         const data = await db.fetchAll();
         db.trace(`init: attempt ${attempt} loaded ok`);
@@ -484,7 +512,9 @@ export const useStore = create<Store>()((set, get) => ({
 
   loadPresence: async () => {
     try {
-      const entries = await invoke<LivePresence[]>("agent_presence");
+      const entries = isClientMode()
+        ? await hubPresence<LivePresence[]>()
+        : await invoke<LivePresence[]>("agent_presence");
       set({ live: byTask(entries) });
     } catch {
       // The agent server may simply not be running — that is a normal state, not an

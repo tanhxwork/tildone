@@ -24,7 +24,7 @@ use rmcp::{
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 pub const AGENT_PORT: u16 = 11502;
@@ -102,7 +102,7 @@ pub struct AgentLive {
     db: Mutex<Option<Db>>,
 }
 
-type Db = Arc<Mutex<Connection>>;
+pub(crate) type Db = Arc<Mutex<Connection>>;
 
 /// Live heartbeat state, keyed by agent session id.
 ///
@@ -736,7 +736,7 @@ const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const BIND_PID_FRESH: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 
 /// Called after every successful write so the app UI can refresh.
-type Notify = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// Raise a native OS notification (title, body, task ref). A sibling of `Notify`,
 /// built the same way in `agent_server_start`, but this one reaches the *user*, not
@@ -4853,14 +4853,20 @@ impl TildoneAgent {
 /// board through a TCP forward such as `tailscale serve`, which passes the
 /// client's `Host: <hostname>` through unchanged.
 fn server_config(port: u16) -> StreamableHttpServerConfig {
-    let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-    hosts.extend(own_hostnames());
     StreamableHttpServerConfig::default()
-        .with_allowed_hosts(hosts)
+        .with_allowed_hosts(allowed_hosts())
         .with_allowed_origins([
             format!("http://127.0.0.1:{port}"),
             format!("http://localhost:{port}"),
         ])
+}
+
+/// The Host names the server answers to: loopback plus this machine's own names.
+/// /mcp enforces it through rmcp; the hub routes check the same list themselves.
+pub(crate) fn allowed_hosts() -> Vec<String> {
+    let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+    hosts.extend(own_hostnames());
+    hosts
 }
 
 /// This machine's hostname as `<name>` and `<name>.local`, lowercased
@@ -4878,6 +4884,41 @@ fn own_hostnames() -> Vec<String> {
         return Vec::new();
     }
     vec![format!("{short}.local"), short]
+}
+
+/// The names other machines reach this one by over Tailscale (`ws`,
+/// `ws.tail….ts.net`, its tailnet IPs). The hub routes accept them on top of
+/// `allowed_hosts`; /mcp does not. Read once per server start, so it is empty
+/// until Agent access restarts when the tailscale CLI is missing or tailscaled was down.
+pub(crate) fn tailnet_hosts() -> Vec<String> {
+    std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .map(|v| tailnet_hosts_from(&v))
+        .unwrap_or_default()
+}
+
+fn tailnet_hosts_from(status: &Value) -> Vec<String> {
+    let me = &status["Self"];
+    let mut hosts = Vec::new();
+    if let Some(dns) = me["DNSName"].as_str() {
+        let full = dns.trim_end_matches('.').to_ascii_lowercase();
+        if let Some(short) = full.split('.').next().filter(|s| !s.is_empty()) {
+            hosts.push(short.to_string());
+        }
+        if !full.is_empty() {
+            hosts.push(full);
+        }
+    }
+    for ip in me["TailscaleIPs"].as_array().into_iter().flatten() {
+        if let Some(ip) = ip.as_str() {
+            hosts.push(ip.to_string());
+        }
+    }
+    hosts
 }
 
 #[derive(serde::Deserialize)]
@@ -5322,6 +5363,11 @@ fn apply_git_event(conn: &Connection, ev: &GitEventBody) -> bool {
 pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
     let db = { live.db.lock().unwrap().clone() };
     let Some(db) = db else { return Vec::new() };
+    presence_snapshot(&db, &live.beats)
+}
+
+/// The body of `agent_presence`, for the hub's GET /presence as well.
+pub(crate) fn presence_snapshot(db: &Db, beats: &Beats) -> Vec<PresenceEntry> {
     let claims = {
         let conn = db.lock().unwrap();
         match read_claims(&conn) {
@@ -5332,7 +5378,7 @@ pub fn agent_presence(live: State<'_, AgentLive>) -> Vec<PresenceEntry> {
             }
         }
     };
-    let beats = live.beats.lock().unwrap().clone();
+    let beats = beats.lock().unwrap().clone();
     resolve_presence(
         &claims,
         &beats,
@@ -5463,9 +5509,14 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
 #[tauri::command]
 pub fn recent_claim_cwds(app: AppHandle) -> Vec<String> {
     let Ok(conn) = open_db(&app) else { return Vec::new() };
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT cwd FROM agent_claims WHERE cwd IS NOT NULL ORDER BY claimed_at DESC",
-    ) else {
+    claim_cwds(&conn)
+}
+
+/// The body of `recent_claim_cwds`, for the hub's GET /claim-cwds as well.
+pub(crate) fn claim_cwds(conn: &Connection) -> Vec<String> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT cwd FROM agent_claims WHERE cwd IS NOT NULL ORDER BY claimed_at DESC")
+    else {
         return Vec::new();
     };
     let mut out: Vec<String> = Vec::new();
@@ -5480,6 +5531,30 @@ pub fn recent_claim_cwds(app: AppHandle) -> Vec<String> {
         }
     }
     out
+}
+
+/// The hub's settings from the app's real dirs. Makes the token file on first use.
+fn hub_config(
+    app: &AppHandle,
+    db: Db,
+    on_change: Notify,
+    beats: Beats,
+    events: tokio::sync::broadcast::Sender<()>,
+    shutdown: CancellationToken,
+) -> Result<crate::hub::HubConfig, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(crate::hub::HubConfig {
+        db,
+        on_change,
+        beats,
+        events,
+        token: crate::hub::ensure_token(&config_dir)?,
+        allowed_hosts: [allowed_hosts(), tailnet_hosts()].concat(),
+        data_dir,
+        evidence_home: crate::evidence::home_dir(),
+        shutdown,
+    })
 }
 
 #[tauri::command]
@@ -5551,6 +5626,9 @@ pub async fn agent_server_start(
     // /git-event reloads the UI through the same signal as MCP writes.
     let sidecar_notify = notify_user.clone();
     let sidecar_on_change = on_change.clone();
+    let hub_on_change = on_change.clone();
+    let hub_db = sidecar_db.clone();
+    let hub_beats = live.beats.clone();
     // The MCP side shares the live beats map so a claim can copy the session's
     // already-beaten pid onto its durable row (see record_claim).
     let mcp_beats = live.beats.clone();
@@ -5596,11 +5674,39 @@ pub async fn agent_server_start(
             axum::routing::post(git_event_handler).with_state(sidecar),
         );
 
+    // The hub: another Tildone's window uses this board through these routes. /events
+    // follows the app event rather than on_change, because the secretary and forge
+    // poll emit `agent-db-changed` directly. No token (or no dirs) → no hub routes;
+    // the MCP server still runs.
+    let (events_tx, _) = tokio::sync::broadcast::channel(64);
+    let change_listener = app.listen("agent-db-changed", {
+        let events_tx = events_tx.clone();
+        move |_| {
+            let _ = events_tx.send(());
+        }
+    });
+    let router = match hub_config(
+        &app,
+        hub_db,
+        hub_on_change,
+        hub_beats,
+        events_tx,
+        ct.clone(),
+    ) {
+        Ok(cfg) => router.merge(crate::hub::router(cfg)),
+        Err(e) => {
+            eprintln!("tildone: hub routes not mounted: {e}");
+            router
+        }
+    };
+
     let serve_ct = ct.clone();
+    let serve_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async move { serve_ct.cancelled_owned().await })
             .await;
+        serve_app.unlisten(change_listener);
     });
 
     *state.0.lock().unwrap() = Some((ct, endpoint.clone()));
@@ -5872,6 +5978,19 @@ fn remove_tray(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailnet_hosts_are_the_magicdns_names_and_ips() {
+        let status = json!({"Self": {
+            "DNSName": "WS.tail8e5688.ts.net.",
+            "TailscaleIPs": ["100.104.71.85", "fd7a:115c:a1e0::7b29:4756"]
+        }});
+        assert_eq!(
+            tailnet_hosts_from(&status),
+            ["ws", "ws.tail8e5688.ts.net", "100.104.71.85", "fd7a:115c:a1e0::7b29:4756"]
+        );
+        assert!(tailnet_hosts_from(&json!({})).is_empty());
+    }
 
     fn extract(result: &CallToolResult) -> (bool, Value) {
         let text = match &result.content[0] {

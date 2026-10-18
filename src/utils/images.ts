@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { appDataDir } from "@tauri-apps/api/path";
 import { BaseDirectory, mkdir, readDir, remove, writeFile } from "@tauri-apps/plugin-fs";
+import { hubFile, hubImagePut } from "../hubClient";
+import { isClientMode } from "../hubMode";
 import type { TaskImage } from "../types";
 
 /** Hard per-image ceiling. A paste over this is refused outright — a task board
@@ -217,11 +219,25 @@ export function formatImageBytes(n: number): string {
 }
 
 /** Write a pending image into <app-data>/attachments/<task_id>/ and return the
- *  row fields (relative path + metadata) for the task_images insert. */
+ *  row fields (relative path + metadata) for the task_images insert. In client
+ *  mode the hub stores it and the path is the hub's own absolute path. */
 export async function saveImageFile(
   taskId: number,
   image: PendingImage,
 ): Promise<{ path: string; filename: string; bytes: number; width: number; height: number }> {
+  if (isClientMode()) {
+    const bytes = new Uint8Array(await image.blob.arrayBuffer());
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const name = `img-${stamp}-${image.key}.${extensionFor(image.blob.type)}`;
+    const path = await hubImagePut(taskId, name, bytes);
+    return {
+      path,
+      filename: image.name,
+      bytes: bytes.byteLength,
+      width: image.width,
+      height: image.height,
+    };
+  }
   const dir = `attachments/${taskId}`;
   await mkdir(dir, { baseDir: BaseDirectory.AppData, recursive: true });
   const ext = extensionFor(image.blob.type);
@@ -239,6 +255,7 @@ export async function saveImageFile(
 }
 
 export async function removeImageFile(image: TaskImage): Promise<void> {
+  if (isClientMode()) return; // the hub owns the files
   await remove(image.path, { baseDir: BaseDirectory.AppData });
 }
 
@@ -247,6 +264,7 @@ export async function removeImageFile(image: TaskImage): Promise<void> {
  *  or a row removed by another process); it is not the primary path, because
  *  waiting until the next launch leaves the files sitting there in between. */
 export async function removeTaskAttachments(taskId: number): Promise<void> {
+  if (isClientMode()) return; // the hub owns the files
   try {
     await remove(`attachments/${taskId}`, {
       baseDir: BaseDirectory.AppData,
@@ -266,6 +284,7 @@ export async function removeTaskAttachments(taskId: number): Promise<void> {
 export async function sweepOrphanAttachments(
   liveTaskIds: () => Promise<Set<number>>,
 ): Promise<number> {
+  if (isClientMode()) return 0; // the hub sweeps its own folder
   let entries;
   try {
     entries = await readDir("attachments", { baseDir: BaseDirectory.AppData });
@@ -331,14 +350,51 @@ const baseReady = appDataDir()
   })
   .catch(() => {});
 
-/** Absolute path of a stored image, or null until the app-data dir resolves. */
+/** Absolute path of a stored image, or null until the app-data dir resolves.
+ *  Null in client mode too: the file is on the hub, so there is nothing to reveal here. */
 export function imageAbsPath(image: TaskImage): string | null {
+  if (isClientMode()) return null;
   return appDataBase ? `${appDataBase}/${image.path}` : null;
 }
 
-/** asset: URL the webview can render, or null until the app-data dir resolves.
- *  Callers that mount before resolution can await imagesReady() and re-render. */
+// Client mode: attachments are fetched from the hub into blob URLs, cached by hub
+// path for the life of the page (a page reload frees them; there is no per-view
+// lifecycle to hook a revoke to). A miss starts the fetch and returns null; the
+// subscribers (useImageBase) re-render when it lands. A failed fetch is not retried
+// for RETRY_MS, so a missing file does not refetch on every render.
+const RETRY_MS = 30_000;
+const hubBlobs = new Map<string, { url: string } | { failedAt: number } | "loading">();
+const hubListeners = new Set<() => void>();
+
+function hubImageUrl(path: string): string | null {
+  const hit = hubBlobs.get(path);
+  if (hit && hit !== "loading" && "url" in hit) return hit.url;
+  if (hit === "loading" || (hit && Date.now() - hit.failedAt < RETRY_MS)) return null;
+  hubBlobs.set(path, "loading");
+  hubFile(path)
+    .then((bytes) => {
+      const type = MIME_BY_EXT[path.slice(path.lastIndexOf(".") + 1).toLowerCase()];
+      hubBlobs.set(path, { url: URL.createObjectURL(new Blob([bytes], { type })) });
+    })
+    .catch(() => hubBlobs.set(path, { failedAt: Date.now() }))
+    .finally(() => hubListeners.forEach((fn) => fn()));
+  return null;
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
+
+/** URL the webview can render, or null until it is ready (the app-data dir
+ *  locally, the hub's bytes in client mode). Callers that mount before it
+ *  resolves re-render through useImageBase. */
 export function imageSrc(image: TaskImage): string | null {
+  if (isClientMode()) return hubImageUrl(image.path);
   const abs = imageAbsPath(image);
   return abs ? convertFileSrc(abs) : null;
 }
@@ -347,11 +403,14 @@ export function imagesReady(): Promise<void> {
   return baseReady;
 }
 
-/** Re-render once the app-data dir resolves, so components that mounted before
- *  resolution (first paint) pick up real imageSrc values. */
+/** Re-render once the app-data dir resolves (or a hub image lands), so components
+ *  that mounted before resolution (first paint) pick up real imageSrc values. */
 export function useImageBase(): void {
-  const [, setReady] = useState(appDataBase !== null);
+  const [, setTick] = useState(0);
   useEffect(() => {
-    void baseReady.then(() => setReady(true));
+    void baseReady.then(() => setTick((n) => n + 1));
+    const bump = () => setTick((n) => n + 1);
+    hubListeners.add(bump);
+    return () => void hubListeners.delete(bump);
   }, []);
 }

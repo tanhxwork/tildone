@@ -10,6 +10,9 @@ export interface AppSettings {
   week_start: "monday" | "sunday";
   default_project_id: number | null;
   ws_hub_url: string;
+  /** Another Tildone's agent server URL to use as the board; "" = this machine. */
+  board_hub_url: string;
+  board_hub_token: string;
   agent_server: boolean;
   agent_notify: boolean;
   ai_mode: "off" | "external" | "builtin";

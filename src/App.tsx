@@ -29,11 +29,13 @@ import { TaskList } from "./components/TaskList";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
+import { HubErrorScreen, HubStatusBanner } from "./components/HubStatus";
 import { QuitWarning } from "./components/QuitWarning";
 import { WsServersView } from "./components/WsServers";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
 import { paneHasFocus, usePaneStore } from "./paneStore";
+import { isClientMode } from "./hubMode";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { initWsStore } from "./wsStore";
@@ -47,6 +49,7 @@ function App() {
     loaded,
     initError,
     initStatus,
+    hubError,
     init,
     selection,
     viewMode,
@@ -144,6 +147,24 @@ function App() {
       }
       useStore.getState().openEditor(task.id);
     });
+    // Artifact facts are the same shape: Rust watches the filesystem and
+    // emits `artifacts-changed`; the store re-pulls.
+    const disposeArtifacts = initArtifactStore();
+    // The ws hub poll runs only while the hub URL setting is set.
+    const disposeWs = initWsStore();
+    return () => {
+      void unlisten.then((fn) => fn());
+      void unlistenOpenTask.then((fn) => fn());
+      disposeArtifacts();
+      disposeWs();
+    };
+  }, []);
+
+  // These read this window's board mode, which init settles (it loads the settings
+  // first), so they start once the board is loaded, not at mount: a client must not
+  // list this machine's sessions, poll its forge or ask its presence.
+  useEffect(() => {
+    if (!loaded) return;
     // Presence is POLLED, not pushed, and that is the whole reason it is affordable.
     // A heartbeat fires on every tool call of every agent; routing those through
     // `agent-db-changed` would drag the board through a full fetchAll() of the entire
@@ -163,16 +184,13 @@ function App() {
     // Hosted sessions are event-driven, not polled: Rust emits `host-changed`
     // on every start / exit / kill and the store re-pulls the list.
     const disposeHost = initHostStore();
-    // Artifact facts are the same shape: Rust watches the filesystem and
-    // emits `artifacts-changed`; the store re-pulls.
-    const disposeArtifacts = initArtifactStore();
-    // The ws hub poll runs only while the hub URL setting is set.
-    const disposeWs = initWsStore();
     // Effect signals (F4): the board asks the forge itself about PR/CI state
     // — on focus and every 5 minutes while visible, never in background.
     // Repeats under 60 s are skipped; a failed poll is silent by contract.
     let lastForgePoll = 0;
     const pollForge = () => {
+      // Client mode: the hub polls its own forge and writes the result to its board.
+      if (isClientMode()) return;
       if (Date.now() - lastForgePoll < 60_000) return;
       lastForgePoll = Date.now();
       void invoke("forge_poll").catch(() => {});
@@ -183,16 +201,12 @@ function App() {
       if (document.hasFocus()) pollForge();
     }, 5 * 60_000);
     return () => {
-      void unlisten.then((fn) => fn());
-      void unlistenOpenTask.then((fn) => fn());
       clearInterval(presenceTimer);
       disposeHost();
-      disposeArtifacts();
-      disposeWs();
       window.removeEventListener("focus", pollForge);
       clearInterval(forgeTimer);
     };
-  }, []);
+  }, [loaded]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -295,7 +309,9 @@ function App() {
     return (
       <div className="app-loading">
         <TildoneMark width={44} className="app-loading-mark" />
-        {initError ? (
+        {hubError ? (
+          <HubErrorScreen error={hubError} />
+        ) : initError ? (
           <div className="app-loading-error">
             <strong>Couldn’t open your board.</strong>
             <p>
@@ -360,6 +376,7 @@ function App() {
     <div className="app">
       <Sidebar />
       <main className="main">
+        <HubStatusBanner />
         <Header searchRef={searchRef} />
         {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
         {!paneActive && (!isPage || selection.type === "mine" || selection.type === "goals") && (

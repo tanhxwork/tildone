@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAI } from "./ai";
+import { setBoardHubUrl } from "./hubMode";
 import { applyTheme, STORAGE_KEY, useSettings } from "./settings";
 import {
   getSettings,
@@ -110,9 +111,21 @@ function runEffects(prev: AppSettings | null, next: AppSettings) {
 
   if (changed("theme")) applyTheme(next.theme);
 
+  // Which board this window shows is picked once, at init (db.ts, the hub connect).
+  // A change of hub or token starts the window over rather than switching live.
+  if (!first && changed("board_hub_url", "board_hub_token")) {
+    window.location.reload();
+    return;
+  }
+  const clientMode = next.board_hub_url.trim() !== "";
+
   // ws_hub_url needs no call: wsStore watches the store field and restarts its poll.
 
-  if (changed("agent_server") && next.agent_server) void startAgentServer();
+  if (clientMode) {
+    // The hub's MCP server is the one agents use; a client starts none, whatever the
+    // setting says. A server left running from before the switch stops here.
+    if (first) void invoke("agent_server_stop").catch(() => {});
+  } else if (changed("agent_server") && next.agent_server) void startAgentServer();
   else if (changed("agent_server") && !first) void stopAgentServer();
   else if (!first && changed("agent_notify")) {
     // Fire-and-forget: if the server isn't running this is a no-op that the next
@@ -123,7 +136,9 @@ function runEffects(prev: AppSettings | null, next: AppSettings) {
   const ai = useAI.getState();
   if (first) {
     // Warm the built-in engine on launch when the user opted in for chat.
-    if (next.ai_mode === "builtin" && next.ai_auto_start) ai.startEngine().catch(() => {});
+    if (!clientMode && next.ai_mode === "builtin" && next.ai_auto_start) {
+      ai.startEngine().catch(() => {});
+    }
     // Board secretary: the Rust loop starts parked; push the config so it knows
     // whether (and where) to run. When pinned to the engine, this also starts it.
     void ai.syncSecretary();
@@ -138,6 +153,7 @@ function runEffects(prev: AppSettings | null, next: AppSettings) {
 function apply(next: AppSettings) {
   const prev = applied;
   applied = next;
+  setBoardHubUrl(next.board_hub_url);
   useSettings.setState(settingsFromApp(next));
   localStorage.setItem(THEME_HINT_KEY, next.theme);
   useAI.setState({ config: aiFromApp(next) });

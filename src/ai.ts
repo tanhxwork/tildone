@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { isClientMode } from "./hubMode";
 import { aiPatchToApp } from "./settingsMap";
 import { writeSettings } from "./settingsIo";
 
@@ -316,6 +317,17 @@ export const useAI = create<AIStore>()((set, get) => ({
   syncSecretary: async () => {
     const seq = ++secretarySyncSeq;
     const { config } = get();
+    // Client mode: the board is the hub's, and the hub runs its own secretary. Park
+    // this machine's loop so it never rewrites the hub's board from here.
+    if (isClientMode()) {
+      await invoke("secretary_configure", {
+        enabled: false,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        disableThinking: false,
+      }).catch(() => {});
+      return;
+    }
     const enabled = config.secretaryEnabled && aiReady(config);
     // The secretary defaults to the built-in engine whenever it is installed
     // for the selected tier — a near-multiple-choice task should not ride a
