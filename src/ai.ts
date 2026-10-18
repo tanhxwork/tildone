@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { aiPatchToApp } from "./settingsMap";
+import { writeSettings } from "./settingsIo";
 
 export type AIMode = "off" | "external" | "builtin";
 export type EngineModelId = "small" | "default" | "better";
@@ -94,8 +96,8 @@ export interface SecretaryStatus {
   behind: number[];
 }
 
-const CONFIG_KEY = "tildone-ai-config";
-
+// The config lives in Rust's settings.json (see appSettings.ts), which fills this
+// store at launch and on every change; these are the values until it has.
 const CONFIG_DEFAULTS: AIConfig = {
   mode: "off",
   baseUrl: "",
@@ -104,16 +106,6 @@ const CONFIG_DEFAULTS: AIConfig = {
   autoStart: false,
   secretaryEnabled: true,
 };
-
-function loadConfig(): AIConfig {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    if (raw) return { ...CONFIG_DEFAULTS, ...JSON.parse(raw) };
-  } catch {
-    // fall through to defaults
-  }
-  return { ...CONFIG_DEFAULTS };
-}
 
 export function aiReady(config: AIConfig): boolean {
   if (config.mode === "builtin") return true;
@@ -161,7 +153,7 @@ interface AIStore {
 let secretarySyncSeq = 0;
 
 export const useAI = create<AIStore>()((set, get) => ({
-  config: loadConfig(),
+  config: { ...CONFIG_DEFAULTS },
   detected: [],
   probing: false,
   engine: null,
@@ -177,19 +169,12 @@ export const useAI = create<AIStore>()((set, get) => ({
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
 
+  // Shows the change at once and hands it to Rust. The side effects (engine
+  // refresh on a tier change, secretary sync) run from appSettings.ts when the
+  // settings change, whoever changed them.
   setConfig: (patch) => {
-    const prevModel = get().config.engineModel;
-    set((s) => {
-      const config = { ...s.config, ...patch };
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-      return { config };
-    });
-    // Installed/running state is per-tier; re-check when the tier changes.
-    if (patch.engineModel && patch.engineModel !== prevModel) {
-      void get().refreshEngine();
-    }
-    // Any config change may change where (or whether) the secretary runs.
-    void get().syncSecretary();
+    set((s) => ({ config: { ...s.config, ...patch } }));
+    writeSettings(aiPatchToApp(patch));
   },
 
   probe: async () => {

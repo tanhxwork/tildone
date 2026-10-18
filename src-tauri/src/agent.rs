@@ -747,6 +747,129 @@ type Notify = Arc<dyn Fn() + Send + Sync>;
 /// is what a click on the notification opens — see `send_user_notification`.
 type NotifyUser = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
+type JsonMap = serde_json::Map<String, Value>;
+
+/// One engine operation, for `AppActions::engine`. `Status` returns the status JSON;
+/// the rest return null.
+#[derive(Debug)]
+enum EngineOp {
+    Status(String),
+    Install(String),
+    Start(String),
+    Stop,
+    Delete(String),
+}
+
+/// What the Settings tools need from the running app. MCP tools have no `AppHandle`
+/// (they are built per session from plain closures), so `agent_server_start` hands
+/// them this instead. The real impl calls the same functions as the Tauri commands;
+/// tests use a fake, and an agent built without an app gets `NoApp`.
+trait AppActions: Send + Sync {
+    /// The public settings: every key in `appsettings::KEYS`.
+    fn settings_get(&self) -> Result<JsonMap, String>;
+    /// Apply a patch, save, and emit `settings-changed`. Returns the public settings
+    /// and the keys that changed. Never stops the server: the window does that from
+    /// the event, so a reply that turns Agent access off still arrives.
+    fn settings_set(&self, patch: JsonMap) -> Result<(JsonMap, Vec<String>), String>;
+    fn hook_status(&self) -> Result<Value, String>;
+    fn hook_install(&self) -> Result<String, String>;
+    fn hook_uninstall(&self) -> Result<String, String>;
+    fn engine(&self, op: EngineOp) -> futures_util::future::BoxFuture<'_, Result<Value, String>>;
+}
+
+/// An agent built with no app behind it (tests, tools run headless).
+struct NoApp;
+
+const NEEDS_APP: &str = "needs the running app";
+
+impl AppActions for NoApp {
+    fn settings_get(&self) -> Result<JsonMap, String> {
+        Err(NEEDS_APP.into())
+    }
+    fn settings_set(&self, _: JsonMap) -> Result<(JsonMap, Vec<String>), String> {
+        Err(NEEDS_APP.into())
+    }
+    fn hook_status(&self) -> Result<Value, String> {
+        Err(NEEDS_APP.into())
+    }
+    fn hook_install(&self) -> Result<String, String> {
+        Err(NEEDS_APP.into())
+    }
+    fn hook_uninstall(&self) -> Result<String, String> {
+        Err(NEEDS_APP.into())
+    }
+    fn engine(&self, _: EngineOp) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async { Err(NEEDS_APP.to_string()) })
+    }
+}
+
+/// The real thing: the command functions, called with the app's handle.
+struct TauriActions(AppHandle);
+
+impl AppActions for TauriActions {
+    fn settings_get(&self) -> Result<JsonMap, String> {
+        Ok(crate::appsettings::get(&self.0))
+    }
+    fn settings_set(&self, patch: JsonMap) -> Result<(JsonMap, Vec<String>), String> {
+        crate::appsettings::set(&self.0, &patch)
+    }
+    fn hook_status(&self) -> Result<Value, String> {
+        let status = crate::hookinstall::hook_status()?;
+        serde_json::to_value(status).map_err(|e| e.to_string())
+    }
+    fn hook_install(&self) -> Result<String, String> {
+        crate::hookinstall::hook_install(self.0.clone())
+    }
+    fn hook_uninstall(&self) -> Result<String, String> {
+        crate::hookinstall::hook_uninstall()
+    }
+    fn engine(&self, op: EngineOp) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+        let app = self.0.clone();
+        Box::pin(async move {
+            let action = match &op {
+                EngineOp::Status(_) => None,
+                EngineOp::Install(_) => Some("install"),
+                EngineOp::Start(_) => Some("start"),
+                EngineOp::Stop => Some("stop"),
+                EngineOp::Delete(_) => Some("delete"),
+            };
+            let result = Self::run_engine(&app, op).await;
+            // The window refreshes its engine state and secretary route, as it does
+            // after the dialog's own actions. The payload is the action, so a stop
+            // is not undone by the secretary sync restarting the engine.
+            if let (Some(action), true) = (action, result.is_ok()) {
+                let _ = app.emit(crate::appsettings::ENGINE_CHANGED, action);
+            }
+            result
+        })
+    }
+}
+
+impl TauriActions {
+    async fn run_engine(app: &AppHandle, op: EngineOp) -> Result<Value, String> {
+        let process = app.state::<crate::ai::EngineProcess>();
+        match op {
+            EngineOp::Status(model) => {
+                let status = crate::ai::engine_status(app.clone(), process, model).await?;
+                serde_json::to_value(status).map_err(|e| e.to_string())
+            }
+            EngineOp::Install(model) => crate::ai::engine_install(app.clone(), model)
+                .await
+                .map(|_| Value::Null),
+            EngineOp::Start(model) => crate::ai::engine_start(app.clone(), process, model)
+                .await
+                .map(|_| Value::Null),
+            EngineOp::Stop => {
+                crate::ai::engine_stop(process);
+                Ok(Value::Null)
+            }
+            EngineOp::Delete(file) => crate::ai::engine_delete(app.clone(), process, file)
+                .await
+                .map(|_| Value::Null),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct TildoneAgent {
     #[allow(dead_code)] // read by the tool_handler macro
@@ -763,6 +886,8 @@ struct TildoneAgent {
     /// so stopping the server (or quitting the app) never has to wait out a
     /// 60-second long-poll.
     shutdown: CancellationToken,
+    /// The running app, for the Settings tools. See `AppActions`.
+    actions: Arc<dyn AppActions>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,7 +1193,14 @@ impl TildoneAgent {
             notify_user,
             beats,
             shutdown,
+            actions: Arc::new(NoApp),
         }
+    }
+
+    /// Give the agent a running app to act on (see `AppActions`).
+    fn with_actions(mut self, actions: Arc<dyn AppActions>) -> Self {
+        self.actions = actions;
+        self
     }
 
     fn notify(&self) {
@@ -2346,6 +2478,52 @@ struct CreateProjectParams {
     name: String,
     #[schemars(description = "Hex color like #6366f1; a color is picked automatically if omitted")]
     color: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+struct UpdateSettingsParams {
+    #[schemars(description = "auto | light | dark")]
+    theme: Option<String>,
+    #[schemars(description = "monday | sunday")]
+    week_start: Option<String>,
+    #[schemars(description = "Project id new tasks go to; 0 clears it")]
+    default_project_id: Option<i64>,
+    #[schemars(description = "Workstation hub URL; empty clears it")]
+    ws_hub_url: Option<String>,
+    #[schemars(
+        description = "Agent access: serve this MCP endpoint. false stops it after this reply"
+    )]
+    agent_server: Option<bool>,
+    #[schemars(description = "Native notifications for agent writes")]
+    agent_notify: Option<bool>,
+    #[schemars(description = "off | external | builtin")]
+    ai_mode: Option<String>,
+    #[schemars(description = "External AI server base URL")]
+    ai_base_url: Option<String>,
+    #[schemars(description = "External AI model name")]
+    ai_model: Option<String>,
+    #[schemars(description = "small | default | better")]
+    ai_engine_model: Option<String>,
+    #[schemars(description = "Start the built-in engine when Tildone opens")]
+    ai_auto_start: Option<bool>,
+    #[schemars(description = "Board secretary on/off")]
+    ai_secretary: Option<bool>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ClaudeHookParams {
+    #[schemars(description = "connect | disconnect | status")]
+    action: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EngineParams {
+    #[schemars(description = "status | install | start | stop | delete")]
+    action: String,
+    #[schemars(description = "small | default | better; defaults to the ai_engine_model setting")]
+    model: Option<String>,
+    #[schemars(description = "Model file name under the engine's models folder (delete only)")]
+    file: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -4340,6 +4518,105 @@ impl TildoneAgent {
         // reload the app's whole store on every poll.
         ok_json(&first)
     }
+
+    #[tool(
+        description = "Read every Tildone setting as one JSON object (theme, week_start, default_project_id, ws_hub_url, agent_server, agent_notify, ai_mode, ai_base_url, ai_model, ai_engine_model, ai_auto_start, ai_secretary)."
+    )]
+    fn get_settings(&self) -> Result<CallToolResult, ErrorData> {
+        match self.actions.settings_get() {
+            // Not ok_json: a cleared default_project_id is null, and every key stays.
+            Ok(settings) => ok_text(Value::Object(settings).to_string()),
+            Err(e) => Ok(err(e)),
+        }
+    }
+
+    #[tool(
+        description = "Change Tildone settings; pass only the ones to change. Allowed: theme auto|light|dark; week_start monday|sunday; default_project_id project id (0 clears); ws_hub_url text; agent_server, agent_notify, ai_auto_start, ai_secretary true|false; ai_mode off|external|builtin; ai_base_url, ai_model text; ai_engine_model small|default|better. A bad value is an error and nothing changes. Returns {settings, changed}. The open window applies the effect (theme, starting or stopping the server, the secretary). agent_server=false stops this endpoint right after the reply."
+    )]
+    fn update_settings(
+        &self,
+        Parameters(params): Parameters<UpdateSettingsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Ok(Value::Object(mut patch)) = serde_json::to_value(&params) else {
+            return Ok(err("could not read the settings"));
+        };
+        patch.retain(|_, v| !v.is_null());
+        if patch.is_empty() {
+            return Ok(err("Nothing to change: pass at least one setting."));
+        }
+        match self.actions.settings_set(patch) {
+            Ok((settings, changed)) => {
+                ok_text(json!({ "settings": settings, "changed": changed }).to_string())
+            }
+            Err(e) => Ok(err(e)),
+        }
+    }
+
+    #[tool(
+        description = "Connect or disconnect the Claude Code heartbeat hook (Settings > Agent access), or read its state. Returns {installed, script, settings} after the action."
+    )]
+    fn claude_hook(
+        &self,
+        Parameters(ClaudeHookParams { action }): Parameters<ClaudeHookParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let done = match action.as_str() {
+            "connect" => self.actions.hook_install().map(|_| ()),
+            "disconnect" => self.actions.hook_uninstall().map(|_| ()),
+            "status" => Ok(()),
+            _ => return Ok(err("action must be one of: connect, disconnect, status")),
+        };
+        match done.and_then(|_| self.actions.hook_status()) {
+            Ok(status) => ok_json(&status),
+            Err(e) => Ok(err(e)),
+        }
+    }
+
+    #[tool(
+        description = "Run the built-in AI engine (Settings > AI). status | install (downloads the model; can take minutes) | start | stop | delete (needs file, a name from the models folder). install, start and status take model small|default|better, default the ai_engine_model setting. Returns the engine status after the action."
+    )]
+    async fn engine(
+        &self,
+        Parameters(EngineParams {
+            action,
+            model,
+            file,
+        }): Parameters<EngineParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        const ACTIONS: &str = "action must be one of: status, install, start, stop, delete";
+        if !["status", "install", "start", "stop", "delete"].contains(&action.as_str()) {
+            return Ok(err(ACTIONS));
+        }
+        let model = match model {
+            Some(m) => m,
+            None => match self.actions.settings_get() {
+                Ok(s) => s
+                    .get("ai_engine_model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_string(),
+                Err(e) => return Ok(err(e)),
+            },
+        };
+        let op = match action.as_str() {
+            "install" => Some(EngineOp::Install(model.clone())),
+            "start" => Some(EngineOp::Start(model.clone())),
+            "stop" => Some(EngineOp::Stop),
+            "delete" => match file {
+                Some(f) if !f.trim().is_empty() => Some(EngineOp::Delete(f)),
+                _ => return Ok(err("delete needs file: a name from the models folder.")),
+            },
+            _ => None,
+        };
+        if let Some(op) = op {
+            if let Err(e) = self.actions.engine(op).await {
+                return Ok(err(e));
+            }
+        }
+        match self.actions.engine(EngineOp::Status(model)).await {
+            Ok(status) => ok_json(&status),
+            Err(e) => Ok(err(e)),
+        }
+    }
 }
 
 // Serve the *instance* router (self.tool_router), NOT the macro default
@@ -4392,7 +4669,9 @@ impl ServerHandler for TildoneAgent {
              restorable trash. An observe card is a question watched across many sessions \
              (create_observation): when asked to check one, run its check and append what \
              you saw with log_observation. Only the user decides it, in the app; \
-             list_tasks and next_task never return observe cards — list_observations does.",
+             list_tasks and next_task never return observe cards — list_observations does. \
+             get_settings/update_settings read and change the app's own settings; \
+             claude_hook and engine run the Settings actions.",
         )
     }
 
@@ -5275,6 +5554,7 @@ pub async fn agent_server_start(
     // The MCP side shares the live beats map so a claim can copy the session's
     // already-beaten pid onto its durable row (see record_claim).
     let mcp_beats = live.beats.clone();
+    let actions: Arc<dyn AppActions> = Arc::new(TauriActions(app.clone()));
     let service: StreamableHttpService<TildoneAgent, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
@@ -5284,7 +5564,8 @@ pub async fn agent_server_start(
                     notify_user.clone(),
                     mcp_beats.clone(),
                     agent_ct.clone(),
-                ))
+                )
+                .with_actions(actions.clone()))
             },
             Default::default(),
             config,
@@ -10012,6 +10293,10 @@ mod tests {
             "complete_task",
             "delete_task",
             "list_tags",
+            "get_settings",
+            "update_settings",
+            "claude_hook",
+            "engine",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -11756,6 +12041,230 @@ mod tests {
         let lone = task_with_goal(&agent, "Work", "Solo", "lone")["id"].as_i64().unwrap();
         let (_, lone_task) = extract(&agent.get_task(Parameters(TaskIdParams { id: lone.into() })).unwrap());
         assert!(lone_task["goal"].get("siblings").is_none(), "a lone task in a goal must carry no siblings key");
+    }
+
+    // ---- Settings tools (get_settings, update_settings, claude_hook, engine) ----
+
+    /// Stands in for the running app: real `Settings::apply_patch`, no file, and a log
+    /// of every call the tools made.
+    #[derive(Default)]
+    struct FakeApp {
+        calls: Mutex<Vec<String>>,
+        settings: Mutex<crate::appsettings::Settings>,
+        hook_on: AtomicBool,
+    }
+
+    impl FakeApp {
+        fn log(&self, call: impl Into<String>) {
+            self.calls.lock().unwrap().push(call.into());
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl AppActions for FakeApp {
+        fn settings_get(&self) -> Result<JsonMap, String> {
+            Ok(self.settings.lock().unwrap().public())
+        }
+        fn settings_set(&self, patch: JsonMap) -> Result<(JsonMap, Vec<String>), String> {
+            self.log(format!("settings_set {}", Value::Object(patch.clone())));
+            let mut s = self.settings.lock().unwrap();
+            let changed = s.apply_patch(&patch)?;
+            Ok((s.public(), changed))
+        }
+        fn hook_status(&self) -> Result<Value, String> {
+            Ok(
+                json!({ "installed": self.hook_on.load(Ordering::SeqCst), "script": "/s", "settings": "/c" }),
+            )
+        }
+        fn hook_install(&self) -> Result<String, String> {
+            self.log("hook_install");
+            self.hook_on.store(true, Ordering::SeqCst);
+            Ok("Connected".into())
+        }
+        fn hook_uninstall(&self) -> Result<String, String> {
+            self.log("hook_uninstall");
+            self.hook_on.store(false, Ordering::SeqCst);
+            Ok("Disconnected".into())
+        }
+        fn engine(
+            &self,
+            op: EngineOp,
+        ) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+            self.log(format!("{op:?}"));
+            Box::pin(async move {
+                match op {
+                    EngineOp::Status(model) => Ok(json!({ "model": model, "running": false })),
+                    EngineOp::Delete(file) if file.contains('/') => {
+                        Err("Invalid model file name".into())
+                    }
+                    _ => Ok(Value::Null),
+                }
+            })
+        }
+    }
+
+    fn app_agent() -> (TildoneAgent, Arc<FakeApp>) {
+        let fake = Arc::new(FakeApp::default());
+        (test_agent().with_actions(fake.clone()), fake)
+    }
+
+    fn update_settings(agent: &TildoneAgent, patch: Value) -> (bool, Value) {
+        let params: UpdateSettingsParams = serde_json::from_value(patch).unwrap();
+        extract(&agent.update_settings(Parameters(params)).unwrap())
+    }
+
+    #[test]
+    fn get_settings_returns_every_key_even_when_null() {
+        let (agent, _) = app_agent();
+        let (is_err, v) = extract(&agent.get_settings().unwrap());
+        assert!(!is_err);
+        for key in crate::appsettings::KEYS {
+            assert!(v.get(*key).is_some(), "missing {key}: {v}");
+        }
+        assert_eq!(v["default_project_id"], Value::Null);
+    }
+
+    #[test]
+    fn update_settings_reports_changed_keys_and_names_allowed_values_on_error() {
+        let (agent, fake) = app_agent();
+        let (is_err, v) =
+            update_settings(&agent, json!({ "theme": "dark", "week_start": "monday" }));
+        assert!(!is_err, "{v}");
+        assert_eq!(v["changed"], json!(["theme"]));
+        assert_eq!(v["settings"]["theme"], "dark");
+
+        let (is_err, v) = update_settings(&agent, json!({ "theme": "neon" }));
+        assert!(is_err);
+        assert!(v.as_str().unwrap().contains("auto, light, dark"), "{v}");
+        assert_eq!(
+            fake.settings.lock().unwrap().theme,
+            "dark",
+            "a bad value changes nothing"
+        );
+
+        let (is_err, _) = update_settings(&agent, json!({}));
+        assert!(is_err, "an empty patch is an error");
+        assert_eq!(
+            fake.calls().len(),
+            2,
+            "the empty patch never reached the app"
+        );
+    }
+
+    #[test]
+    fn update_settings_default_project_zero_clears() {
+        let (agent, fake) = app_agent();
+        update_settings(&agent, json!({ "default_project_id": 5 }));
+        assert_eq!(fake.settings.lock().unwrap().default_project_id, Some(5));
+        let (_, v) = update_settings(&agent, json!({ "default_project_id": 0 }));
+        assert_eq!(v["changed"], json!(["default_project_id"]));
+        assert_eq!(fake.settings.lock().unwrap().default_project_id, None);
+    }
+
+    #[test]
+    fn turning_agent_access_off_still_replies_and_only_saves() {
+        let (agent, fake) = app_agent();
+        update_settings(&agent, json!({ "agent_server": true }));
+        let (is_err, v) = update_settings(&agent, json!({ "agent_server": false }));
+        assert!(!is_err, "{v}");
+        assert_eq!(v["changed"], json!(["agent_server"]));
+        assert_eq!(v["settings"]["agent_server"], false);
+        assert_eq!(
+            fake.calls().last().unwrap(),
+            r#"settings_set {"agent_server":false}"#
+        );
+        assert!(
+            !agent.shutdown.is_cancelled(),
+            "Rust does not stop the server; the window does"
+        );
+    }
+
+    #[test]
+    fn claude_hook_routes_each_action_and_returns_the_state_after() {
+        let (agent, fake) = app_agent();
+        let call = |action: &str| {
+            extract(
+                &agent
+                    .claude_hook(Parameters(ClaudeHookParams {
+                        action: action.into(),
+                    }))
+                    .unwrap(),
+            )
+        };
+        let (_, v) = call("status");
+        assert_eq!(v["installed"], false);
+        let (_, v) = call("connect");
+        assert_eq!(v["installed"], true);
+        let (_, v) = call("disconnect");
+        assert_eq!(v["installed"], false);
+        assert_eq!(fake.calls(), ["hook_install", "hook_uninstall"]);
+        let (is_err, v) = call("reinstall");
+        assert!(is_err);
+        assert!(
+            v.as_str().unwrap().contains("connect, disconnect, status"),
+            "{v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_routes_each_action_and_defaults_the_model_to_the_setting() {
+        let (agent, fake) = app_agent();
+        update_settings(&agent, json!({ "ai_engine_model": "better" }));
+        let run = |action: &str, model: Option<&str>, file: Option<&str>| {
+            agent.engine(Parameters(EngineParams {
+                action: action.into(),
+                model: model.map(Into::into),
+                file: file.map(Into::into),
+            }))
+        };
+
+        let (is_err, v) = extract(&run("install", None, None).await.unwrap());
+        assert!(!is_err);
+        assert_eq!(
+            v["model"], "better",
+            "the status after the action, for the setting's model"
+        );
+        extract(&run("start", Some("small"), None).await.unwrap());
+        extract(&run("stop", None, None).await.unwrap());
+        extract(&run("delete", None, Some("m.gguf")).await.unwrap());
+        extract(&run("status", None, None).await.unwrap());
+        let calls: Vec<String> = fake.calls().into_iter().skip(1).collect();
+        assert_eq!(
+            calls,
+            [
+                r#"Install("better")"#,
+                r#"Status("better")"#,
+                r#"Start("small")"#,
+                r#"Status("small")"#,
+                "Stop",
+                r#"Status("better")"#,
+                r#"Delete("m.gguf")"#,
+                r#"Status("better")"#,
+                r#"Status("better")"#,
+            ]
+        );
+
+        let (is_err, v) = extract(&run("explode", None, None).await.unwrap());
+        assert!(is_err);
+        assert!(
+            v.as_str()
+                .unwrap()
+                .contains("status, install, start, stop, delete"),
+            "{v}"
+        );
+        let (is_err, _) = extract(&run("delete", None, None).await.unwrap());
+        assert!(is_err, "delete needs a file");
+        let (is_err, v) = extract(&run("delete", None, Some("a/b")).await.unwrap());
+        assert!(is_err, "the app's own error comes through: {v}");
+    }
+
+    #[test]
+    fn settings_tools_say_so_when_there_is_no_running_app() {
+        let (is_err, v) = extract(&test_agent().get_settings().unwrap());
+        assert!(is_err);
+        assert!(v.as_str().unwrap().contains("needs the running app"), "{v}");
     }
 }
 

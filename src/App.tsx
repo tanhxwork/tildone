@@ -42,35 +42,6 @@ import { isPageSelection } from "./types";
 // The Town's canvas renderer is large and only the Town page needs it.
 const TownPage = lazy(() => import("./town/TownPage").then((m) => ({ default: m.TownPage })));
 
-/**
- * The installed app owns port 11502 by contract, so a fast restart (quit; replace
- * bundle; open) can race the outgoing process still holding the port. Retry the
- * bind a few times with backoff so a transient failure self-heals instead of
- * needing a manual relaunch. Safe to retry: `agent_server_start` returns the
- * existing endpoint when already up, and a failed bind stores no state.
- */
-async function startAgentServerWithRetry(): Promise<void> {
-  const backoffMs = [250, 500, 1000, 2000];
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await invoke("agent_server_start");
-      return;
-    } catch (err) {
-      if (attempt >= backoffMs.length) {
-        // Never swallow the final failure. Settings also warns, but this carries
-        // the precise reason (e.g. the port is still held); an agent has no other
-        // way to notice the board sat silently dead.
-        console.error(
-          `tildone: MCP server failed to start after ${attempt + 1} attempts:`,
-          err,
-        );
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt]));
-    }
-  }
-}
-
 function App() {
   const {
     loaded,
@@ -121,31 +92,8 @@ function App() {
   }, [goals]);
 
   useEffect(() => {
-    // Warm the built-in engine on launch when the user opted in for chat.
-    const ai = useAI.getState();
-    if (ai.config.mode === "builtin" && ai.config.autoStart) {
-      ai.startEngine().catch(() => {});
-    }
-    // Board secretary: the Rust loop starts parked; push the persisted config
-    // so it knows whether (and where) to run. When the secretary is pinned to
-    // the engine (installed), syncSecretary also starts it — so an
-    // engine-backed secretary comes up on launch even with autoStart off.
-    void ai.syncSecretary();
-  }, []);
-
-  useEffect(() => {
-    // Agent access: start the MCP server if enabled, and refresh the store
-    // whenever an external agent writes to the database.
-    if (useSettings.getState().agentServer) {
-      // Retry with backoff so a transient bind race on a fast restart self-heals;
-      // the final failure is still surfaced loudly (see startAgentServerWithRetry).
-      // Once up, push the persisted notify preference so a muted setting survives a
-      // restart — the flag lives in the Rust process (default on), and the call is a
-      // harmless no-op if the bind ultimately failed.
-      void startAgentServerWithRetry().then(() =>
-        invoke("agent_set_notify", { enabled: useSettings.getState().agentNotify }),
-      );
-    }
+    // Agent access itself is started from the loaded settings (appSettings.ts);
+    // here the store refreshes whenever an external agent writes to the database.
     const unlisten = listen("agent-db-changed", () => {
       void useStore.getState().reload();
     });

@@ -15,6 +15,9 @@ use serde_json::{Map, Value};
 
 const DEFAULT_URL: &str = "http://127.0.0.1:11502/mcp";
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// What a `Fail::Conn` message ends with when a call ran past its limit, as opposed
+/// to a transport error.
+pub const TIMED_OUT: &str = "timed out";
 
 /// How a run fails. `Tool` exits 1 (the hub answered, or the input was wrong);
 /// `Conn` exits 2 (the hub could not be reached).
@@ -113,7 +116,7 @@ impl Hub {
         let params = CallToolRequestParams::new(tool.to_string()).with_arguments(args);
         let result = tokio::time::timeout(limit, self.client.call_tool(params))
             .await
-            .map_err(|_| unreachable(format!("{tool} timed out")))?
+            .map_err(|_| unreachable(format!("{tool} {TIMED_OUT}")))?
             .map_err(unreachable)?;
         let text = result
             .content

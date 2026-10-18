@@ -31,6 +31,7 @@ pub const INSTRUCTIONS: &str = "Fake hub instructions: claim a card before you w
 struct State {
     tools: Vec<Tool>,
     replies: Mutex<HashMap<String, (bool, String)>>,
+    delays: Mutex<HashMap<String, u64>>,
     calls: Mutex<Vec<(String, Value)>>,
     claims: Mutex<HashMap<String, Value>>,
     authorization: Mutex<Vec<String>>,
@@ -70,6 +71,16 @@ impl ServerHandler for FakeServer {
             .lock()
             .unwrap()
             .push((req.name.to_string(), args));
+        let delay = self
+            .0
+            .delays
+            .lock()
+            .unwrap()
+            .get(req.name.as_ref())
+            .copied();
+        if let Some(ms) = delay {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
         let (is_error, text) = self
             .0
             .replies
@@ -170,6 +181,26 @@ fn standard_tools() -> Vec<Tool> {
             json!({"since": s("integer"), "wait_ms": s("integer")}),
             json!([]),
         ),
+        tool("get_settings", "Read every setting.", json!({}), json!([])),
+        tool(
+            "update_settings",
+            "Change settings.",
+            json!({"theme": s("string"), "week_start": s("string"), "default_project_id": s("integer"),
+                   "agent_server": s("boolean"), "ai_model": s("string")}),
+            json!([]),
+        ),
+        tool(
+            "claude_hook",
+            "Connect, disconnect or check the Claude hook.",
+            json!({"action": {"type": "string"}}),
+            json!(["action"]),
+        ),
+        tool(
+            "engine",
+            "Manage the local AI engine.",
+            json!({"action": {"type": "string"}, "model": s("string"), "file": s("string")}),
+            json!(["action"]),
+        ),
     ]
 }
 
@@ -240,6 +271,11 @@ impl Fake {
 
     pub fn reply_json(&self, tool: &str, v: Value) {
         self.reply(tool, v.to_string());
+    }
+
+    /// Makes `tool` answer only after `ms` milliseconds.
+    pub fn delay(&self, tool: &str, ms: u64) {
+        self.state.delays.lock().unwrap().insert(tool.into(), ms);
     }
 
     /// Makes `tool` return an `isError` result.

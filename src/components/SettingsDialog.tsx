@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { useSettings, type Theme, type WeekStart } from "../settings";
+import { refreshAgentEndpoint } from "../appSettings";
 import { useStore, type ImportedTask } from "../store";
 import type { Status } from "../types";
 import { parseCSV, toCSV, toJSON, toMarkdown } from "../utils/exportData";
@@ -40,6 +41,8 @@ export function SettingsDialog() {
     agentServer,
     agentNotify,
     wsHubUrl,
+    agentEndpoint: endpoint,
+    agentError: agentMessage,
     setTheme,
     setWeekStart,
     setDefaultProjectId,
@@ -51,12 +54,12 @@ export function SettingsDialog() {
   const { projects, tasks, tags, importData } = useStore();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [agentMessage, setAgentMessage] = useState<string | null>(null);
-  // The port is only fixed for a release build — a dev build takes whatever the
-  // OS hands out — so the endpoint has to be asked for, never assumed. This also
-  // reports the *server's* real state rather than echoing the setting back, which
-  // is what let the server sit dead while the dialog claimed it was on.
-  const [endpoint, setEndpoint] = useState<string | null>(null);
+  // The endpoint and any start failure are in the settings store: the server is
+  // started and stopped by appSettings.ts whoever flips the setting (this dialog,
+  // MCP, the CLI), and the port is only fixed for a release build, so the endpoint
+  // is asked of Rust (below), never assumed. This also reports the *server's* real
+  // state rather than echoing the setting back, which is what let the server sit
+  // dead while the dialog claimed it was on.
   // Asked for, never assumed — same reason as the endpoint above. Whether the hook is
   // installed is a fact about the user's settings.json, which anything (including the
   // user, by hand) may have changed since last we looked.
@@ -69,9 +72,7 @@ export function SettingsDialog() {
   const [cliMessage, setCliMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    void invoke<string | null>("agent_server_endpoint")
-      .then(setEndpoint)
-      .catch(() => setEndpoint(null));
+    void refreshAgentEndpoint();
     void invoke<HookStatus>("hook_status")
       .then(setHook)
       .catch(() => setHook(null));
@@ -108,30 +109,6 @@ export function SettingsDialog() {
     }
   }
 
-  async function toggleAgentServer(enabled: boolean) {
-    setAgentMessage(null);
-    try {
-      if (enabled) {
-        setEndpoint(await invoke<string>("agent_server_start"));
-        // Sync the notify preference into the freshly-started server.
-        await invoke("agent_set_notify", { enabled: agentNotify });
-      } else {
-        await invoke("agent_server_stop");
-        setEndpoint(null);
-      }
-      setAgentServer(enabled);
-    } catch (err) {
-      setEndpoint(null);
-      setAgentMessage(String(err));
-    }
-  }
-
-  function toggleAgentNotify(enabled: boolean) {
-    setAgentNotify(enabled);
-    // Fire-and-forget: the flag lives in the Rust process. If the server isn't
-    // running the call is a harmless no-op that the next start re-syncs.
-    void invoke("agent_set_notify", { enabled }).catch(() => {});
-  }
 
   async function doExport(format: ExportFormat) {
     setMessage(null);
@@ -318,7 +295,7 @@ export function SettingsDialog() {
                 <button
                   key={String(on)}
                   className={agentServer === on ? "active" : ""}
-                  onClick={() => void toggleAgentServer(on)}
+                  onClick={() => setAgentServer(on)}
                 >
                   {on ? "On" : "Off"}
                 </button>
@@ -340,7 +317,7 @@ export function SettingsDialog() {
                   <button
                     key={String(on)}
                     className={agentNotify === on ? "active" : ""}
-                    onClick={() => toggleAgentNotify(on)}
+                    onClick={() => setAgentNotify(on)}
                   >
                     {on ? "On" : "Off"}
                   </button>

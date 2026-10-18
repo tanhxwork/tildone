@@ -390,6 +390,18 @@ export const useStore = create<Store>()((set, get) => ({
       set({ initStatus: label });
       db.trace(traceMsg);
     };
+    // Settings come from Rust's settings.json (the old localStorage values go
+    // over once). Loaded before the database steps: Agent access, the secretary
+    // and the theme need nothing from the board, and must still start when the
+    // database cannot open. Imported here, not at the top: the settings module
+    // touches window.matchMedia and must stay out of every test that imports the
+    // store. A failure keeps the defaults rather than keeping the board from loading.
+    step("Loading settings…", "init: settings");
+    try {
+      await (await import("./appSettings")).loadAppSettings();
+    } catch (err) {
+      db.trace(`init: settings FAILED: ${String(err)}`);
+    }
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
       const nth = attempt > 0 ? ` (attempt ${attempt + 1})` : "";
       try {

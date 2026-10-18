@@ -28,7 +28,7 @@ async fn doctor_reachable() {
     );
     assert!(out.stdout.contains("reachable: true"));
     assert!(out.stdout.contains("server: fake-hub 9.9.9"));
-    assert!(out.stdout.contains("tools: 11"));
+    assert!(out.stdout.contains("tools: 15"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -632,7 +632,7 @@ async fn help_includes_instructions() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(out.stdout.contains(INSTRUCTIONS), "{}", out.stdout);
     assert!(
-        out.stdout.contains("tools[11]{name,about}:"),
+        out.stdout.contains("tools[15]{name,about}:"),
         "{}",
         out.stdout
     );
@@ -756,4 +756,270 @@ async fn usage_error_has_error_and_help_lines() {
         "{}",
         out.stderr
     );
+}
+
+// ---- settings ------------------------------------------------------------------
+
+fn config_dir(test: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("tildone-axi-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_lists_every_key() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "get_settings",
+        json!({"theme": "dark", "default_project_id": null, "agent_server": true, "ai_model": ""}),
+    );
+    let out = tildone(&fake, &["settings"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        out.stdout.trim_end(),
+        "theme: dark\ndefault_project_id: none\nagent_server: true\nai_model: \"\""
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_set_sends_each_type() {
+    let fake = Fake::start().await;
+    let cases = [
+        ("theme", "dark", json!("dark"), "theme: dark"),
+        ("agent_server", "on", json!(true), "agent_server: true"),
+        ("agent_server", "FALSE", json!(false), "agent_server: false"),
+        ("default_project_id", "7", json!(7), "default_project_id: 7"),
+        (
+            "default_project_id",
+            "none",
+            json!(0),
+            "default_project_id: none",
+        ),
+        ("ai_model", "gpt 4", json!("gpt 4"), "ai_model: gpt 4"),
+    ];
+    for (key, raw, sent, shown) in cases {
+        let before = fake.calls_to("update_settings").len();
+        // The fake echoes what the hub would: the whole settings with the key changed.
+        let echoed = if key == "default_project_id" && sent == json!(0) {
+            Value::Null
+        } else {
+            sent.clone()
+        };
+        fake.reply_json(
+            "update_settings",
+            json!({"settings": {key: echoed}, "changed": [key]}),
+        );
+        let out = tildone(&fake, &["settings", "set", key, raw]).run().await;
+        assert_eq!(out.code, 0, "{key} {raw}: {}", out.stderr);
+        assert_eq!(out.stdout.trim_end(), shown);
+        let calls = fake.calls_to("update_settings");
+        assert_eq!(calls.len(), before + 1);
+        assert_eq!(calls.last().unwrap(), &json!({key: sent}));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_set_rejects_bad_input_without_a_call() {
+    let fake = Fake::start().await;
+    for (args, wants) in [
+        (
+            vec!["settings", "set", "colour", "red"],
+            "known: theme, week_start",
+        ),
+        (
+            vec!["settings", "set", "theme", "neon"],
+            "theme must be one of: auto, light, dark",
+        ),
+        (
+            vec!["settings", "set", "agent_server", "maybe"],
+            "true or false",
+        ),
+        (
+            vec!["settings", "set", "default_project_id", "0"],
+            "or none to clear it",
+        ),
+        (
+            vec!["settings", "engine", "install", "huge"],
+            "small, default, better",
+        ),
+        (vec!["settings", "engine", "delete"], "needs a file name"),
+    ] {
+        let out = tildone(&fake, &args).run().await;
+        assert_eq!(out.code, 1, "{args:?}: {}", out.stderr);
+        assert!(out.stderr.starts_with("error: "), "{}", out.stderr);
+        assert!(out.stderr.contains(wants), "{args:?}: {}", out.stderr);
+    }
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_hook_and_engine_route_to_their_tools() {
+    let fake = Fake::start().await;
+    fake.reply_json("claude_hook", json!({"connected": true}));
+    fake.reply_json("engine", json!({"state": "running"}));
+    let out = tildone(&fake, &["settings", "hook", "connect"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("\"connected\":true"), "{}", out.stdout);
+    for args in [
+        vec!["settings", "engine", "status"],
+        vec!["settings", "engine", "install", "small"],
+        vec!["settings", "engine", "start"],
+        vec!["settings", "engine", "delete", "m.gguf"],
+    ] {
+        let out = tildone(&fake, &args).run().await;
+        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
+    }
+    assert_eq!(
+        fake.calls_to("claude_hook"),
+        vec![json!({"action": "connect"})]
+    );
+    assert_eq!(
+        fake.calls_to("engine"),
+        vec![
+            json!({"action": "status"}),
+            json!({"action": "install", "model": "small"}),
+            json!({"action": "start"}),
+            json!({"action": "delete", "file": "m.gguf"}),
+        ]
+    );
+    let bad = tildone(&fake, &["settings", "hook", "wipe"]).run().await;
+    assert_eq!(bad.code, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_set_offline_writes_the_file() {
+    let fake = Fake::start().await;
+    let dir = config_dir("offline");
+    std::fs::write(
+        dir.join("settings.json"),
+        r#"{"theme":"light","future_key":{"a":1}}"#,
+    )
+    .unwrap();
+    // Port 1 refuses connections; a local URL may fall back to the file.
+    let out = tildone(&fake, &["settings", "set", "agent_server", "true"])
+        .url(Some("http://localhost:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", dir.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("agent_server: true"), "{}", out.stdout);
+    assert!(out.stdout.contains("within 2 s"), "{}", out.stdout);
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        file,
+        json!({"theme": "light", "future_key": {"a": 1}, "agent_server": true})
+    );
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(left, vec!["settings.json".to_string()]);
+
+    // A missing file (and folder) starts from {}; `none` is stored as null.
+    let fresh = dir.join("nested");
+    let out = tildone(&fake, &["settings", "set", "default_project_id", "none"])
+        .url(Some("http://127.0.0.1:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", fresh.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(fresh.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(file, json!({"default_project_id": null}));
+    assert!(fake.calls_to("update_settings").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_read_offline_fills_defaults() {
+    let fake = Fake::start().await;
+    let dir = config_dir("offline-read");
+    std::fs::write(dir.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+    let out = tildone(&fake, &["settings"])
+        .url(Some("http://127.0.0.1:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", dir.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.starts_with("theme: dark\nweek_start: monday\n"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("agent_notify: true"), "{}", out.stdout);
+    assert!(
+        out.stdout.contains("default_project_id: none"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("read from"), "{}", out.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_remote_unreachable_stays_an_error() {
+    let fake = Fake::start().await;
+    let dir = config_dir("remote");
+    // A non-local host that cannot be resolved: still an error, and no file.
+    let out = tildone(&fake, &["settings", "set", "theme", "dark"])
+        .url(Some("http://hub.invalid:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", dir.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("cannot reach Tildone"),
+        "{}",
+        out.stderr
+    );
+    assert!(!dir.join("settings.json").exists());
+    let read = tildone(&fake, &["settings"])
+        .url(Some("http://hub.invalid:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", dir.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(read.code, 2, "{}", read.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_actions_offline_need_the_running_app() {
+    let fake = Fake::start().await;
+    for args in [
+        vec!["settings", "hook", "status"],
+        vec!["settings", "engine", "stop"],
+    ] {
+        let out = tildone(&fake, &args)
+            .url(Some("http://127.0.0.1:1/mcp"))
+            .run()
+            .await;
+        assert_eq!(out.code, 2, "{args:?}: {}", out.stderr);
+        assert!(
+            out.stderr.contains("needs the running Tildone app"),
+            "{}",
+            out.stderr
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_action_timeout_says_it_is_still_running() {
+    let fake = Fake::start().await;
+    fake.delay("engine", 3000);
+    let out = tildone(&fake, &["settings", "engine", "install"])
+        .env("TILDONE_ACTION_TIMEOUT_MS", "300")
+        .run()
+        .await;
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("still running in Tildone"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("tildone-axi settings engine status"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("cannot reach"), "{}", out.stderr);
 }
