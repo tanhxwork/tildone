@@ -32,7 +32,7 @@ import { watchMoreTrigger } from "./observeViews";
 import { dueLabel, todayStr, toIsoUtc } from "./utils/dates";
 import { nextEnvironment } from "./utils/environment";
 import { byTask, type LivePresence } from "./utils/presence";
-import { hubConnect, hubPresence } from "./hubClient";
+import { hubConnect, hubDisconnect, hubPresence } from "./hubClient";
 import { isClientMode } from "./hubMode";
 import { watchHubStatus } from "./hubStatus";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
@@ -423,6 +423,9 @@ export const useStore = create<Store>()((set, get) => ({
         set({ hubError: String(err) });
         return;
       }
+    } else {
+      // Back on this machine's board: a follower left running from client mode stops.
+      void hubDisconnect().catch(() => {});
     }
     for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
       const nth = attempt > 0 ? ` (attempt ${attempt + 1})` : "";

@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { E2E_CONFIG_DIR } from "./support/dataDir.js";
+import { pasteImageInto } from "./support/imageActions.js";
 
 // A Tildone can use another Tildone as its board (spec hub-client, TIL-233). Two
 // app instances: a second process of this same e2e binary is the hub, with its own
@@ -128,19 +129,20 @@ async function hubCreateTask(title: string) {
 }
 
 /** The hub's own database, over its /sql route with the known token. */
-async function hubTitles(title: string): Promise<string[]> {
+async function hubSelect<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   const res = await fetch(`${hubUrl}/sql`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
-    body: JSON.stringify({
-      kind: "select",
-      sql: "SELECT title FROM tasks WHERE title = $1",
-      params: [title],
-    }),
+    body: JSON.stringify({ kind: "select", sql, params }),
   });
   if (!res.ok) throw new Error(`/sql answered ${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { title: string }[]).map((r) => r.title);
+  return (await res.json()) as T[];
 }
+
+const hubTitles = async (title: string) =>
+  (await hubSelect<{ title: string }>("SELECT title FROM tasks WHERE title = $1", [title])).map(
+    (r) => r.title,
+  );
 
 async function tauriInvoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
   return browser.executeAsync(
@@ -245,6 +247,40 @@ describe("hub: another Tildone as the board", () => {
     });
   });
 
+  it("an image attached in the client is stored on the hub and renders", async () => {
+    const title = "Client image task";
+    await $(".quick-add input").setValue(title);
+    await pasteImageInto(".quick-add input");
+    await $(".qa-image-chip").waitForExist({ timeout: 10_000 });
+    await browser.keys("Enter");
+    await $(`.task-title*=${title}`).click();
+    const thumb = $(".detail-image-thumb img");
+    await thumb.waitForExist({ timeout: 15_000 });
+    // naturalWidth > 0: the bytes came back from the hub and decoded.
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          () =>
+            (document.querySelector(".detail-image-thumb img") as HTMLImageElement | null)
+              ?.naturalWidth ?? 0,
+        )) > 0,
+      { timeout: 10_000, timeoutMsg: "the attachment did not render from the hub" },
+    );
+    // The hub's row holds a path relative to the hub's app data, like a local attachment.
+    const rows = await hubSelect<{ path: string }>(
+      "SELECT path FROM task_images ORDER BY id DESC LIMIT 1",
+    );
+    expect(rows[0]?.path).toMatch(/^attachments\/\d+\//);
+  });
+
+  it("offers no session launcher on a task in client mode", async () => {
+    // The editor from the case above is still open on a task.
+    await $(".detail-card").waitForExist();
+    await expect($(".detail-session")).not.toBeExisting();
+    await browser.keys("Escape");
+    await $(".detail-card").waitForExist({ reverse: true });
+  });
+
   it("hub change appears in the client", async () => {
     await hubCreateTask(SECOND);
     // No reload, no click: the hub's change stream moves the board.
@@ -260,8 +296,7 @@ describe("hub: another Tildone as the board", () => {
     const failure = $(".app-loading-error");
     await failure.waitForExist({ timeout: 15_000 });
     const text = await failure.getText();
-    expect(text).toContain("Couldn’t reach the hub");
-    expect(text).toMatch(/token|unauthor|401/i);
+    expect(text).toContain("The hub refused the token.");
     expect(text).toContain("Retry");
     await browser.saveScreenshot(`${SHOTS}/hub-bad-token.png`);
 

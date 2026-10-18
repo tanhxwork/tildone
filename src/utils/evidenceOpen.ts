@@ -64,7 +64,8 @@ export async function resolveEvidencePath(
   cwd: string | null,
 ): Promise<string | null> {
   if (raw.startsWith("/")) return raw;
-  if (raw.startsWith("~/")) return `${await home()}/${raw.slice(2)}`;
+  // Client mode: `~` is the hub's home, which the hub expands; this machine's would be wrong.
+  if (raw.startsWith("~/")) return isClientMode() ? raw : `${await home()}/${raw.slice(2)}`;
   if (!cwd) return null;
   return `${cwd.replace(/\/+$/, "")}/${raw.replace(/^\.\//, "")}`;
 }
@@ -109,6 +110,12 @@ export async function openEvidence(
   // trusting that whoever called it did (post-commit review of aadeba9). It
   // must run per expanded path — `a.{md,html}` has no extension of its own.
   if (!paths.every(isEvidenceFile)) return null;
+
+  // Client mode: the file is on the hub. Only an image can come here, through hubFile;
+  // opening or revealing needs the file on this machine.
+  if (isClientMode() && (reveal || !paths.every(isPreviewableImage))) {
+    return "On the hub — open it there.";
+  }
 
   if (reveal) {
     try {

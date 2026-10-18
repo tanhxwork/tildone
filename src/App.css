@@ -701,6 +701,8 @@ textarea:focus-visible,
 
 .segmented {
   display: inline-flex;
+  /* Never shrink in a flex row: overflow hidden below would clip the buttons. */
+  flex: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
@@ -713,8 +715,14 @@ textarea:focus-visible,
   justify-content: center;
   gap: 5px;
   padding: 5px 10px;
+  white-space: nowrap;
   color: var(--text-muted);
   transition: background 150ms, color 150ms;
+}
+
+.segmented button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .segmented button + button {

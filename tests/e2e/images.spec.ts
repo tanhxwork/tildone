@@ -1,35 +1,6 @@
 import { browser, $, expect } from "@wdio/globals";
 import { mkdirSync } from "node:fs";
-import { clickInsertAction } from "./support/imageActions.js";
-
-/** Paste a small generated PNG into an element, the way ⌘V does. A real
- *  clipboard can't be primed from WebDriver, but the app only ever reads
- *  `clipboardData.items`, so a constructed DataTransfer exercises the same path. */
-async function pasteImageInto(selector: string) {
-  await browser.executeAsync((sel: string, done: (v: unknown) => void) => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 40;
-    canvas.height = 30;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#5645d4";
-      ctx.fillRect(0, 0, 40, 30);
-    }
-    canvas.toBlob((blob) => {
-      if (!blob) return done("no blob");
-      const file = new File([blob], "e2e-shot.png", { type: "image/png" });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      const el = document.querySelector(sel) as HTMLElement | null;
-      if (!el) return done("no element");
-      el.focus();
-      el.dispatchEvent(
-        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
-      );
-      done("ok");
-    }, "image/png");
-  }, selector);
-}
+import { clickInsertAction, pasteImageInto } from "./support/imageActions.js";
 
 describe("task images", () => {
   before(async () => {

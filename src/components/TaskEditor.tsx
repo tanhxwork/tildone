@@ -921,7 +921,7 @@ export function TaskEditor() {
                 its open and stop/dismiss controls — or the launcher: one
                 button per installed CLI, launching in the task's directory
                 with the ref as the opening prompt. */}
-            {(hosted || hostAdapters.length > 0) && (
+            {!isClientMode() && (hosted || hostAdapters.length > 0) && (
               <>
                 <span className="detail-prop-label">
               <SquareTerminal className="detail-prop-icon" size={16} aria-hidden="true" />
@@ -1325,8 +1325,12 @@ export function TaskEditor() {
                   >
                     <button
                       className="link-chip-open"
+                      // Client mode: a file path is the hub's, not this machine's.
+                      disabled={isFile && isClientMode()}
                       title={
-                        isFile
+                        isFile && isClientMode()
+                          ? "On the hub"
+                          : isFile
                           ? isRevealOnlyEvidence(link.url)
                             ? `${link.url} — reveals in Finder (HTML/SVG can run scripts in a browser)`
                             : link.url
@@ -1342,7 +1346,7 @@ export function TaskEditor() {
                       <span className="link-chip-label">{link.label}</span>
                       {pr?.suffix}
                     </button>
-                    {isFile && (
+                    {isFile && !isClientMode() && (
                       <button
                         className="link-reveal"
                         aria-label={`Reveal ${link.label} in Finder`}

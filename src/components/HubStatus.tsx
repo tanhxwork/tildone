@@ -1,3 +1,4 @@
+import { classifyHubError } from "../hubError";
 import { useSettings } from "../settings";
 import { useHubStatus } from "../hubStatus";
 import { useStore } from "../store";
@@ -16,7 +17,7 @@ export function HubErrorScreen({ error }: { error: string }) {
   };
   return (
     <div className="app-loading-error" role="alert">
-      <strong>Couldn’t reach the hub.</strong>
+      <strong>{classifyHubError(error).heading}</strong>
       <p>{hubUrl}</p>
       <pre>{error}</pre>
       <div className="hub-error-actions">
@@ -37,8 +38,7 @@ export function HubStatusBanner() {
   if (!status || status.state === "connected") return null;
   return (
     <div className="hub-banner" role="status">
-      {status.state === "schema-mismatch" ? "Hub runs another version: " : "Hub unreachable: "}
-      {status.message}
+      {classifyHubError(status.message).label}: {status.message}
     </div>
   );
 }

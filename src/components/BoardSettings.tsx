@@ -45,8 +45,13 @@ export function BoardSection() {
               className={(choice === "hub") === hubPicked ? "active" : ""}
               onClick={() => {
                 setHubPicked(choice === "hub");
-                // Back to this machine at once; the token stays for the next time.
-                if (choice === "machine" && inClientMode) setBoardHub("", boardHubToken);
+                // Back to this machine at once. The token goes too: settings.json is
+                // readable over MCP once Agent access is back on.
+                if (choice === "machine" && inClientMode) {
+                  setBoardHub("", "");
+                  setUrl("");
+                  setToken("");
+                }
               }}
             >
               {choice === "hub" ? "Hub" : "This machine"}

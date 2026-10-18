@@ -302,7 +302,8 @@ export function SettingsDialog() {
               {([false, true] as const).map((on) => (
                 <button
                   key={String(on)}
-                  className={agentServer === on ? "active" : ""}
+                  className={agentOn === on ? "active" : ""}
+                  disabled={clientMode}
                   onClick={() => setAgentServer(on)}
                 >
                   {on ? "On" : "Off"}
