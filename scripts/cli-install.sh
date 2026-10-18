@@ -8,6 +8,8 @@ cd "$(dirname "$0")/.."
 cargo build --release --manifest-path cli/Cargo.toml
 bin="${CARGO_TARGET_DIR:-$(pwd -P)/cli/target}/release/tildone-axi"
 [ -f "$bin" ] || { echo "cli-install: built binary not found at $bin" >&2; exit 1; }
+# A relative CARGO_TARGET_DIR would leave the link dangling outside this folder.
+bin="$(cd "$(dirname "$bin")" && pwd -P)/tildone-axi"
 
 dir="$HOME/.local/bin"
 link="$dir/tildone-axi"
