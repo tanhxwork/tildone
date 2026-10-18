@@ -320,8 +320,9 @@ impl Store {
             return None;
         }
         inner.seen = now;
-        match read(&self.path) {
-            Ok(Some(next)) if next != inner.settings => {
+        // A deleted file means defaults, as at load.
+        match read(&self.path).map(Option::unwrap_or_default) {
+            Ok(next) if next != inner.settings => {
                 inner.settings = next.clone();
                 Some(next)
             }
@@ -597,5 +598,10 @@ mod tests {
         touch(&p, 3_000);
         assert!(store.poll().is_none());
         assert_eq!(store.get().theme, "dark");
+
+        // A deleted file resets to the defaults, as at load.
+        std::fs::remove_file(&p).unwrap();
+        let s = store.poll().expect("deletion is picked up");
+        assert_eq!(s, Settings::default());
     }
 }
