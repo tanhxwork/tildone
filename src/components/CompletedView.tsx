@@ -1,8 +1,10 @@
 import { format } from "date-fns";
 import { useMemo, useState } from "react";
 import { liveTasks, trashedTasks } from "../selectors";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Task } from "../types";
+import { OfflineHint } from "./HubStatus";
 import { dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
 import { IconCheck, IconTrash } from "./Icons";
@@ -40,6 +42,7 @@ export function CompletedView() {
     useStore();
   const [tab, setTab] = useState<Tab>("completed");
   const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const offline = useOffline((s) => s.offline);
 
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
@@ -98,20 +101,25 @@ export function CompletedView() {
           </button>
         )}
         {tab === "trash" && trashed.length > 0 && (
-          <button
-            className={`btn small ${confirmEmpty ? "danger" : "ghost-danger"}`}
-            onClick={() => {
-              if (confirmEmpty) {
-                void emptyTrash();
-                setConfirmEmpty(false);
-              } else {
-                setConfirmEmpty(true);
-              }
-            }}
-            onBlur={() => setConfirmEmpty(false)}
-          >
-            {confirmEmpty ? "Really delete forever?" : "Empty trash"}
-          </button>
+          <span className="offline-pair">
+            <OfflineHint />
+            <button
+              className={`btn small ${confirmEmpty ? "danger" : "ghost-danger"}`}
+              disabled={offline}
+              title={offline ? NOT_AVAILABLE : undefined}
+              onClick={() => {
+                if (confirmEmpty) {
+                  void emptyTrash();
+                  setConfirmEmpty(false);
+                } else {
+                  setConfirmEmpty(true);
+                }
+              }}
+              onBlur={() => setConfirmEmpty(false)}
+            >
+              {confirmEmpty ? "Really delete forever?" : "Empty trash"}
+            </button>
+          </span>
         )}
       </div>
 

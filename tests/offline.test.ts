@@ -25,7 +25,7 @@ mock.module("../src/remoteDb", () => ({
 
 const { setBoardHubUrl } = await import("../src/hubMode");
 const offline = await import("../src/offline");
-const { useOffline, loadOutbox, comeBack, filesSettled } = offline;
+const { useOffline, loadOutbox, loadBoardCopy, comeBack, flushCopy, filesSettled } = offline;
 const gated = offline.db;
 
 const DOWN = new Error("hub http://hub: unreachable: connection refused");
@@ -43,7 +43,7 @@ beforeEach(async () => {
   hubNotes = "";
   setBoardHubUrl("http://hub");
   await loadOutbox();
-  useOffline.setState({ offline: false, lastSynced: null, dropped: 0 });
+  useOffline.setState({ offline: false, lastSynced: null, dropped: 0, notice: "" });
   useStore.setState({
     projects: [{ id: 1, name: "Tildone", code: "TIL" } as Project],
     tasks: [],
@@ -64,8 +64,12 @@ describe("offline queue", () => {
     expect(await gated.updateTask(1, { title: "x" })).toEqual({ title: "x" });
     expect(useOffline.getState().offline).toBe(true);
 
+    // A move to another project clears the goal on screen, as the hub will on replay.
+    useStore.setState({ tasks: [{ ...task(1), goal_id: 9 }] });
+    expect(await gated.updateTask(1, { project_id: 2 })).toEqual({ project_id: 2, goal_id: null });
+
     const made = await gated.insertTask({ project_id: 1, title: "n" } as never);
-    expect(made).toMatchObject({ id: -2, ref: "TIL-?", goal_id: null });
+    expect(made).toMatchObject({ id: -3, ref: "TIL-?", goal_id: null });
     await gated.insertSubtask(1, "s", 0);
     await gated.insertComment(1, "c");
     await gated.addLink(1, "https://e.com", "e", "other");
@@ -78,8 +82,8 @@ describe("offline queue", () => {
       () => gated.insertActivity(1, "l", "t"),
     ]) await call();
     await filesSettled();
-    expect(saved().ops).toHaveLength(11);
-    expect(useOffline.getState().waiting).toBe(10); // the activity line is not a change
+    expect(saved().ops).toHaveLength(12);
+    expect(useOffline.getState().waiting).toBe(11); // the activity line is not a change
     expect(db.insertTask).not.toHaveBeenCalled();
 
     for (const call of [
@@ -91,11 +95,12 @@ describe("offline queue", () => {
     ]) await expect(call()).rejects.toThrow("Not available offline");
     expect(db.insertProject).not.toHaveBeenCalled();
     expect(await gated.fetchComments(1)).toEqual([]);
+    expect(useOffline.getState().notice).toBe("Not available offline");
 
     // A restart finds the queue on disk; local mode is untouched by all of this.
     useOffline.setState({ waiting: 0 });
     await loadOutbox();
-    expect(useOffline.getState().waiting).toBe(10);
+    expect(useOffline.getState().waiting).toBe(11);
     setBoardHubUrl("");
     await gated.deleteTask(9);
     expect(db.deleteTask).toHaveBeenCalledWith(9);
@@ -144,10 +149,17 @@ describe("offline queue", () => {
       hubNotes = "base + agent";
       return patch;
     });
+    // The hub drops right after the comment went in: the queue on disk must already
+    // hold the op without the notes, so the retry cannot comment twice.
+    db.updateTask.mockRejectedValueOnce(DOWN);
+    await comeBack();
+    await filesSettled();
+    expect(saved().ops).toEqual([{ fn: "updateTask", args: [5, {}] }]);
+    expect(db.insertComment).toHaveBeenCalledTimes(1);
     await comeBack();
 
     expect(db.updateTask.mock.calls[0]).toEqual([5, { notes: "mine", title: "T" }]);
-    expect(db.updateTask.mock.calls[1]).toEqual([5, {}]);
+    expect(db.updateTask.mock.calls[2]).toEqual([5, {}]);
     expect(db.insertComment).toHaveBeenCalledTimes(1);
     expect(db.insertComment.mock.calls[0][1]).toContain("mine again");
   });
@@ -156,15 +168,17 @@ describe("offline queue", () => {
     useOffline.setState({ offline: true });
     const a = (await gated.insertTask({ project_id: 1, title: "a" } as never)) as { id: number };
     await gated.insertSubtask(a.id, "child", 0); // names a task whose creation will be rejected
+    await gated.insertActivity(a.id, "Task created", "t"); // dropped with it, but not counted
     await gated.updateTask(1, { title: "one" });
     await gated.deleteTask(2);
     await gated.deleteTask(3);
+    expect(useOffline.getState().waiting).toBe(5);
 
     db.insertTask.mockRejectedValueOnce(new Error("SQL: constraint failed"));
     db.deleteTask.mockRejectedValueOnce(DOWN);
     await comeBack();
 
-    expect(calls("insertTask", "insertSubtask", "updateTask", "deleteTask").map(([fn]) => fn)).toEqual([
+    expect(calls("insertTask", "insertSubtask", "insertActivity", "updateTask", "deleteTask").map(([fn]) => fn)).toEqual([
       "insertTask",
       "updateTask",
       "deleteTask",
@@ -178,5 +192,69 @@ describe("offline queue", () => {
     await comeBack();
     expect(db.deleteTask.mock.calls.map((c) => c[0])).toEqual([2, 2, 3]);
     expect(useOffline.getState()).toMatchObject({ offline: false, waiting: 0 });
+  });
+
+  it("shows the changes waiting after a restart: the copy is re-saved from the board on screen", async () => {
+    // Offline since the last sync at 10:00; the user adds a task, then the app restarts.
+    useOffline.setState({ offline: true, lastSynced: "2026-01-01T10:00:00.000Z" });
+    const id = await useStore.getState().addTask({ title: "Queued", project_id: 1, due_date: null });
+    await useStore.getState().addTask({ title: "Second", project_id: 1, due_date: null });
+    expect(files.has("board-copy")).toBe(false); // debounced: not once per write
+    flushCopy();
+    await filesSettled();
+
+    const copy = await loadBoardCopy();
+    expect(copy?.syncedAt).toBe("2026-01-01T10:00:00.000Z");
+    expect(copy?.data.tasks.map((t) => [t.id, t.title, t.ref])).toEqual([
+      [id, "Queued", "TIL-?"],
+      [id - 1, "Second", "TIL-?"],
+    ]);
+  });
+
+  it("never replays or opens what belongs to another hub", async () => {
+    const theirs = JSON.stringify({
+      hub: "http://other",
+      nextTemp: -3,
+      ops: [{ fn: "deleteTask", args: [17] }, { fn: "insertActivity", args: [17, "x", "t"] }],
+      ids: {},
+    });
+    files.set("outbox", theirs);
+    files.set("board-copy", JSON.stringify({ hub: "http://other", syncedAt: "t", data: {} }));
+    await loadOutbox();
+    expect(useOffline.getState()).toMatchObject({ waiting: 0, foreign: { hub: "http://other", count: 1 } });
+    expect(await loadBoardCopy()).toBeNull();
+
+    // This hub is down: nothing replays, and a write is refused rather than
+    // overwriting the other hub's queue.
+    useOffline.setState({ offline: true });
+    await comeBack(); // the hub answers: nothing of the other hub's goes up
+    expect(db.deleteTask).not.toHaveBeenCalled();
+    useOffline.setState({ offline: true });
+    await expect(gated.deleteTask(1)).rejects.toThrow("queued for http://other");
+    expect(db.deleteTask).not.toHaveBeenCalled();
+    await filesSettled();
+    expect(files.get("outbox")).toBe(theirs);
+
+    // Back on that hub, its queue is ours again.
+    setBoardHubUrl("http://other");
+    await loadOutbox();
+    expect(useOffline.getState()).toMatchObject({ waiting: 1, foreign: null });
+    await comeBack();
+    expect(db.deleteTask).toHaveBeenCalledWith(17);
+  });
+
+  it("keeps the temporary ids mapped until the reload has put the real ones on screen", async () => {
+    useOffline.setState({ offline: true });
+    const made = (await gated.insertTask({ project_id: 1, title: "a" } as never)) as { id: number };
+    db.insertTask.mockResolvedValueOnce({ id: 50, number: 1, ref: "TIL-1", goal_id: null });
+    db.fetchAll.mockRejectedValueOnce(new Error("SQL: database is locked"));
+    await comeBack(); // the replay works, the reload after it fails
+
+    // The screen still has the temporary id; an edit made now reaches the real task.
+    await gated.updateTask(made.id, { title: "x" });
+    expect(db.updateTask).toHaveBeenCalledWith(50, { title: "x" });
+
+    await useStore.getState().reload(); // the next good reload settles the ids
+    await expect(gated.updateTask(made.id, { title: "y" })).rejects.toThrow("dropped");
   });
 });

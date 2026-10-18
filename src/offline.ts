@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import * as real from "./db";
 import { hubConnect } from "./hubClient";
-import { isClientMode } from "./hubMode";
+import { getBoardHubUrl, isClientMode } from "./hubMode";
 import { useHubStatus } from "./hubStatus";
 import { remoteDb } from "./remoteDb";
 
@@ -26,12 +26,27 @@ export const useOffline = create<{
   waiting: number;
   /** Queued changes the hub rejected on the last replay; the banner says so once. */
   dropped: number;
-}>(() => ({ offline: false, lastSynced: null, waiting: 0, dropped: 0 }));
+  /** Changes a previous run queued for another hub. They stay on disk, unsent, until this window uses that hub again. */
+  foreign: { hub: string; count: number } | null;
+  /** A refused write's reason, shown under the banner for a few seconds. */
+  notice: string;
+}>(() => ({ offline: false, lastSynced: null, waiting: 0, dropped: 0, foreign: null, notice: "" }));
+
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+/** Say why a write did not happen. The banner area shows it for a few seconds. */
+export function notify(message: string) {
+  clearTimeout(noticeTimer);
+  useOffline.setState({ notice: message });
+  noticeTimer = setTimeout(() => useOffline.setState({ notice: "" }), 6_000);
+}
 
 /** What the store tells this module; registered by store.ts (which imports this file). */
 interface Host {
   projectCode(projectId: number | null): string;
-  taskNotes(taskId: number): string | undefined;
+  task(taskId: number): { project_id: number | null; goal_id: number | null; notes: string } | undefined;
+  goalProject(goalId: number): number | undefined;
+  /** The board on screen, in the shape fetchAll returns it. */
+  board(): Board;
   reload(): Promise<void>;
 }
 let host: Host;
@@ -72,13 +87,42 @@ async function readFile<T>(name: "outbox" | "board-copy"): Promise<T | null> {
 
 type Board = Awaited<ReturnType<typeof real.fetchAll>>;
 
-/** The last board the hub gave us, or null when this machine never synced one. */
-export const loadBoardCopy = () => readFile<{ syncedAt: string; data: Board }>("board-copy");
+/** The last board this window's hub gave us, or null when this machine never synced one
+ *  from it (a copy from another hub is not this board). */
+export async function loadBoardCopy() {
+  const copy = await readFile<{ hub?: string; syncedAt: string; data: Board }>("board-copy");
+  return copy && copy.hub === getBoardHubUrl() ? copy : null;
+}
 
-function saveBoardCopy(data: Board) {
-  const syncedAt = new Date().toISOString();
-  useOffline.setState({ lastSynced: syncedAt });
-  void persist("board-copy", { syncedAt, data });
+let copyTimer: ReturnType<typeof setTimeout> | undefined;
+let copyBoard: Board | undefined;
+/**
+ * Write the copy soon, not now: a burst of reloads or edits writes the whole board once.
+ * `fetched` is a board the hub just gave us (it sets the sync time); without it the copy
+ * is the board on screen, queued changes included, with its old sync time.
+ */
+function saveCopySoon(fetched?: Board) {
+  if (fetched) {
+    copyBoard = fetched;
+    useOffline.setState({ lastSynced: new Date().toISOString() });
+  } else {
+    copyBoard = undefined;
+  }
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(flushCopy, 1_000);
+}
+
+/** Write a pending copy now. */
+export function flushCopy() {
+  clearTimeout(copyTimer);
+  const { lastSynced } = useOffline.getState();
+  if (!lastSynced) return;
+  void persist("board-copy", {
+    hub: getBoardHubUrl(),
+    syncedAt: lastSynced,
+    data: copyBoard ?? host.board(),
+  });
+  copyBoard = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +149,21 @@ interface Spec {
   made?: (result: any) => number;
 }
 
+/** db.ts effectiveTaskPatch, read off the board on screen: a goal must belong to the
+ *  task's project, so a move to another project clears it. */
+function effectivePatch(id: number, patch: Record<string, unknown>) {
+  if (!("project_id" in patch) && !("goal_id" in patch)) return patch;
+  const current = host.task(id);
+  if (!current) return patch;
+  const dest = "project_id" in patch ? ((patch.project_id as number | null) ?? null) : current.project_id;
+  if (patch.goal_id != null) {
+    return dest !== null && host.goalProject(patch.goal_id as number) === dest
+      ? patch
+      : { ...patch, goal_id: null };
+  }
+  return dest !== current.project_id && current.goal_id !== null ? { ...patch, goal_id: null } : patch;
+}
+
 const QUEUED: Record<string, Spec> = {
   insertTask: {
     ids: [],
@@ -116,8 +175,8 @@ const QUEUED: Record<string, Spec> = {
       goal_id: t.goal_id ?? null,
     }),
   },
-  // effectiveTaskPatch needs the DB; the hub applies it on replay.
-  updateTask: { ids: [0], stub: ([, patch]) => patch },
+  // The hub applies the patch itself on replay; the stub is what it will write.
+  updateTask: { ids: [0], stub: ([id, patch]) => effectivePatch(id, patch) },
   deleteTask: { ids: [0] },
   insertSubtask: { ids: [0], made: (r) => r, stub: (_, temp) => temp },
   updateSubtask: { ids: [0] },
@@ -162,6 +221,8 @@ const EMPTY = {
 } as const;
 
 interface Outbox {
+  /** The hub these ops are for; another hub's ops are never replayed here. */
+  hub?: string;
   nextTemp: number;
   ops: Op[];
   /** Temporary id → real id, for the ops that already ran on a replay that was cut short. */
@@ -170,17 +231,37 @@ interface Outbox {
 let outbox: Outbox = { nextTemp: -1, ops: [], ids: {} };
 
 // The count is changes the user made; the activity lines that ride along are not.
-const countWaiting = () => outbox.ops.filter((op) => op.fn !== "insertActivity").length;
+const changes = (ops: Op[]) => ops.filter((op) => op.fn !== "insertActivity").length;
+const countWaiting = () => changes(outbox.ops);
 
 function saveOutbox() {
   useOffline.setState({ waiting: countWaiting() });
-  return persist("outbox", outbox);
+  // Another hub's queue is on disk and stays there untouched.
+  if (useOffline.getState().foreign) return writes;
+  return persist("outbox", { ...outbox, hub: getBoardHubUrl() });
 }
 
-/** Read the outbox a previous run left; called once at init, before the first write. */
+/**
+ * Read the outbox a previous run left; called once at init, before the first write.
+ * One kept for another hub is not ours: it is not loaded, not replayed and not
+ * overwritten (queueing is refused instead), and the banner says it waits.
+ */
 export async function loadOutbox() {
-  outbox = (await readFile<Outbox>("outbox")) ?? { nextTemp: -1, ops: [], ids: {} };
-  useOffline.setState({ waiting: countWaiting() });
+  const saved = await readFile<Outbox>("outbox");
+  const ours = saved?.hub === getBoardHubUrl();
+  const foreign =
+    saved && !ours && saved.ops.length > 0
+      ? { hub: saved.hub ?? "another hub", count: changes(saved.ops) }
+      : null;
+  outbox = ours ? saved! : { nextTemp: -1, ops: [], ids: {} };
+  useOffline.setState({ waiting: countWaiting(), foreign });
+}
+
+/** Forget the temporary ids once the board on screen has the real ones (store.reload calls this). */
+export function settleTempIds() {
+  if (outbox.ops.length > 0 || Object.keys(outbox.ids).length === 0) return;
+  outbox.ids = {};
+  void saveOutbox();
 }
 
 /** The queue is in use (hub down, or a replay is running): later writes join it so order holds. */
@@ -192,11 +273,13 @@ function queue(fn: string, args: unknown[]) {
   const op: Op = { fn, args };
   if (spec.made) op.temp = temp;
   if (fn === "updateTask" && "notes" in (args[1] as object)) {
-    op.baseNotes = host.taskNotes(args[0] as number);
+    op.baseNotes = host.task(args[0] as number)?.notes;
   }
+  const result = spec.stub?.(args, temp); // the stub reads the board as it was before this write
   outbox.ops.push(op);
   void saveOutbox();
-  return spec.stub?.(args, temp);
+  saveCopySoon(); // a restart must show what is waiting, not only what the hub had
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,12 +327,12 @@ export async function comeBack() {
     replaying = false;
   }
   if (outbox.ops.length > 0) return; // cut short by goOffline, which keeps knocking
-  outbox.ids = {};
-  void saveOutbox();
   useOffline.setState({ offline: false });
   // A hubConnect from the probe replaces the follower before it can say "connected".
   useHubStatus.setState({ status: { state: "connected", message: "" } });
-  await host.reload();
+  // The temporary ids stay mapped until the reload has put the real ones on screen
+  // (store.reload calls settleTempIds): a write on a temporary id in between still lands.
+  await host.reload().catch((err) => console.warn("tildone: reload after replay failed:", err));
 }
 
 /** A temporary id → the real one. An op that names a task whose creation was dropped is dropped too. */
@@ -260,23 +343,28 @@ function remap(id: unknown): unknown {
   return made;
 }
 
+/** The call's arguments with temporary ids swapped for the real ones, by the positions the spec names. */
+function remapArgs(fn: string, args: unknown[]): unknown[] {
+  const out = args.map((a, i) => (QUEUED[fn].ids.includes(i) ? remap(a) : a));
+  if (fn === "insertTask") {
+    const task = out[0] as { from_task_id?: number | null };
+    out[0] = { ...task, from_task_id: remap(task.from_task_id) };
+  }
+  return out;
+}
+
 async function replay() {
   let dropped = 0;
   try {
     while (outbox.ops.length > 0) {
       const op = outbox.ops[0];
       try {
-        const args = op.args.map((a, i) => (QUEUED[op.fn].ids.includes(i) ? remap(a) : a));
-        if (op.fn === "insertTask") {
-          const task = args[0] as { from_task_id?: number | null };
-          args[0] = { ...task, from_task_id: remap(task.from_task_id) };
-        }
-        const result = await run(op, args);
+        const result = await run(op, remapArgs(op.fn, op.args));
         if (op.temp !== undefined) outbox.ids[op.temp] = QUEUED[op.fn].made!(result);
       } catch (err) {
         if (isUnreachable(err)) return goOffline();
         console.warn(`tildone: dropped queued ${op.fn}:`, err);
-        dropped++;
+        if (op.fn !== "insertActivity") dropped++; // counted like the waiting ones
       }
       outbox.ops.shift();
       await saveOutbox();
@@ -302,9 +390,11 @@ async function run(op: Op, args: unknown[]) {
         id,
         `Notes edited offline. The notes changed on the hub in the meantime, so the hub's version stays. The offline version:\n\n${notes}`,
       );
-      // If the update below is cut short, a retry must not add the comment again.
+      // If the update below is cut short (or the app quits), a retry must not add the comment again.
       args = [id, rest];
       op.args = args;
+      delete op.baseNotes;
+      await saveOutbox();
     }
     delete op.baseNotes;
   }
@@ -336,15 +426,22 @@ const gated: Record<string, (...args: any[]) => Promise<unknown>> = {};
 
 for (const fn of Object.keys(QUEUED)) {
   gated[fn] = async (...args) => {
-    const call = () => (real as any)[fn](...args);
-    if (!isClientMode()) return call();
+    if (!isClientMode()) return (real as any)[fn](...args);
     if (!holding()) {
       try {
-        return await call();
+        // Not queued, but a task made offline may still be on screen under its temporary id.
+        return await (real as any)[fn](...remapArgs(fn, args));
       } catch (err) {
         if (!isUnreachable(err)) throw err;
         goOffline();
       }
+    }
+    const { foreign } = useOffline.getState();
+    if (foreign) {
+      // The one outbox file is another hub's; writing to it would erase those changes.
+      const message = `${foreign.count} changes queued for ${foreign.hub} wait for that hub. Not available offline`;
+      notify(message);
+      throw new Error(message);
     }
     return queue(fn, args);
   };
@@ -362,6 +459,7 @@ for (const fn of REFUSED) {
         goOffline();
       }
     }
+    notify(NOT_AVAILABLE);
     throw new Error(NOT_AVAILABLE);
   };
 }
@@ -386,7 +484,7 @@ gated.fetchAll = async () => {
   if (!isClientMode()) return real.fetchAll();
   try {
     const data = await real.fetchAll();
-    saveBoardCopy(data);
+    saveCopySoon(data);
     return data;
   } catch (err) {
     if (isUnreachable(err)) goOffline();

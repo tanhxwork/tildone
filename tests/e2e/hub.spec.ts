@@ -325,7 +325,7 @@ describe("hub: another Tildone as the board", () => {
     await $(".detail-card").waitForExist({ reverse: true });
   });
 
-  it("queues while the hub is down and replays when it is back", async () => {
+  it("queues while the hub is down, survives a restart, and replays when it is back", async () => {
     const title = "Made while the hub was down";
     await stopHub();
     await $(".hub-banner*=Offline").waitForExist({
@@ -333,14 +333,24 @@ describe("hub: another Tildone as the board", () => {
       timeoutMsg: "the client never said it was offline",
     });
 
-    // A create, a subtask and an edit, all from the client, none reaching the hub.
+    // One create is one change waiting, not the activity line that rides along.
     await $(".quick-add input").setValue(title);
     await browser.keys("Enter");
     const row = $(`.task-row*=${title}`);
     await row.waitForExist({ timeout: 10_000 });
     expect(await row.$(".task-id").getText()).toMatch(/-\?$/);
+    await $(".hub-banner*=1 change waiting").waitForExist({ timeout: 5_000 });
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 1 change waiting$/);
+    await browser.saveScreenshot(`${SHOTS}/offline-queued-one.png`);
+
+    // A subtask and an edit on the task that has no real id yet.
     await $(`.task-title*=${title}`).click();
     await $(".detail-card").waitForExist();
+    // Images need the hub: the tile is off, with the reason beside it.
+    expect(await $(".detail-image-add").isEnabled()).toBe(false);
+    await $(".detail-image-add + .offline-hint").waitForExist();
+    await $(".detail-image-add").scrollIntoView();
+    await browser.saveScreenshot(`${SHOTS}/offline-image-disabled.png`);
     await $('input[aria-label="Add subtask"]').setValue("Queued step");
     await browser.keys("Enter");
     await $(".detail-subtask-title*=Queued step").waitForExist({ timeout: 5_000 });
@@ -348,16 +358,58 @@ describe("hub: another Tildone as the board", () => {
     await $('textarea[aria-label="Task title"]').setValue(edited);
     await browser.keys("Enter");
     await $(".hub-banner*=changes waiting").waitForExist({ timeout: 5_000 });
-    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · \d+ changes waiting$/);
-    await browser.saveScreenshot(`${SHOTS}/offline-queued.png`);
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 3 changes waiting$/);
     await browser.keys("Escape");
     await $(".detail-card").waitForExist({ reverse: true });
+    await $(`.task-row*=${edited}`).waitForExist();
+    await browser.saveScreenshot(`${SHOTS}/offline-queued.png`);
 
-    // What cannot be queued is switched off, with the reason.
+    // What cannot be queued is switched off, dimmed, with the reason written beside it.
     const newProject = $('button[aria-label="New project"]');
     expect(await newProject.isEnabled()).toBe(false);
     expect(await newProject.getAttribute("title")).toBe("Not available offline");
+    await $(".sidebar-section .offline-hint").waitForExist();
+    await expect($(".sidebar-hint*=No projects yet")).toHaveText("No projects yet."); // not "create one with +"
     await browser.saveScreenshot(`${SHOTS}/offline-disabled.png`);
+
+    await $('[data-nav="goals"]').click();
+    const newGoal = $("button.goals-new");
+    await newGoal.waitForExist({ timeout: 10_000 });
+    expect(await newGoal.isEnabled()).toBe(false);
+    expect(await newGoal.getAttribute("title")).toBe("Not available offline");
+    await $(".offline-hint").waitForExist();
+    await browser.saveScreenshot(`${SHOTS}/offline-goal-disabled.png`);
+
+    // Trash a card (queued), then the trash itself cannot be emptied.
+    await openAllTasks();
+    await $(".task-title*=Made in the client").click();
+    await $(".detail-card").waitForExist();
+    await $("button*=Delete task").click();
+    await $("button*=Move to trash").click();
+    await $(".detail-card").waitForExist({ reverse: true, timeout: 10_000 });
+    await $('[data-nav="completed"]').click();
+    await $(".completed-view").waitForExist();
+    await $("button*=Trash").click();
+    const empty = $("button*=Empty trash");
+    await empty.waitForDisplayed({ timeout: 10_000 });
+    expect(await empty.isEnabled()).toBe(false);
+    expect(await empty.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-trash-disabled.png`);
+
+    // Restart while offline: the queue and the board it changed come back from disk.
+    // (The copy is written a second after the last change.)
+    await browser.pause(1_500);
+    await browser.execute(() => location.reload());
+    await $(".hub-banner*=changes waiting").waitForExist({
+      timeout: 30_000,
+      timeoutMsg: "the restart lost the queue",
+    });
+    expect(await $(".hub-banner").getText()).toMatch(/^Offline · last synced \d\d:\d\d · 4 changes waiting$/);
+    await openAllTasks();
+    await $(`.task-row*=${edited}`).waitForExist({ timeout: 10_000 });
+    expect(await $(`.task-row*=${edited}`).$(".task-id").getText()).toMatch(/-\?$/);
+    await expect($(".task-row*=Made in the client")).not.toBeExisting(); // it is in the trash
+    await browser.saveScreenshot(`${SHOTS}/offline-restart-queued.png`);
 
     // The hub comes back: the queue replays, the task gets its real ref.
     await startHub();
@@ -374,6 +426,15 @@ describe("hub: another Tildone as the board", () => {
       made.id,
     ]);
     expect(subs.map((r) => r.title)).toEqual(["Queued step"]);
+    await browser.waitUntil(
+      async () =>
+        (
+          await hubSelect<{ deleted_at: string | null }>(
+            "SELECT deleted_at FROM tasks WHERE title = 'Made in the client'",
+          )
+        )[0]?.deleted_at != null,
+      { timeout: 15_000, timeoutMsg: "the queued trash never reached the hub" },
+    );
     await $(".hub-banner").waitForExist({ reverse: true, timeout: 15_000 });
     await browser.waitUntil(
       async () => (await $(`.task-row*=${edited}`).$(".task-id").getText()) === made.ref,

@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Goal } from "../types";
 import { COLOR_CHOICES } from "../types";
+import { OfflineHint } from "./HubStatus";
 import { IconX } from "./Icons";
 
 /**
@@ -24,6 +26,7 @@ export function GoalDialog({
   onClose: () => void;
 }) {
   const { addGoal, editGoal, setGoalCompleted, removeGoal, projects } = useStore();
+  const offline = useOffline((s) => s.offline);
   // Asked for only when the caller had no project to give. Defaulting to the
   // first project rather than to "none" keeps Create reachable in one move,
   // and the select is right there when it guessed wrong.
@@ -177,12 +180,19 @@ export function GoalDialog({
                   Tasks stay — delete this goal?
                 </button>
               ) : (
-                <button className="btn ghost-danger" onClick={() => setConfirmDelete(true)}>
+                <button
+                  className="btn ghost-danger"
+                  disabled={offline}
+                  title={offline ? NOT_AVAILABLE : undefined}
+                  onClick={() => setConfirmDelete(true)}
+                >
                   Delete goal
                 </button>
               )}
               <button
                 className="btn"
+                disabled={offline}
+                title={offline ? NOT_AVAILABLE : undefined}
                 onClick={async () => {
                   await setGoalCompleted(goal.id, goal.completed_at === null);
                   onClose();
@@ -190,6 +200,7 @@ export function GoalDialog({
               >
                 {goal.completed_at === null ? "Close goal" : "Reopen goal"}
               </button>
+              <OfflineHint />
             </>
           )}
           <div className="spacer" />

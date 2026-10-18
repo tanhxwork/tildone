@@ -12,3 +12,6 @@ export const setBoardHubUrl = (url: string) => {
 };
 
 export const isClientMode = () => hubUrl !== "";
+
+/** The hub this window uses, as set (trimmed); "" in local mode. Files kept for one hub name it. */
+export const getBoardHubUrl = () => hubUrl;

@@ -5,9 +5,13 @@ import {
   db,
   holdsBoard,
   isUnreachable,
+  NOT_AVAILABLE,
+  notify,
+  useOffline,
   loadBoardCopy,
   loadOutbox,
   registerOfflineHost,
+  settleTempIds,
   startOffline,
   watchOffline,
 } from "./offline";
@@ -505,6 +509,7 @@ export const useStore = create<Store>()((set, get) => ({
     if (holdsBoard()) return;
     const data = await db.fetchAll();
     set({ ...data });
+    settleTempIds(); // the real ids are on screen now
     // An agent can delete the very goal or project being looked at (delete_goal is
     // in the MCP surface), and this reload is how that arrives. `init` validates a
     // restored selection; without the same guard here the sidebar entry vanishes
@@ -821,7 +826,12 @@ export const useStore = create<Store>()((set, get) => ({
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
     const updates = reordered.map((p, i) => ({ id: p.id, position: i }));
     set({ projects: reordered.map((p, i) => ({ ...p, position: i })) });
-    await db.updateProjectPositions(updates);
+    try {
+      await db.updateProjectPositions(updates);
+    } catch (err) {
+      set({ projects }); // refused (offline): the order on screen must stay the saved one
+      throw err;
+    }
   },
 
   addTask: async ({ title, project_id, due_date, priority = 0, tag_ids = [], from_task_id = null }) => {
@@ -1220,6 +1230,8 @@ export const useStore = create<Store>()((set, get) => ({
 
   attachImages: async (taskId, pending) => {
     if (pending.length === 0) return;
+    // The bytes go to the hub's /image; there is no queue for them.
+    if (isClientMode() && useOffline.getState().offline) return notify(NOT_AVAILABLE);
     const saved: TaskImage[] = [];
     for (const image of pending) {
       const file = await saveImageFile(taskId, image);
@@ -1430,7 +1442,24 @@ export const useStore = create<Store>()((set, get) => ({
 registerOfflineHost({
   projectCode: (id) =>
     (id === null ? null : useStore.getState().projects.find((p) => p.id === id)?.code) ?? INBOX_CODE,
-  taskNotes: (id) => useStore.getState().tasks.find((t) => t.id === id)?.notes,
+  task: (id) => useStore.getState().tasks.find((t) => t.id === id),
+  goalProject: (id) => useStore.getState().goals.find((g) => g.id === id)?.project_id,
+  board: () => {
+    const s = useStore.getState();
+    return {
+      projects: s.projects,
+      goals: s.goals,
+      tasks: s.tasks,
+      tags: s.tags,
+      subtasks: s.subtasks,
+      presence: s.presence,
+      links: s.links,
+      images: s.images,
+      commentCounts: s.commentCounts,
+      lastActivity: s.lastActivity,
+      observeCards: s.observeCards,
+    };
+  },
   reload: () => useStore.getState().reload(),
 });
 

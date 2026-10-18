@@ -7619,6 +7619,35 @@ textarea:focus-visible,
   border-bottom: 1px solid var(--border);
 }
 
+/* Controls the hub being down switches off: dimmed, with the reason written beside them. */
+.icon-btn:disabled,
+.detail-image-add:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.icon-btn:disabled:hover {
+  background: none;
+  color: var(--text-muted);
+}
+
+.offline-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.offline-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-notice {
+  color: var(--text);
+}
+
 .hub-error-actions {
   display: flex;
   justify-content: center;

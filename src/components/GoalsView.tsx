@@ -8,6 +8,7 @@ import { dueLabel, todayStr } from "../utils/dates";
 import { TildoneMark } from "./Brand";
 import { GoalBands, LooseBand } from "./CompassBand";
 import { GoalDialog } from "./GoalDialog";
+import { OfflineHint } from "./HubStatus";
 import { IconPlus } from "./Icons";
 import "./compass.css";
 
@@ -83,6 +84,7 @@ export function GoalsView() {
             All
           </button>
         </div>
+        <OfflineHint />
         <button
           className="btn small primary goals-new"
           disabled={projects.length === 0 || offline}

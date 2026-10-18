@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useStore } from "../store";
 import { isClientMode } from "../hubMode";
-import { fetchClaimCwd } from "../db";
+import { db } from "../offline";
 import { isHttpUrl } from "../utils/links";
 import {
   imageRefId,
@@ -268,10 +268,10 @@ function useClaimCwd(taskId: number | null): string | null {
       return;
     }
     let live = true;
-    void fetchClaimCwd(taskId).then((cwd) => {
+    void db.fetchClaimCwd(taskId).then((cwd) => {
       if (cwd) cwdCache.set(taskId, { cwd, at: Date.now() });
       if (live) setFetched({ taskId, cwd });
-    });
+    }).catch(() => {});
     return () => {
       live = false;
     };

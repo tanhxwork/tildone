@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { aiReady, useAI } from "../ai";
 import { usePaneStore } from "../paneStore";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Owner, Status, TaskImage, TaskLink } from "../types";
 import {
@@ -50,6 +51,7 @@ import {
   IconX,
   LinkKindIcon,
 } from "./Icons";
+import { OfflineHint } from "./HubStatus";
 import { adapterMark, agentIdentity } from "../agents";
 import { useArtifactStore } from "../artifactStore";
 import {
@@ -136,6 +138,7 @@ export function TaskEditor() {
   const [editingNotes, setEditingNotes] = useState(false);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const [tagInput, setTagInput] = useState("");
+  const offline = useOffline((s) => s.offline);
   const [subtaskInput, setSubtaskInput] = useState("");
   const [linkInput, setLinkInput] = useState("");
   const [linkError, setLinkError] = useState("");
@@ -906,12 +909,14 @@ export function TaskEditor() {
               <button
                 type="button"
                 className="detail-image-add"
-                title="⌘V pastes a clipboard image onto this task"
+                title={offline ? NOT_AVAILABLE : "⌘V pastes a clipboard image onto this task"}
+                disabled={offline}
                 onClick={() => void pasteImageFromClipboard()}
               >
                 <IconPlus size={13} />
                 Paste image
               </button>
+              <OfflineHint />
               {dropNote && <span className="detail-image-note">{dropNote}</span>}
             </span>
 

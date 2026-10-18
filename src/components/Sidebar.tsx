@@ -32,6 +32,7 @@ import {
   IconTown,
   IconX,
 } from "./Icons";
+import { OfflineHint } from "./HubStatus";
 import { ProjectDialog } from "./ProjectDialog";
 import { ProjectGlyph } from "./ProjectGlyph";
 import { SessionsSection } from "./SessionsSection";
@@ -360,6 +361,7 @@ export function Sidebar() {
       <div className="sidebar-section">
         <div className="section-header">
           <span>Projects</span>
+          <OfflineHint />
           <button
             className="icon-btn"
             aria-label="New project"
@@ -390,7 +392,9 @@ export function Sidebar() {
           </>
         )}
         {projects.length === 0 && (
-          <p className="sidebar-hint">No projects yet — create one with +</p>
+          <p className="sidebar-hint">
+            {offline ? "No projects yet." : "No projects yet — create one with +"}
+          </p>
         )}
       </div>
 
