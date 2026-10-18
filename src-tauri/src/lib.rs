@@ -358,6 +358,7 @@ pub fn run() {
             appsettings::settings_migrate,
             hub::hub_token,
             hubclient::hub_connect,
+            hubclient::hub_disconnect,
             hubclient::hub_sql,
             hubclient::hub_presence,
             hubclient::hub_claim_cwds,

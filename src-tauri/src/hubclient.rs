@@ -5,6 +5,11 @@
 //! `Authorization: Bearer <token>`, and never an Origin header. Routes and shapes
 //! are in hub.rs. Errors name the hub URL and what failed ("hub ws:11502: bad
 //! token", "... unreachable: <reason>").
+//!
+//! The window classifies errors by these shapes, so keep them exactly:
+//! - `hub <url>: bad token` (401);
+//! - `hub <url> is at schema N, this app is at M: run the same Tildone build on both`;
+//! - `hub <url>: unreachable: <reason>` (no connection, a timeout, a dropped body).
 
 use futures_util::{stream::BoxStream, StreamExt};
 use serde::Serialize;
@@ -21,6 +26,9 @@ pub const HUB_STATUS: &str = "hub-status";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest silence on a response body: three missed hub keep-alives (every 15 s).
+/// A half-open /events connection then drops and reconnects in under a minute.
+const READ_TIMEOUT: Duration = Duration::from_secs(45);
 /// Waits between reconnect attempts after the event stream drops; the last repeats.
 static BACKOFF: [Duration; 5] = [
     Duration::from_secs(1),
@@ -80,20 +88,22 @@ impl From<HubError> for String {
     }
 }
 
-/// One shared client: no Origin header (reqwest sends none), a connect timeout
-/// and TCP keepalive so a dead hub surfaces on the event stream. The per-request
-/// timeout is set on each request, because /events must not have one.
+/// No Origin header (reqwest sends none), a connect timeout, TCP keepalive and a
+/// read timeout, so a hub that went silent surfaces as an error on /events.
+fn build_client(read_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(read_timeout)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .unwrap_or_default()
+}
+
+/// The one shared client. The per-request timeout is set on each request,
+/// because /events must not have one (only the read timeout).
 fn client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .tcp_keepalive(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default()
-        })
-        .clone()
+    CLIENT.get_or_init(|| build_client(READ_TIMEOUT)).clone()
 }
 
 /// The hub's address and token. Built from the settings on every command, so a
@@ -420,8 +430,27 @@ async fn follow(
     }
 }
 
+type Subscriber = tauri::async_runtime::JoinHandle<()>;
+
 /// The running subscriber, so a later hub_connect can replace it.
-static SUBSCRIBER: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::new(None);
+static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
+
+/// Put `new` in the slot and abort whatever it held, under one lock, so two
+/// overlapping hub_connect calls leave exactly one follower.
+fn swap_subscriber(slot: &Mutex<Option<Subscriber>>, new: Option<Subscriber>) {
+    let old = std::mem::replace(&mut *slot.lock().unwrap_or_else(|e| e.into_inner()), new);
+    if let Some(old) = old {
+        old.abort();
+    }
+}
+
+/// Stop following the hub. The window calls it at startup when it is not in
+/// client mode, so a follower from an earlier connect cannot outlive the mode.
+/// A no-op when none runs.
+#[tauri::command]
+pub fn hub_disconnect() {
+    swap_subscriber(&SUBSCRIBER, None);
+}
 
 /// Connect to the hub's /events: check its `schema` event against our
 /// SCHEMA_VERSION (a mismatch is an error naming both numbers), then keep a
@@ -430,9 +459,7 @@ static SUBSCRIBER: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::
 /// again replaces the subscriber (e.g. after the URL or token changed).
 #[tauri::command]
 pub async fn hub_connect(app: tauri::AppHandle) -> Result<HubInfo, String> {
-    if let Some(old) = SUBSCRIBER.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        old.abort();
-    }
+    swap_subscriber(&SUBSCRIBER, None);
     let hub = Hub::from_settings(&app)?;
     let (version, stream) = hub.connect().await?;
     let handle = tauri::async_runtime::spawn(async move {
@@ -449,7 +476,7 @@ pub async fn hub_connect(app: tauri::AppHandle) -> Result<HubInfo, String> {
         )
         .await
     });
-    *SUBSCRIBER.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    swap_subscriber(&SUBSCRIBER, Some(handle));
     Ok(HubInfo { version })
 }
 
@@ -496,17 +523,61 @@ pub async fn hub_file(app: tauri::AppHandle, path: String) -> Result<tauri::ipc:
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// Percent-decode a header value (`encodeURIComponent` on the window side).
+fn dec(s: &str) -> Result<String, String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .ok_or("bad x-name header")?;
+            out.push(hex);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "bad x-name header".to_string())
+}
+
+/// The task id and file name of a hub_image_put call: the `x-task-id` header
+/// (a number) and the `x-name` header (percent-encoded, not empty).
+fn image_args(headers: &tauri::http::HeaderMap) -> Result<(i64, String), String> {
+    let get = |k: &str| {
+        headers
+            .get(k)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| format!("hub_image_put: missing {k} header"))
+    };
+    let task_id = get("x-task-id")?
+        .parse::<i64>()
+        .map_err(|_| "hub_image_put: bad x-task-id header".to_string())?;
+    let name = dec(get("x-name")?)?;
+    if name.is_empty() {
+        return Err("hub_image_put: empty x-name header".into());
+    }
+    Ok((task_id, name))
+}
+
 /// Store a pasted or dropped image on the hub (`POST /image`); returns the hub's
-/// absolute path, which the window records with db.insertImage.
+/// path relative to its app data dir (`attachments/<task>/<name>`), which the
+/// window records with db.insertImage. The window sends the bytes as a raw IPC
+/// body with `x-task-id` and `x-name` (percent-encoded) headers.
 #[tauri::command]
 pub async fn hub_image_put(
     app: tauri::AppHandle,
-    task_id: i64,
-    name: String,
-    bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<String, String> {
+    let (task_id, name) = image_args(request.headers())?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("hub_image_put: expected the image as a raw body".into());
+    };
     Hub::from_settings(&app)?
-        .image_put(task_id, &name, bytes)
+        .image_put(task_id, &name, bytes.to_vec())
         .await
 }
 
@@ -542,6 +613,8 @@ mod tests {
         drop_first_stream: bool,
         /// /events answers 401 from this connection number on (0-based).
         reject_events_from: Option<usize>,
+        /// Streams send a `change` every 20 ms forever.
+        ticking: bool,
     }
 
     impl Fake {
@@ -552,6 +625,7 @@ mod tests {
                 schema: crate::hub::SCHEMA_VERSION,
                 drop_first_stream: false,
                 reject_events_from: None,
+                ticking: false,
             }
         }
 
@@ -653,6 +727,17 @@ mod tests {
                 );
                 let body = if fake.drop_first_stream && n == 0 {
                     Body::from_stream(head)
+                } else if fake.ticking {
+                    let ticks = futures_util::stream::unfold((), |()| async {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Some((
+                            Ok::<_, std::convert::Infallible>(
+                                b"event: change\ndata: {}\n\n".to_vec(),
+                            ),
+                            (),
+                        ))
+                    });
+                    Body::from_stream(head.chain(ticks))
                 } else {
                     Body::from_stream(head.chain(futures_util::stream::pending()))
                 };
@@ -794,12 +879,12 @@ mod tests {
         Status(&'static str),
     }
 
-    async fn run_follow(hub: Hub) -> mpsc::UnboundedReceiver<Note> {
+    async fn run_follow(hub: Hub) -> (mpsc::UnboundedReceiver<Note>, Subscriber) {
         let (version, stream) = hub.connect().await.map_err(String::from).unwrap();
         assert_eq!(version, crate::hub::SCHEMA_VERSION);
         let (tx, rx) = mpsc::unbounded_channel();
         let tx2 = tx.clone();
-        tokio::spawn(async move {
+        let handle = tauri::async_runtime::spawn(async move {
             follow(
                 hub,
                 stream,
@@ -813,7 +898,7 @@ mod tests {
             )
             .await
         });
-        rx
+        (rx, handle)
     }
 
     async fn take(rx: &mut mpsc::UnboundedReceiver<Note>, n: usize) -> Vec<Note> {
@@ -832,7 +917,7 @@ mod tests {
     #[tokio::test]
     async fn change_events_reach_the_callback() {
         let (hub, _) = Fake::new().serve().await;
-        let mut rx = run_follow(hub).await;
+        let (mut rx, _follower) = run_follow(hub).await;
         assert_eq!(take(&mut rx, 2).await, vec![Note::Change, Note::Change]);
     }
 
@@ -841,7 +926,7 @@ mod tests {
         let mut fake = Fake::new();
         fake.drop_first_stream = true;
         let (hub, _) = fake.serve().await;
-        let mut rx = run_follow(hub).await;
+        let (mut rx, _follower) = run_follow(hub).await;
         // Two changes, the drop, then connected plus one change to reload, then
         // the second stream's own two changes.
         assert_eq!(
@@ -864,7 +949,7 @@ mod tests {
         fake.drop_first_stream = true;
         fake.reject_events_from = Some(1);
         let (hub, _) = fake.serve().await;
-        let mut rx = run_follow(hub).await;
+        let (mut rx, _follower) = run_follow(hub).await;
         assert_eq!(
             take(&mut rx, 4).await,
             vec![
@@ -877,5 +962,95 @@ mod tests {
         // The channel closes when follow returns: no further retries.
         let end = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
         assert!(matches!(end, Ok(None)), "{end:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_is_dropped_by_the_read_timeout_and_reconnected() {
+        // The fake holds the stream open and sends nothing after its events.
+        let (mut hub, _) = Fake::new().serve().await;
+        hub.client = build_client(Duration::from_millis(300));
+        let (mut rx, _follower) = run_follow(hub).await;
+        assert_eq!(
+            take(&mut rx, 3).await,
+            vec![Note::Change, Note::Change, Note::Status("error")]
+        );
+        // The reconnect goes through backoff and succeeds.
+        assert_eq!(take(&mut rx, 2).await[0], Note::Status("connected"));
+    }
+
+    #[tokio::test]
+    async fn hub_disconnect_stops_the_follower() {
+        let mut fake = Fake::new();
+        fake.ticking = true;
+        let (hub, _) = fake.serve().await;
+        let slot = Mutex::new(None);
+        let (mut rx, follower) = run_follow(hub).await;
+        swap_subscriber(&slot, Some(follower));
+        take(&mut rx, 4).await; // changes keep coming
+        swap_subscriber(&slot, None);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(rx.try_recv().is_err(), "an event arrived after disconnect");
+        swap_subscriber(&slot, None); // a no-op when none runs
+    }
+
+    /// Sets a flag when its task is dropped, which is what abort does.
+    struct Dropped(Arc<AtomicUsize>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn swapping_the_subscriber_aborts_the_old_one() {
+        let slot = Mutex::new(None);
+        let dropped = Arc::new(AtomicUsize::new(0));
+        for _ in 0..3 {
+            let guard = Dropped(dropped.clone());
+            let handle = tauri::async_runtime::spawn(async move {
+                let _guard = guard;
+                futures_util::future::pending::<()>().await
+            });
+            swap_subscriber(&slot, Some(handle));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Three spawned, one left running in the slot.
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+        swap_subscriber(&slot, None);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn image_args_decode_the_headers_and_refuse_bad_ones() {
+        let headers = |pairs: &[(&str, &str)]| {
+            let mut h = tauri::http::HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(
+                    tauri::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                    v.parse().unwrap(),
+                );
+            }
+            h
+        };
+        assert_eq!(
+            image_args(&headers(&[
+                ("x-task-id", "12"),
+                ("x-name", "caf%C3%A9%20shot%2B1.png")
+            ])),
+            Ok((12, "café shot+1.png".to_string()))
+        );
+        for bad in [
+            headers(&[("x-name", "a.png")]),
+            headers(&[("x-task-id", "12")]),
+            headers(&[("x-task-id", "twelve"), ("x-name", "a.png")]),
+            headers(&[("x-task-id", "12"), ("x-name", "")]),
+            headers(&[("x-task-id", "12"), ("x-name", "a%2")]),
+            headers(&[("x-task-id", "12"), ("x-name", "%FF")]),
+        ] {
+            assert!(image_args(&bad).is_err(), "{bad:?}");
+        }
     }
 }
