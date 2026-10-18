@@ -29,11 +29,13 @@ import { TaskList } from "./components/TaskList";
 import { MineView } from "./components/MineView";
 import { AgentQueueView } from "./components/AgentQueueView";
 import { ObserveView } from "./components/ObserveView";
+import { HubErrorScreen, HubStatusBanner } from "./components/HubStatus";
 import { QuitWarning } from "./components/QuitWarning";
 import { WsServersView } from "./components/WsServers";
 import { initArtifactStore } from "./artifactStore";
 import { initHostStore, useHostStore } from "./hostStore";
 import { paneHasFocus, usePaneStore } from "./paneStore";
+import { isClientMode } from "./hubMode";
 import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { initWsStore } from "./wsStore";
@@ -47,6 +49,7 @@ function App() {
     loaded,
     initError,
     initStatus,
+    hubError,
     init,
     selection,
     viewMode,
@@ -173,6 +176,8 @@ function App() {
     // Repeats under 60 s are skipped; a failed poll is silent by contract.
     let lastForgePoll = 0;
     const pollForge = () => {
+      // Client mode: the hub polls its own forge and writes the result to its board.
+      if (isClientMode()) return;
       if (Date.now() - lastForgePoll < 60_000) return;
       lastForgePoll = Date.now();
       void invoke("forge_poll").catch(() => {});
@@ -295,7 +300,9 @@ function App() {
     return (
       <div className="app-loading">
         <TildoneMark width={44} className="app-loading-mark" />
-        {initError ? (
+        {hubError ? (
+          <HubErrorScreen error={hubError} />
+        ) : initError ? (
           <div className="app-loading-error">
             <strong>Couldn’t open your board.</strong>
             <p>
@@ -360,6 +367,7 @@ function App() {
     <div className="app">
       <Sidebar />
       <main className="main">
+        <HubStatusBanner />
         <Header searchRef={searchRef} />
         {!paneActive && selection.type === "goal" && <GoalBand goalId={selection.goalId} />}
         {!paneActive && (!isPage || selection.type === "mine" || selection.type === "goals") && (

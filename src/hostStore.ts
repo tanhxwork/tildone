@@ -10,6 +10,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { isClientMode } from "./hubMode";
 
 export interface HostSession {
   id: number;
@@ -73,7 +74,10 @@ export const useHostStore = create<HostState>((set) => ({
   sessions: [],
   adapters: [],
   resumables: [],
+  // Client mode hosts no sessions here (the hub's are not reachable over the
+  // network), so the lists stay empty and every session control stays hidden.
   refresh: async () => {
+    if (isClientMode()) return;
     try {
       set({
         sessions: await invoke<HostSession[]>("host_list"),
@@ -84,6 +88,7 @@ export const useHostStore = create<HostState>((set) => ({
     }
   },
   refreshAdapters: async () => {
+    if (isClientMode()) return;
     try {
       set({ adapters: await invoke<HostAdapter[]>("host_adapters") });
     } catch {

@@ -64,6 +64,7 @@ import { EvidenceNotice } from "./EvidenceNotice";
 import { NotesView } from "./NotesView";
 import { prChip } from "./prChip";
 import { ProjectGlyph } from "./ProjectGlyph";
+import { isClientMode } from "../hubMode";
 import { lineageTask } from "../ownerViews";
 import { reservedState } from "./TaskRow";
 
@@ -864,17 +865,19 @@ export function TaskEditor() {
                       {src && <img src={src} alt={img.filename} loading="lazy" />}
                     </button>
                     <span className="detail-image-actions">
-                      <button
-                        type="button"
-                        aria-label={`Reveal ${img.filename} in Finder`}
-                        title="Reveal in Finder"
-                        onClick={() => {
-                          const abs = imageAbsPath(img);
-                          if (abs) void revealItemInDir(abs);
-                        }}
-                      >
-                        <IconFolderOpen size={12} />
-                      </button>
+                      {!isClientMode() && (
+                        <button
+                          type="button"
+                          aria-label={`Reveal ${img.filename} in Finder`}
+                          title="Reveal in Finder"
+                          onClick={() => {
+                            const abs = imageAbsPath(img);
+                            if (abs) void revealItemInDir(abs);
+                          }}
+                        >
+                          <IconFolderOpen size={12} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         aria-label={`Insert ${img.filename} in notes`}
@@ -1067,7 +1070,7 @@ export function TaskEditor() {
                       claude pid AND a terminal window to raise — a headless
                       background session never shows a button that could only
                       answer "not reachable". */}
-                  {(presence.reachable || presence.attachable) && (
+                  {!isClientMode() && (presence.reachable || presence.attachable) && (
                     <button
                       className="detail-agent-jump"
                       title={

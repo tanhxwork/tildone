@@ -5,6 +5,7 @@ import { refreshAgentEndpoint } from "../appSettings";
 import { useStore, type ImportedTask } from "../store";
 import type { Status } from "../types";
 import { parseCSV, toCSV, toJSON, toMarkdown } from "../utils/exportData";
+import { BoardSection, HubTokenRow } from "./BoardSettings";
 import { IconX } from "./Icons";
 
 type ExportFormat = "json" | "csv" | "markdown";
@@ -41,6 +42,7 @@ export function SettingsDialog() {
     agentServer,
     agentNotify,
     wsHubUrl,
+    boardHubUrl,
     agentEndpoint: endpoint,
     agentError: agentMessage,
     setTheme,
@@ -52,6 +54,10 @@ export function SettingsDialog() {
     closeSettings,
   } = useSettings();
   const { projects, tasks, tags, importData } = useStore();
+  // Client mode: the hub runs the MCP server, the secretary and the hook; this
+  // window starts none of them, so their rows give way to one sentence.
+  const clientMode = boardHubUrl !== "";
+  const agentOn = agentServer && !clientMode;
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // The endpoint and any start failure are in the settings store: the server is
@@ -278,6 +284,8 @@ export function SettingsDialog() {
           </div>
         </section>
 
+        <BoardSection />
+
         <section className="settings-section">
           <h3 className="settings-heading">Agent access</h3>
 
@@ -303,7 +311,15 @@ export function SettingsDialog() {
             </div>
           </div>
 
-          {agentServer && (
+          {clientMode && (
+            <p className="settings-sub">
+              This window uses a hub for its board, so agents connect to the hub, not here.
+              Agent access stays off on this machine until you switch back to This machine.
+            </p>
+          )}
+          {agentOn && <HubTokenRow />}
+
+          {agentOn && (
             <div className="settings-row">
               <div className="settings-label">
                 Notify me when an agent finishes or gets stuck
@@ -326,7 +342,7 @@ export function SettingsDialog() {
             </div>
           )}
 
-          {agentServer && (
+          {agentOn && (
             <div className="settings-row">
               <div className="settings-label">
                 Show Claude Code working, live
@@ -347,7 +363,7 @@ export function SettingsDialog() {
           )}
           {/* Say plainly that this edits their file, and exactly which one. Nobody
               should discover after the fact that a todo app rewrote their settings. */}
-          {agentServer && hook && !hook.installed && (
+          {agentOn && hook && !hook.installed && (
             <p className="settings-sub">
               Adds four hooks to <code>{hook.settings}</code> and copies a script to{" "}
               <code>{hook.script}</code>. Your existing hooks are left alone, and
@@ -394,13 +410,13 @@ export function SettingsDialog() {
           )}
           {cliMessage && <p className="settings-message">{cliMessage}</p>}
 
-          {endpoint && (
+          {endpoint && !clientMode && (
             <p className="settings-sub">
               Connect an agent, e.g.:{" "}
               <code>claude mcp add --transport http tildone {endpoint}</code>
             </p>
           )}
-          {agentServer && !endpoint && (
+          {agentOn && !endpoint && (
             <p className="settings-message">
               Agent access is on, but the server is not listening. Restarting Tildone
               usually fixes it.

@@ -17,6 +17,8 @@ import type {
   TaskImage,
   TaskLink,
 } from "./types";
+import { isClientMode } from "./hubMode";
+import { remoteDb, type Db } from "./remoteDb";
 import { deriveProjectCode, formatRef, INBOX_CODE } from "./utils/ref";
 
 /**
@@ -28,7 +30,7 @@ export function trace(msg: string): void {
   void invoke("debug_trace", { msg }).catch(() => {});
 }
 
-let db: Database | null = null;
+let db: Db | null = null;
 
 /**
  * Warm the connection as its own init step, so the loading screen can say
@@ -39,7 +41,10 @@ export async function openDb(): Promise<void> {
   await getDb();
 }
 
-async function getDb(): Promise<Database> {
+async function getDb(): Promise<Db> {
+  // Client mode: every query goes to the hub. The setting is read once at init
+  // (changing it reloads the window), so the choice never flips under a live `db`.
+  if (!db && isClientMode()) db = remoteDb;
   if (!db) {
     // Seen live: `Database.load` can wedge forever (first load parked the app on
     // the loading screen with no error). The race converts that hang into a
@@ -167,7 +172,7 @@ export async function fetchAll(): Promise<{
 
 /** The live (untrashed) observe cards among `rows`, with their options parsed and
  *  their log in insert order. */
-async function fetchObserveCards(d: Database, rows: Map<number, Task>): Promise<ObserveCard[]> {
+async function fetchObserveCards(d: Db, rows: Map<number, Task>): Promise<ObserveCard[]> {
   if (rows.size === 0) return [];
   const cardRows = await d.select<
     {
@@ -497,7 +502,7 @@ export async function insertProject(
 /** A unique project code for `name`, derived against the codes already in the DB
  * (the authoritative set — the UNIQUE index on projects.code is the backstop).
  * INBOX_CODE is reserved for the Inbox and never handed to a real project. */
-async function nextProjectCode(d: Database, name: string): Promise<string> {
+async function nextProjectCode(d: Db, name: string): Promise<string> {
   const rows = await d.select<{ code: string | null }[]>(
     "SELECT code FROM projects WHERE code IS NOT NULL",
   );
@@ -663,7 +668,7 @@ export async function insertTask(task: {
 /** The code that mints refs for a task in `project_id` (INBOX_CODE for the Inbox).
  * A project that somehow still lacks a code — a race ahead of the startup backfill
  * — gets one minted and persisted here so its tasks never fall back to `#id`. */
-async function codeForProject(d: Database, project_id: number | null): Promise<string> {
+async function codeForProject(d: Db, project_id: number | null): Promise<string> {
   if (project_id === null) return INBOX_CODE;
   const rows = await d.select<{ name: string; code: string | null }[]>(
     "SELECT name, code FROM projects WHERE id = $1",
@@ -681,7 +686,7 @@ async function codeForProject(d: Database, project_id: number | null): Promise<s
  * ref has ever held — trashed rows included, so a number within a code is never
  * reused. Scoped by the frozen ref prefix, not project_id, so a task moved between
  * projects keeps counting against the code it was born in. */
-async function nextTaskNumber(d: Database, code: string): Promise<number> {
+async function nextTaskNumber(d: Db, code: string): Promise<number> {
   const rows = await d.select<{ m: number | null }[]>(
     "SELECT MAX(number) AS m FROM tasks WHERE ref LIKE $1",
     [`${code}-%`],

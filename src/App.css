@@ -7600,3 +7600,20 @@ textarea:focus-visible,
   flex: none;
   background: var(--border-strong);
 }
+
+/* Client mode: the hub is unreachable. A single quiet line above the header, only
+ * while the connection is down; the board underneath keeps showing its last state. */
+.hub-banner {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.hub-error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}

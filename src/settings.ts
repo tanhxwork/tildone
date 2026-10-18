@@ -22,6 +22,9 @@ interface SettingsState {
   /** Base URL of the dev-server hub on the Linux workstation, e.g.
    * https://hub.ws.test:8444. Empty hides every ws surface. */
   wsHubUrl: string;
+  /** Another Tildone's agent server URL to use as the board; "" = this machine. */
+  boardHubUrl: string;
+  boardHubToken: string;
   tagsCollapsed: boolean;
   /** Per-project sidebar goal-nesting collapse (migration 025). Missing entry
    * means expanded — same "true = collapsed" convention as tagsCollapsed, keyed
@@ -48,6 +51,8 @@ interface SettingsState {
   setAgentServer: (enabled: boolean) => void;
   setAgentNotify: (enabled: boolean) => void;
   setWsHubUrl: (url: string) => void;
+  /** Both go to Rust at once: a change of either reloads the window, so one write. */
+  setBoardHub: (url: string, token: string) => void;
   setTagsCollapsed: (collapsed: boolean) => void;
   setProjectGoalsCollapsed: (projectId: number, collapsed: boolean) => void;
   setAgentLaneCollapsed: (projectId: number, collapsed: boolean) => void;
@@ -145,6 +150,8 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   agentServer: false,
   agentNotify: true,
   wsHubUrl: "",
+  boardHubUrl: "",
+  boardHubToken: "",
   agentEndpoint: null,
   agentError: null,
   ...loadPersisted(),
@@ -156,6 +163,8 @@ export const useSettings = create<SettingsState>()((set, get) => ({
   setAgentServer: (agentServer) => save({ agentServer }, set),
   setAgentNotify: (agentNotify) => save({ agentNotify }, set),
   setWsHubUrl: (url) => save({ wsHubUrl: url.trim() }, set),
+  setBoardHub: (url, token) =>
+    save({ boardHubUrl: url.trim(), boardHubToken: token.trim() }, set),
   setTagsCollapsed: (tagsCollapsed) => {
     set({ tagsCollapsed });
     persist(get());

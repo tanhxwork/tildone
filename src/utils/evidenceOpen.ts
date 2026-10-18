@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { hubFile, hubGitRemote } from "../hubClient";
+import { isClientMode } from "../hubMode";
 import type { TaskLink } from "../types";
 import { EVIDENCE_EXTENSIONS, isRevealOnlyEvidence } from "./links";
 import { braceExpand } from "./markdownEvidence";
@@ -122,7 +124,10 @@ export async function openEvidence(
     const missing: string[] = [];
     for (const path of paths) {
       try {
-        const bytes = await invoke<ArrayBuffer>("read_evidence_image", { path });
+        // Client mode: the shot lives on the hub, which serves evidence images only.
+        const bytes = isClientMode()
+          ? await hubFile(path)
+          : await invoke<ArrayBuffer>("read_evidence_image", { path });
         const type = MIME[extensionOf(path)] ?? "application/octet-stream";
         files.push({
           src: URL.createObjectURL(new Blob([bytes], { type })),
@@ -196,7 +201,9 @@ async function remoteBase(cwd: string): Promise<RepoBase | null> {
   }
   let base: RepoBase | null = null;
   try {
-    const remote = await invoke<string | null>("git_remote_url", { cwd });
+    const remote = isClientMode()
+      ? await hubGitRemote(cwd)
+      : await invoke<string | null>("git_remote_url", { cwd });
     base = remote ? repoBaseFromRemote(remote) : null;
   } catch {
     base = null;
