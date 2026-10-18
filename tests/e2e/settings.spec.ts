@@ -137,4 +137,17 @@ describe("settings: settings.json", () => {
       timeoutMsg: "the migrated theme never reached settings.json",
     });
   });
+
+  // The first paint on the next launch reads this hint (src/settings.ts) before
+  // settings.json has loaded. The paint itself is gone before a spec can look, so
+  // this proves the write side after load; the read is a unit test (readThemeHint).
+  it("remembers the applied theme for the next launch", async () => {
+    const hint = () => browser.execute(() => localStorage.getItem("tildone-theme-hint"));
+    expect(await hint()).toBe("light");
+    await tauriInvoke("settings_set", { patch: { theme: "dark" } });
+    await browser.waitUntil(async () => (await hint()) === "dark", {
+      timeout: 5000,
+      timeoutMsg: "the theme hint never followed the setting",
+    });
+  });
 });

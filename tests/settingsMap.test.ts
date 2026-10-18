@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { aiPatchToApp, legacyToApp, settingsPatchToApp } from "../src/settingsMap";
+import { aiPatchToApp, legacyToApp, readThemeHint, settingsPatchToApp } from "../src/settingsMap";
 
 describe("legacyToApp", () => {
   it("maps both old localStorage blobs to snake_case keys, only the keys present", () => {
@@ -39,5 +39,14 @@ describe("patch mapping", () => {
       ai_base_url: "http://x",
       ai_auto_start: true,
     });
+  });
+});
+
+describe("readThemeHint", () => {
+  it("returns the remembered theme and falls back to auto for anything else", () => {
+    expect(readThemeHint("dark")).toBe("dark");
+    expect(readThemeHint("light")).toBe("light");
+    expect(readThemeHint(null)).toBe("auto");
+    expect(readThemeHint("neon")).toBe("auto");
   });
 });

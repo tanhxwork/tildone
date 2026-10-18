@@ -132,3 +132,14 @@ export const LEGACY_SETTINGS_KEYS = [
   "agentNotify",
   "wsHubUrl",
 ] as const;
+
+/**
+ * The theme setting as last applied, kept in localStorage so the next launch can
+ * paint the right theme on the loading screen, before Rust's settings.json has
+ * been read. A hint only: settings.json stays the source of truth and replaces it
+ * the moment it loads.
+ */
+export const THEME_HINT_KEY = "tildone-theme-hint";
+
+export const readThemeHint = (raw: string | null): Theme =>
+  oneOf(["auto", "light", "dark"], raw) ? raw : "auto";

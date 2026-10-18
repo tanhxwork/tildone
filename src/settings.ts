@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { prunedGoalDismissals } from "./selectors";
-import { settingsPatchToApp, type SyncedSettings } from "./settingsMap";
+import {
+  readThemeHint,
+  settingsPatchToApp,
+  THEME_HINT_KEY,
+  type SyncedSettings,
+} from "./settingsMap";
 import { writeSettings } from "./settingsIo";
 
 export type Theme = "auto" | "light" | "dark";
@@ -133,7 +138,8 @@ function save(patch: Partial<SyncedSettings>, set: (p: Partial<SyncedSettings>) 
 }
 
 export const useSettings = create<SettingsState>()((set, get) => ({
-  theme: "auto",
+  // The last applied theme, so the loading screen is not the OS theme for a moment.
+  theme: readThemeHint(localStorage.getItem(THEME_HINT_KEY)),
   weekStart: "monday",
   defaultProjectId: null,
   agentServer: false,

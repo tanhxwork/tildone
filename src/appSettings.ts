@@ -9,7 +9,13 @@ import {
   type AppSettings,
 } from "./settingsFile";
 import { onSettings, receive } from "./settingsIo";
-import { aiFromApp, legacyToApp, LEGACY_SETTINGS_KEYS, settingsFromApp } from "./settingsMap";
+import {
+  aiFromApp,
+  legacyToApp,
+  LEGACY_SETTINGS_KEYS,
+  settingsFromApp,
+  THEME_HINT_KEY,
+} from "./settingsMap";
 
 // Rust owns settings.json. This module is how the window follows it: it loads the
 // file at launch (handing over the old localStorage values once), listens for every
@@ -133,6 +139,7 @@ function apply(next: AppSettings) {
   const prev = applied;
   applied = next;
   useSettings.setState(settingsFromApp(next));
+  localStorage.setItem(THEME_HINT_KEY, next.theme);
   useAI.setState({ config: aiFromApp(next) });
   runEffects(prev, next);
 }
@@ -162,6 +169,15 @@ export async function loadAppSettings() {
     started = true;
     onSettings(apply);
     await listen<AppSettings>(SETTINGS_CHANGED, (event) => receive(event.payload));
+    // MCP or the CLI installed, started, stopped or deleted the engine: bring the
+    // badge, the model list and the secretary's endpoint up to date. (The dialog's
+    // own actions refresh themselves; Rust emits this only for the outside ones.)
+    await listen("engine-changed", () => {
+      const ai = useAI.getState();
+      void ai.refreshModels();
+      // Probes the engine first, then starts it and configures the secretary as needed.
+      void ai.syncSecretary();
+    });
   }
   const legacy = legacyToApp(
     localStorage.getItem(STORAGE_KEY),
