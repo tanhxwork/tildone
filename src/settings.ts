@@ -139,7 +139,7 @@ function save(patch: Partial<SyncedSettings>, set: (p: Partial<SyncedSettings>) 
 
 export const useSettings = create<SettingsState>()((set, get) => ({
   // The last applied theme, so the loading screen is not the OS theme for a moment.
-  theme: readThemeHint(localStorage.getItem(THEME_HINT_KEY)),
+  theme: readThemeHint(localStorage.getItem(THEME_HINT_KEY), localStorage.getItem(STORAGE_KEY)),
   weekStart: "monday",
   defaultProjectId: null,
   agentServer: false,

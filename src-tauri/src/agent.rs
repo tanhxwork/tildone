@@ -826,12 +826,19 @@ impl AppActions for TauriActions {
     fn engine(&self, op: EngineOp) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
         let app = self.0.clone();
         Box::pin(async move {
-            let changes_engine = !matches!(op, EngineOp::Status(_));
+            let action = match &op {
+                EngineOp::Status(_) => None,
+                EngineOp::Install(_) => Some("install"),
+                EngineOp::Start(_) => Some("start"),
+                EngineOp::Stop => Some("stop"),
+                EngineOp::Delete(_) => Some("delete"),
+            };
             let result = Self::run_engine(&app, op).await;
             // The window refreshes its engine state and secretary route, as it does
-            // after the dialog's own install/start/stop/delete.
-            if changes_engine {
-                let _ = app.emit(crate::appsettings::ENGINE_CHANGED, ());
+            // after the dialog's own actions. The payload is the action, so a stop
+            // is not undone by the secretary sync restarting the engine.
+            if let (Some(action), true) = (action, result.is_ok()) {
+                let _ = app.emit(crate::appsettings::ENGINE_CHANGED, action);
             }
             result
         })

@@ -172,11 +172,13 @@ export async function loadAppSettings() {
     // MCP or the CLI installed, started, stopped or deleted the engine: bring the
     // badge, the model list and the secretary's endpoint up to date. (The dialog's
     // own actions refresh themselves; Rust emits this only for the outside ones.)
-    await listen("engine-changed", () => {
+    await listen<string>("engine-changed", (event) => {
       const ai = useAI.getState();
       void ai.refreshModels();
+      // A stop only refreshes, like the dialog's Stop: syncSecretary would start it again.
+      if (event.payload === "stop") void ai.refreshEngine();
       // Probes the engine first, then starts it and configures the secretary as needed.
-      void ai.syncSecretary();
+      else void ai.syncSecretary();
     });
   }
   const legacy = legacyToApp(

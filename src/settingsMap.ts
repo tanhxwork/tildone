@@ -141,5 +141,14 @@ export const LEGACY_SETTINGS_KEYS = [
  */
 export const THEME_HINT_KEY = "tildone-theme-hint";
 
-export const readThemeHint = (raw: string | null): Theme =>
-  oneOf(["auto", "light", "dark"], raw) ? raw : "auto";
+/** The theme for the first paint: the hint, else the pre-upgrade `tildone-settings` theme, else auto. */
+export const readThemeHint = (raw: string | null, legacyRaw: string | null = null): Theme => {
+  if (oneOf(["auto", "light", "dark"], raw)) return raw;
+  try {
+    const legacy = (JSON.parse(legacyRaw ?? "null") as { theme?: unknown } | null)?.theme;
+    if (oneOf(["auto", "light", "dark"], legacy)) return legacy;
+  } catch {
+    // A corrupt blob is no hint.
+  }
+  return "auto";
+};

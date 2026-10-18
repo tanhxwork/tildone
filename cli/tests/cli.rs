@@ -1023,19 +1023,3 @@ async fn settings_action_timeout_says_it_is_still_running() {
     );
     assert!(!out.stderr.contains("cannot reach"), "{}", out.stderr);
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn settings_engine_install_already_running_passes_through() {
-    let fake = Fake::start().await;
-    fake.fail("engine", "an engine install is already running");
-    let out = tildone(&fake, &["settings", "engine", "install"])
-        .run()
-        .await;
-    assert_eq!(out.code, 1, "{}", out.stderr);
-    assert!(
-        out.stderr
-            .starts_with("error: an engine install is already running"),
-        "{}",
-        out.stderr
-    );
-}

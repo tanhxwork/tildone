@@ -49,4 +49,11 @@ describe("readThemeHint", () => {
     expect(readThemeHint(null)).toBe("auto");
     expect(readThemeHint("neon")).toBe("auto");
   });
+
+  it("uses the pre-upgrade theme on the first launch, when there is no hint yet", () => {
+    expect(readThemeHint(null, JSON.stringify({ theme: "dark" }))).toBe("dark");
+    expect(readThemeHint("light", JSON.stringify({ theme: "dark" }))).toBe("light");
+    expect(readThemeHint(null, "{broken")).toBe("auto");
+    expect(readThemeHint(null, JSON.stringify({ theme: "neon" }))).toBe("auto");
+  });
 });
