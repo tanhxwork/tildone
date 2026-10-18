@@ -64,6 +64,8 @@ pub const SCHEMA_VERSION: i64 = 30;
 /// at least 32 url-safe characters) the first time Agent access starts.
 pub const TOKEN_FILE: &str = "hub-token";
 
+/// How long `hub_op_log` remembers an op key. A queued write retries within hours.
+const OP_KEEP_SECS: i64 = 30 * 24 * 60 * 60;
 /// Largest request body /sql accepts.
 const SQL_BODY_LIMIT: usize = 10 * 1024 * 1024;
 /// Largest image /image accepts.
@@ -78,6 +80,10 @@ pub struct SqlRequest {
     pub sql: String,
     #[serde(default)]
     pub params: Vec<Value>,
+    /// Idempotency key for an `execute`: a queued offline write sends the same key
+    /// on every retry, and the hub runs it once (`hub_op_log`). Ignored by `select`.
+    #[serde(default)]
+    pub op: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,10 +121,18 @@ pub fn router(cfg: HubConfig) -> axum::Router {
     // fail in SQLite itself whatever text gets past `refused_statement`. The app
     // never attaches a database. Plain VACUUM needs one too, so it also fails on
     // this connection (the MCP server's as well).
-    cfg.db
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+    {
+        let conn = cfg.db.lock().unwrap_or_else(|e| e.into_inner());
+        conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+        // The ledger of `execute` results by op key, so a retried write lands once.
+        if let Err(e) = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS hub_op_log (key TEXT PRIMARY KEY, stmt TEXT NOT NULL, result TEXT NOT NULL, at INTEGER NOT NULL)",
+        ) {
+            eprintln!("hub: cannot create hub_op_log: {e}");
+        } else if let Err(e) = prune_op_log(&conn) {
+            eprintln!("hub: cannot prune hub_op_log: {e}");
+        }
+    }
     axum::Router::new()
         .route("/sql", post(sql))
         .route("/events", get(events))
@@ -348,6 +362,75 @@ fn refused_statement(sql: &str) -> bool {
     matches!(word.as_str(), "attach" | "detach" | "vacuum")
 }
 
+fn prune_op_log(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM hub_op_log WHERE at < ?1",
+        [unix_now() - OP_KEEP_SECS],
+    )
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// `run_sql`, and for an `execute` carrying an op key, once per key: a key already
+/// in `hub_op_log` returns the stored result without running the statement, or 409
+/// when the stored sql text is not this one; otherwise the
+/// statement and its ledger row commit together, and a failure stores nothing.
+/// The bool is whether the statement ran (false on a ledger hit).
+fn run_sql_once(
+    conn: &Connection,
+    req: &SqlRequest,
+) -> Result<(Value, bool), (StatusCode, String)> {
+    let bad = |e: String| (StatusCode::BAD_REQUEST, e);
+    let Some(key) = req.op.as_deref().filter(|_| req.kind == "execute") else {
+        return run_sql(conn, req).map(|v| (v, true)).map_err(bad);
+    };
+    if refused_statement(&req.sql) {
+        return Err(bad(NOT_ALLOWED.into()));
+    }
+    // The sql text only: a retry rebinds params such as a created_at taken at call
+    // time, so they differ by design. Another statement in the slot means the op's
+    // writes were numbered differently, and its stored result would be wrong.
+    let stmt = req.sql.clone();
+    let tx = conn.unchecked_transaction().map_err(|e| bad(e.to_string()))?;
+    let stored: Option<(String, String)> = tx
+        .query_row(
+            "SELECT stmt, result FROM hub_op_log WHERE key = ?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(bad(e.to_string())),
+        })?;
+    if let Some((stored_stmt, result)) = stored {
+        if stored_stmt != stmt {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("op key {key} was used for a different statement"),
+            ));
+        }
+        let v = serde_json::from_str(&result).map_err(|e| bad(e.to_string()))?;
+        return Ok((v, false));
+    }
+    let v = run_sql(&tx, req).map_err(bad)?;
+    // Prune here too, so a hub that stays up for weeks does.
+    if let Err(e) = prune_op_log(&tx) {
+        eprintln!("hub: cannot prune hub_op_log: {e}");
+    }
+    tx.execute(
+        "INSERT INTO hub_op_log (key, stmt, result, at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![key, stmt, v.to_string(), unix_now()],
+    )
+    .map_err(|e| bad(e.to_string()))?;
+    tx.commit().map_err(|e| bad(e.to_string()))?;
+    Ok((v, true))
+}
+
 /// Run one statement. Parameters named `$N` bind by their number, so `$2` before
 /// `$1` and a repeated `$1` work; `?` parameters bind by position.
 fn run_sql(conn: &Connection, req: &SqlRequest) -> Result<Value, String> {
@@ -423,7 +506,7 @@ async fn sql(State(cfg): State<HubConfig>, headers: HeaderMap, body: Body) -> Re
     let db = cfg.db.clone();
     let result = match blocking(move || {
         let conn = db.lock().unwrap_or_else(|e| e.into_inner());
-        run_sql(&conn, &req)
+        run_sql_once(&conn, &req)
     })
     .await
     {
@@ -431,13 +514,13 @@ async fn sql(State(cfg): State<HubConfig>, headers: HeaderMap, body: Body) -> Re
         Err(r) => return r,
     };
     match result {
-        Ok(v) => {
-            if is_write {
+        Ok((v, ran)) => {
+            if is_write && ran {
                 (cfg.on_change)();
             }
             Json(v).into_response()
         }
-        Err(e) => err(StatusCode::BAD_REQUEST, e),
+        Err((status, e)) => err(status, e),
     }
 }
 
@@ -824,6 +907,89 @@ mod tests {
         );
         // A select is not a change.
         assert_eq!(hub.changes.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn sql_execute_with_op_key_runs_once() {
+        let hub = start("op").await;
+        let run = |op: Option<&'static str>| {
+            let hub = &hub;
+            async move {
+                let mut body = json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES ($1)", "params": ["x"]});
+                if let Some(op) = op {
+                    body["op"] = op.into();
+                }
+                let r = hub.post("/sql").json(&body).send().await.unwrap();
+                assert_eq!(r.status().as_u16(), 200);
+                r.json::<Value>().await.unwrap()
+            }
+        };
+        let count = || async {
+            let rows: Value = hub
+                .sql("select", "SELECT COUNT(*) AS n FROM t", json!([]))
+                .await
+                .json()
+                .await
+                .unwrap();
+            rows[0]["n"].as_i64().unwrap()
+        };
+
+        let first = run(Some("K")).await;
+        assert_eq!(hub.changes.load(Ordering::SeqCst), 1);
+        // The retry gets the stored reply and does not run or signal a change.
+        let second = run(Some("K")).await;
+        assert_eq!(second, first);
+        assert_eq!(count().await, 1);
+        assert_eq!(hub.changes.load(Ordering::SeqCst), 1);
+
+        // Another key runs again, and so does a write with no key, every time.
+        let other = run(Some("K2")).await;
+        assert_ne!(other["lastInsertId"], first["lastInsertId"]);
+        run(None).await;
+        run(None).await;
+        assert_eq!(count().await, 4);
+        assert_eq!(hub.changes.load(Ordering::SeqCst), 4);
+
+        // A failed statement stores nothing, so the key can run once it succeeds.
+        let failed = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO nope VALUES (1)", "params": [], "op": "K3"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed.status().as_u16(), 400);
+        let again = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES (1)", "params": [], "op": "K3"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(again.status().as_u16(), 200);
+        assert_eq!(count().await, 5);
+
+        // A key taken by another statement is a 409 and runs nothing.
+        let taken = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES (2)", "params": [], "op": "K"}))
+            .send()
+            .await
+            .unwrap();
+        let (status, msg) = error_of(taken).await;
+        assert_eq!(status, 409);
+        assert_eq!(msg, "op key K was used for a different statement");
+        assert_eq!(count().await, 5);
+
+        // The same sql with other params (a retry's fresh created_at) is the same
+        // write: the stored result, nothing runs.
+        let retried = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES (1)", "params": ["2026-10-18T00:00:00Z"], "op": "K3"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retried.status().as_u16(), 200);
+        assert_eq!(count().await, 5);
+        assert_eq!(hub.changes.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]

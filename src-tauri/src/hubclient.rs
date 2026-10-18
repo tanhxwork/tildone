@@ -226,12 +226,22 @@ impl Hub {
             .map_err(|e| format!("hub {}: bad response: {}", self.url, cause(&e)))
     }
 
-    /// `POST /sql`; the hub's JSON comes back as is.
-    async fn sql(&self, kind: &str, sql: &str, params: &[Value]) -> Result<Value, String> {
+    /// `POST /sql`; the hub's JSON comes back as is. `op` is the idempotency key of
+    /// a queued write: the hub runs a statement with the same key once.
+    async fn sql(
+        &self,
+        kind: &str,
+        sql: &str,
+        params: &[Value],
+        op: Option<&str>,
+    ) -> Result<Value, String> {
         if kind != "select" && kind != "execute" {
             return Err(format!("kind must be select or execute, not {kind}"));
         }
-        let body = serde_json::json!({ "kind": kind, "sql": sql, "params": params });
+        let mut body = serde_json::json!({ "kind": kind, "sql": sql, "params": params });
+        if let Some(op) = op {
+            body["op"] = op.into();
+        }
         self.json(self.timed(reqwest::Method::POST, "/sql").json(&body))
             .await
     }
@@ -488,8 +498,11 @@ pub async fn hub_sql(
     kind: String,
     sql: String,
     params: Vec<Value>,
+    op: Option<String>,
 ) -> Result<Value, String> {
-    Hub::from_settings(&app)?.sql(&kind, &sql, &params).await
+    Hub::from_settings(&app)?
+        .sql(&kind, &sql, &params, op.as_deref())
+        .await
 }
 
 /// `agent_presence` on the hub (`GET /presence`), same JSON.
@@ -758,6 +771,7 @@ mod tests {
                 "select",
                 "SELECT * FROM t WHERE a = $2 AND b = $1",
                 &[1.into(), "x".into()],
+                None,
             )
             .await
             .unwrap();
@@ -765,12 +779,15 @@ mod tests {
             rows,
             serde_json::json!([{"id": 1, "title": "a", "note": null}])
         );
-        let done = hub.sql("execute", "DELETE FROM t", &[]).await.unwrap();
+        let done = hub
+            .sql("execute", "DELETE FROM t", &[], Some("op-1"))
+            .await
+            .unwrap();
         assert_eq!(
             done,
             serde_json::json!({"rowsAffected": 1, "lastInsertId": 7})
         );
-        assert!(hub.sql("drop", "x", &[]).await.is_err());
+        assert!(hub.sql("drop", "x", &[], None).await.is_err());
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
@@ -782,6 +799,11 @@ mod tests {
             body,
             serde_json::json!({"kind": "select", "sql": "SELECT * FROM t WHERE a = $2 AND b = $1", "params": [1, "x"]})
         );
+        let body: Value = serde_json::from_slice(&seen[1].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"kind": "execute", "sql": "DELETE FROM t", "params": [], "op": "op-1"})
+        );
     }
 
     #[tokio::test]
@@ -791,7 +813,7 @@ mod tests {
 
         let wrong = Hub::new(&url, "nope", client());
         assert_eq!(
-            wrong.sql("select", "x", &[]).await.unwrap_err(),
+            wrong.sql("select", "x", &[], None).await.unwrap_err(),
             format!("hub {url}: bad token")
         );
         assert_eq!(
@@ -799,7 +821,7 @@ mod tests {
             format!("hub {url}: refused (Origin/Host)")
         );
         assert_eq!(
-            hub.sql("select", "SELEC broken", &[]).await.unwrap_err(),
+            hub.sql("select", "SELEC broken", &[], None).await.unwrap_err(),
             format!("hub {url}: near \"SELEC\": syntax error")
         );
 
