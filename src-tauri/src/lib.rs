@@ -11,6 +11,7 @@ mod hub;
 mod hubclient;
 mod host;
 mod icons;
+mod offlinestore;
 mod pty;
 mod secretary;
 mod settingsfile;
@@ -357,6 +358,8 @@ pub fn run() {
             appsettings::settings_set,
             appsettings::settings_migrate,
             hub::hub_token,
+            offlinestore::offline_read,
+            offlinestore::offline_write,
             hubclient::hub_connect,
             hubclient::hub_disconnect,
             hubclient::hub_sql,

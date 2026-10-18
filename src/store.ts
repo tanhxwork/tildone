@@ -1,6 +1,16 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import * as db from "./db";
+import {
+  comeBack,
+  db,
+  holdsBoard,
+  isUnreachable,
+  loadBoardCopy,
+  loadOutbox,
+  registerOfflineHost,
+  startOffline,
+  watchOffline,
+} from "./offline";
 import type {
   ActivityEntry,
   Comment,
@@ -35,6 +45,7 @@ import { byTask, type LivePresence } from "./utils/presence";
 import { hubConnect, hubDisconnect, hubPresence } from "./hubClient";
 import { isClientMode } from "./hubMode";
 import { watchHubStatus } from "./hubStatus";
+import { INBOX_CODE } from "./utils/ref";
 import { deriveLinkKind, deriveLinkLabel, isHttpUrl } from "./utils/links";
 import {
   removeImageFile,
@@ -414,12 +425,21 @@ export const useStore = create<Store>()((set, get) => ({
     const clientMode = isClientMode();
     if (clientMode) {
       step("Connecting to the hub…", "init: hubConnect");
+      void watchHubStatus();
+      watchOffline();
+      await loadOutbox();
       try {
         await hubConnect();
         set({ hubError: null });
-        void watchHubStatus();
       } catch (err) {
         db.trace(`init: hubConnect FAILED: ${String(err)}`);
+        // Unreachable is not a wrong token: open the last synced board and keep knocking.
+        const copy = isUnreachable(err) ? await loadBoardCopy() : null;
+        if (copy) {
+          set({ ...copy.data, loaded: true, hubError: null, initError: null });
+          startOffline(copy.syncedAt);
+          return;
+        }
         set({ hubError: String(err) });
         return;
       }
@@ -455,6 +475,8 @@ export const useStore = create<Store>()((set, get) => ({
         set({ ...data, loaded: true, initError: null });
         // Icons resolve async off the main load — the dot shows until they land.
         void get().loadProjectIcons();
+        // Changes a previous run queued while the hub was down go up now.
+        if (clientMode) void comeBack();
         return;
       } catch (err) {
         lastErr = err;
@@ -479,6 +501,8 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   reload: async () => {
+    // Queued changes are not on the hub yet; its board would erase them from the screen.
+    if (holdsBoard()) return;
     const data = await db.fetchAll();
     set({ ...data });
     // An agent can delete the very goal or project being looked at (delete_goal is
@@ -1402,6 +1426,14 @@ export const useStore = create<Store>()((set, get) => ({
 }));
 
 // Persist the view mode whenever it changes, so a relaunch keeps it.
+// What offline.ts needs from the board, handed over here because it cannot import the store.
+registerOfflineHost({
+  projectCode: (id) =>
+    (id === null ? null : useStore.getState().projects.find((p) => p.id === id)?.code) ?? INBOX_CODE,
+  taskNotes: (id) => useStore.getState().tasks.find((t) => t.id === id)?.notes,
+  reload: () => useStore.getState().reload(),
+});
+
 let lastViewMode = useStore.getState().viewMode;
 useStore.subscribe((state) => {
   if (state.viewMode !== lastViewMode) {

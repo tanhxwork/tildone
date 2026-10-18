@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { FOCUS_WINDOW_MS, focusModel } from "../focusViews";
 import { goalProgress, goalsPageOrder } from "../selectors";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import { useNow } from "../useNow";
 import { dueLabel, todayStr } from "../utils/dates";
@@ -24,6 +25,7 @@ type Filter = "open" | "all";
 export function GoalsView() {
   const goals = useStore((s) => s.goals);
   const projects = useStore((s) => s.projects);
+  const offline = useOffline((s) => s.offline);
   const tasks = useStore((s) => s.tasks);
   const tags = useStore((s) => s.tags);
   const lastActivity = useStore((s) => s.lastActivity);
@@ -83,8 +85,10 @@ export function GoalsView() {
         </div>
         <button
           className="btn small primary goals-new"
-          disabled={projects.length === 0}
-          title={projects.length === 0 ? "Create a project first" : "New goal"}
+          disabled={projects.length === 0 || offline}
+          title={
+            offline ? NOT_AVAILABLE : projects.length === 0 ? "Create a project first" : "New goal"
+          }
           onClick={() => setCreating(true)}
         >
           <IconPlus size={12} />
