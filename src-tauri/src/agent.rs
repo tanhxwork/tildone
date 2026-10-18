@@ -5460,13 +5460,17 @@ fn should_warn_port_squat(
     !is_dev && port == AGENT_PORT && explicit != Some(AGENT_PORT) && !installed
 }
 
-/// Where an installer puts the binary: /Applications or ~/Applications on macOS,
-/// /usr (the .deb and .rpm) or /opt elsewhere. A worktree target dir is none of these.
+/// Where an installer puts the binary: /Applications or ~/Applications on macOS;
+/// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_* or Program Files
+/// elsewhere. A worktree target dir is none of these.
 fn is_installed_path(exe: &str, macos: bool) -> bool {
     if macos {
         exe.contains("/Applications/")
     } else {
-        exe.starts_with("/usr/") || exe.starts_with("/opt/")
+        exe.starts_with("/usr/")
+            || exe.starts_with("/opt/")
+            || exe.contains("/.mount_")
+            || exe.contains("\\Program Files")
     }
 }
 
@@ -5482,7 +5486,7 @@ fn requested_port() -> u16 {
         if should_warn_port_squat(is_dev, port, explicit, installed) {
             eprintln!(
                 "tildone: WARNING — this release build ({}) is claiming port {AGENT_PORT} \
-                 but is not installed. If the installed Tildone is \
+                 but is not running from an install location. If the installed Tildone is \
                  running, this steals its agent board. Quit this build, or set \
                  TILDONE_AGENT_PORT to point it elsewhere.",
                 exe.display()
@@ -8747,10 +8751,10 @@ mod tests {
     /// binding (a relocated install is legitimate) but warn — this is exactly when.
     #[test]
     fn warns_when_a_release_build_outside_applications_claims_the_port() {
-        // The squatter: release build, defaulted onto 11502, not in /Applications.
+        // The squatter: release build, defaulted onto 11502, not installed.
         assert!(should_warn_port_squat(false, AGENT_PORT, None, false));
 
-        // The installed app: same port, but under /Applications — no warning.
+        // The installed app: same port, but installed — no warning.
         assert!(!should_warn_port_squat(false, AGENT_PORT, None, true));
 
         // A dev build never claims 11502, so it is never the squatter.
@@ -8772,6 +8776,8 @@ mod tests {
         assert!(!is_installed_path("/Users/me/projects/tildone/src-tauri/target/release/tildone", true));
         assert!(is_installed_path("/usr/bin/tildone", false));
         assert!(is_installed_path("/opt/tildone/tildone", false));
+        assert!(is_installed_path("/tmp/.mount_TildoXyz12/usr/bin/tildone", false));
+        assert!(is_installed_path(r"C:\Program Files\Tildone\tildone.exe", false));
         assert!(!is_installed_path("/home/me/.factory/tildone-cargo-target/release/tildone", false));
     }
 
