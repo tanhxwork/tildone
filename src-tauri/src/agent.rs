@@ -4888,7 +4888,8 @@ fn own_hostnames() -> Vec<String> {
 
 /// The names other machines reach this one by over Tailscale (`ws`,
 /// `ws.tail….ts.net`, its tailnet IPs). The hub routes accept them on top of
-/// `allowed_hosts`; /mcp does not. Empty when the tailscale CLI is missing or down.
+/// `allowed_hosts`; /mcp does not. Read once per server start, so it is empty
+/// until Agent access restarts when the tailscale CLI is missing or tailscaled was down.
 pub(crate) fn tailnet_hosts() -> Vec<String> {
     std::process::Command::new("tailscale")
         .args(["status", "--json"])

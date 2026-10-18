@@ -111,6 +111,13 @@ pub struct HubConfig {
 
 /// The hub routes, to be merged into the agent server's router.
 pub fn router(cfg: HubConfig) -> axum::Router {
+    // No database can be attached on this connection, so ATTACH and VACUUM INTO
+    // fail in SQLite itself whatever text gets past `refused_statement`. The app
+    // never attaches a database.
+    cfg.db
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
     axum::Router::new()
         .route("/sql", post(sql))
         .route("/events", get(events))
@@ -314,9 +321,10 @@ fn column_json(v: ValueRef<'_>) -> Value {
 const NOT_ALLOWED: &str = "statement not allowed";
 
 /// True for ATTACH, DETACH and VACUUM (which includes VACUUM INTO): they reach
-/// files outside the board. Judged by the first keyword, after whitespace, comments
-/// and `;` (SQLite skips an empty statement and compiles the next one), because a
-/// statement that starts with one of them is that statement.
+/// files outside the board. Judged by the first keyword, after whitespace, comments,
+/// `;` (SQLite skips an empty statement and compiles the next one) and a BOM,
+/// because a statement that starts with one of them is that statement. The real
+/// stop is SQLITE_LIMIT_ATTACHED = 0 (`router`); this gives the clear error.
 fn refused_statement(sql: &str) -> bool {
     let mut rest = sql;
     loop {
@@ -325,7 +333,7 @@ fn refused_statement(sql: &str) -> bool {
             rest = r.split_once('\n').map_or("", |(_, tail)| tail);
         } else if let Some(r) = rest.strip_prefix("/*") {
             rest = r.split_once("*/").map_or("", |(_, tail)| tail);
-        } else if let Some(r) = rest.strip_prefix(';') {
+        } else if let Some(r) = rest.strip_prefix([';', '\u{feff}']) {
             rest = r;
         } else {
             break;
@@ -622,6 +630,7 @@ mod tests {
         events: tokio::sync::broadcast::Sender<()>,
         shutdown: CancellationToken,
         dir: PathBuf,
+        db: Db,
     }
 
     impl Hub {
@@ -663,8 +672,9 @@ mod tests {
         let counter = changes.clone();
         let (events, _) = tokio::sync::broadcast::channel(16);
         let shutdown = CancellationToken::new();
+        let db: Db = Arc::new(Mutex::new(conn));
         let cfg = HubConfig {
-            db: Arc::new(Mutex::new(conn)),
+            db: db.clone(),
             on_change: Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
@@ -693,6 +703,7 @@ mod tests {
             events,
             shutdown,
             dir,
+            db,
         }
     }
 
@@ -886,11 +897,15 @@ mod tests {
         let vacuum = format!("VACUUM INTO '{}'", hub.dir.join("copy.db").display());
         let empty_first = format!(";{attach}");
         let spaced_vacuum = format!(" ; /* x */ ;{vacuum}");
+        let bom_vacuum = format!("\u{feff}{vacuum}");
+        let bom_attach = format!(";\u{feff}{attach}");
         for (kind, sql) in [
             ("execute", attach.as_str()),
             ("execute", empty_first.as_str()),
             ("select", empty_first.as_str()),
             ("execute", spaced_vacuum.as_str()),
+            ("execute", bom_vacuum.as_str()),
+            ("select", bom_attach.as_str()),
             ("execute", "  -- note\n /* x */ detach database o"),
             ("execute", vacuum.as_str()),
             ("select", "INSERT INTO t (a) VALUES (1)"),
@@ -905,6 +920,12 @@ mod tests {
         }
         assert!(!other.exists() && !hub.dir.join("copy.db").exists());
         assert_eq!(hub.changes.load(Ordering::SeqCst), 0);
+        // Past the keyword check (a prefix it does not know), SQLite still attaches nothing.
+        let conn = hub.db.lock().unwrap();
+        assert!(conn.execute_batch(&attach).is_err());
+        assert!(conn.execute_batch(&vacuum).is_err());
+        assert!(!other.exists() && !hub.dir.join("copy.db").exists());
+        drop(conn);
         // A WITH … SELECT is still a select.
         let ok = hub
             .sql(
