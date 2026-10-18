@@ -1,5 +1,6 @@
 mod agent;
 mod ai;
+mod appsettings;
 mod artifacts;
 mod clilink;
 mod drops;
