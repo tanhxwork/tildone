@@ -11,12 +11,13 @@ const files = new Map<string, string>();
 let hubNotes = "";
 
 // The hub's /sql as the client sees it. A write sent with an op key that the hub has
-// already run returns the stored result and does not run again, as the real hub does.
+// already run returns the stored result and does not run again, as the real hub does;
+// the same key on other sql text is refused (the hub's 409).
 // `loseOnce`: the next write starting with this runs, then its response is lost.
 const hub = {
   sent: [] as { sql: string; op?: string }[],
   ran: [] as string[],
-  stored: new Map<string, unknown>(),
+  stored: new Map<string, { sql: string; result: unknown }>(),
   lastId: 100,
   loseOnce: "",
 };
@@ -29,10 +30,12 @@ mock.module("@tauri-apps/api/core", () => ({
     if (cmd === "hub_sql" && args.kind === "select") return [{ notes: hubNotes }];
     if (cmd === "hub_sql") {
       hub.sent.push({ sql: args.sql!, op: args.op });
-      if (args.op && hub.stored.has(args.op)) return hub.stored.get(args.op);
+      const prior = args.op ? hub.stored.get(args.op) : undefined;
+      if (prior && prior.sql !== args.sql) throw new Error(`op key ${args.op} was used for a different statement`);
+      if (prior) return prior.result;
       const result = { rowsAffected: 1, lastInsertId: ++hub.lastId };
       hub.ran.push(args.sql!);
-      if (args.op) hub.stored.set(args.op, result);
+      if (args.op) hub.stored.set(args.op, { sql: args.sql!, result });
       if (hub.loseOnce && args.sql!.startsWith(hub.loseOnce)) {
         hub.loseOnce = "";
         throw new Error("hub http://hub: unreachable: connection lost");
@@ -335,6 +338,31 @@ describe("offline queue", () => {
     // mistaken for it: it ran once, after the comment.
     expect(hub.ran).toEqual(["INSERT INTO comments", "INSERT INTO activity", "UPDATE tasks SET title = $1"]);
     expect(db.insertComment).toHaveBeenCalledTimes(1);
+    expect(useOffline.getState().waiting).toBe(0);
+  });
+
+  it("applies the update once the comment is in when the comment's response was lost", async () => {
+    useOffline.setState({ offline: true });
+    useStore.setState({ tasks: [task(5, "base")] });
+    await gated.updateTask(5, { notes: "mine" });
+    hubNotes = "base + agent";
+
+    // Like db.ts, the comment stamps its time when it is called, so the retry's params differ.
+    db.insertComment.mockImplementation(async () => {
+      await remoteDb.execute("INSERT INTO comments", [new Date().toISOString()]);
+      await remoteDb.execute("INSERT INTO activity", []);
+      return 1;
+    });
+    db.updateTask.mockImplementation(async () => {
+      await remoteDb.execute("UPDATE tasks SET title = $1", ["x"]);
+      return {};
+    });
+    hub.loseOnce = "INSERT INTO comments";
+    await comeBack();
+    await comeBack();
+
+    expect(hub.ran).toEqual(["INSERT INTO comments", "INSERT INTO activity", "UPDATE tasks SET title = $1"]);
+    expect(useOffline.getState().dropped).toBe(0);
     expect(useOffline.getState().waiting).toBe(0);
   });
 

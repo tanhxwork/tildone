@@ -377,7 +377,7 @@ fn unix_now() -> i64 {
 
 /// `run_sql`, and for an `execute` carrying an op key, once per key: a key already
 /// in `hub_op_log` returns the stored result without running the statement, or 409
-/// when the stored statement (sql and params) is not this one; otherwise the
+/// when the stored sql text is not this one; otherwise the
 /// statement and its ledger row commit together, and a failure stores nothing.
 /// The bool is whether the statement ran (false on a ledger hit).
 fn run_sql_once(
@@ -391,7 +391,10 @@ fn run_sql_once(
     if refused_statement(&req.sql) {
         return Err(bad(NOT_ALLOWED.into()));
     }
-    let stmt = json!([req.sql, req.params]).to_string();
+    // The sql text only: a retry rebinds params such as a created_at taken at call
+    // time, so they differ by design. Another statement in the slot means the op's
+    // writes were numbered differently, and its stored result would be wrong.
+    let stmt = req.sql.clone();
     let tx = conn.unchecked_transaction().map_err(|e| bad(e.to_string()))?;
     let stored: Option<(String, String)> = tx
         .query_row(
@@ -964,22 +967,27 @@ mod tests {
         assert_eq!(again.status().as_u16(), 200);
         assert_eq!(count().await, 5);
 
-        // A key taken by another statement, or the same sql with other params, is
-        // a 409 and runs nothing.
-        for (sql, params) in [
-            ("INSERT INTO t (a) VALUES (2)", json!([])),
-            ("INSERT INTO t (a) VALUES ($1)", json!(["y"])),
-        ] {
-            let taken = hub
-                .post("/sql")
-                .json(&json!({"kind": "execute", "sql": sql, "params": params, "op": "K"}))
-                .send()
-                .await
-                .unwrap();
-            let (status, msg) = error_of(taken).await;
-            assert_eq!(status, 409);
-            assert_eq!(msg, "op key K was used for a different statement");
-        }
+        // A key taken by another statement is a 409 and runs nothing.
+        let taken = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES (2)", "params": [], "op": "K"}))
+            .send()
+            .await
+            .unwrap();
+        let (status, msg) = error_of(taken).await;
+        assert_eq!(status, 409);
+        assert_eq!(msg, "op key K was used for a different statement");
+        assert_eq!(count().await, 5);
+
+        // The same sql with other params (a retry's fresh created_at) is the same
+        // write: the stored result, nothing runs.
+        let retried = hub
+            .post("/sql")
+            .json(&json!({"kind": "execute", "sql": "INSERT INTO t (a) VALUES (1)", "params": ["2026-10-18T00:00:00Z"], "op": "K3"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retried.status().as_u16(), 200);
         assert_eq!(count().await, 5);
         assert_eq!(hub.changes.load(Ordering::SeqCst), 5);
     }
