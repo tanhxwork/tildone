@@ -426,6 +426,7 @@ pub fn run() {
             }
             // macOS: clicking the Dock icon while the window is hidden in the tray
             // asks the app to reopen. Bring the window back rather than doing nothing.
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 agent::show_main_window(app);
             }

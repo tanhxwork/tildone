@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
 mode=${1:-all}
-scratch=$(mktemp -d -t tildone-harness-speed)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/tildone-harness-speed.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 fail() {

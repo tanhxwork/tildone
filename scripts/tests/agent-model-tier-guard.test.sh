@@ -20,7 +20,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
 hook=${TIER_GUARD_HOOK:-$repo_root/.claude/hooks/agent-model-tier-guard.sh}
 yaml=${TIER_GUARD_YAML:-$repo_root/.claude/agent-models.yaml}
-scratch=$(mktemp -d -t tildone-tier-guard)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/tildone-tier-guard.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

@@ -549,6 +549,7 @@ fn resume_target_is(arg: &str, uuid: &str) -> bool {
 
 /// `sysctl` name for a process's raw argument block; not exported by the
 /// `libc` crate for this shape, value from `<sys/sysctl.h>`.
+#[cfg(target_os = "macos")]
 const KERN_PROCARGS2: libc::c_int = 49;
 
 /// Real argv elements of a live process (macOS `KERN_PROCARGS2`). The ps
@@ -556,6 +557,7 @@ const KERN_PROCARGS2: libc::c_int = 49;
 /// NUL-separated block preserves element boundaries, which is what the argv
 /// proof needs (TIL-136 #2). `None` (dead pid, permission, truncation) proves
 /// nothing: the caller fails closed.
+#[cfg(target_os = "macos")]
 fn real_argv(pid: u32) -> Option<Vec<String>> {
     let mut mib = [libc::CTL_KERN, KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
@@ -595,6 +597,7 @@ fn real_argv(pid: u32) -> Option<Vec<String>> {
 /// `KERN_PROCARGS2` layout: native-endian i32 argc, the exec path
 /// (NUL-terminated), NUL padding, then argc NUL-terminated argv elements (the
 /// environment follows — never read). Pure for tests.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
     let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
     if argc <= 0 {
@@ -620,6 +623,29 @@ fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
         }
     }
     Some(out)
+}
+
+/// Real argv elements of a live process on Linux: `/proc/<pid>/cmdline` is the
+/// same NUL-separated block `KERN_PROCARGS2` gives on macOS. `None` (dead pid,
+/// permission, a kernel thread's empty cmdline) proves nothing.
+#[cfg(target_os = "linux")]
+fn real_argv(pid: u32) -> Option<Vec<String>> {
+    if pid == 0 {
+        return None;
+    }
+    parse_cmdline(&std::fs::read(format!("/proc/{pid}/cmdline")).ok()?)
+}
+
+/// `/proc/<pid>/cmdline` layout: argv elements, each NUL-terminated. An empty
+/// element (`""`) is kept; an empty block proves nothing. Pure for tests.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_cmdline(buf: &[u8]) -> Option<Vec<String>> {
+    let body = buf.strip_suffix(&[0])?;
+    Some(
+        body.split(|&b| b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
 }
 
 /// Is a CLI of `kind` running under `ancestor` that *proves* it owns `uuid`?
@@ -1326,6 +1352,26 @@ mod tests {
         assert_eq!(parse_procargs2(&buf), None, "truncated argv must fail closed");
         assert_eq!(parse_procargs2(&0i32.to_ne_bytes()), None);
         assert_eq!(parse_procargs2(b"\x01"), None);
+    }
+
+    #[test]
+    fn cmdline_parses_nul_terminated_argv() {
+        assert_eq!(
+            parse_cmdline(b"claude\0--session-id\0abc\0"),
+            Some(vec!["claude".into(), "--session-id".into(), "abc".into()])
+        );
+        // A prompt with spaces stays one element; an empty element is kept.
+        assert_eq!(
+            parse_cmdline(b"claude\0fix --session-id abc please\0\0"),
+            Some(vec![
+                "claude".into(),
+                "fix --session-id abc please".into(),
+                "".into()
+            ])
+        );
+        // Empty (kernel thread) or unterminated (truncated): prove nothing.
+        assert_eq!(parse_cmdline(b""), None);
+        assert_eq!(parse_cmdline(b"claude\0trunca"), None);
     }
 
     /// Pid numbers are recycled. A claim's durable `last_pid` outlives its
