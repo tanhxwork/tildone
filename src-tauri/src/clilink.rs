@@ -7,7 +7,8 @@
 //! user's, and we refuse to touch it.
 //!
 //! In an AppImage the executable lives under `/tmp/.mount_*`, which vanishes when the
-//! app quits. There we first copy the binary to a folder we own and link to the copy.
+//! app quits. There we first copy the binary to a folder we own and link to the copy,
+//! and each launch refreshes that copy when the app was upgraded (`refresh_appimage_copy`).
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,38 @@ fn install_with(bundled: &Path, copy: Option<&Path>, link: &Path) -> Result<(), 
     }
 }
 
+/// Re-stage `copy` when it exists and differs from `bundled`. Returns whether it copied.
+/// Never creates the copy: installing stays the user's click.
+#[cfg(unix)]
+fn refresh_copy(bundled: &Path, copy: &Path) -> Result<bool, String> {
+    let Ok(current) = std::fs::read(copy) else {
+        return Ok(false);
+    };
+    let fresh = std::fs::read(bundled).map_err(|e| format!("cannot read {}: {e}", bundled.display()))?;
+    if current == fresh {
+        return Ok(false);
+    }
+    stage_copy(bundled, copy)?;
+    Ok(true)
+}
+
+/// Called once at app start. After an AppImage upgrade the copy in ~/.local/share would
+/// keep the old CLI while the link still reads as installed, so bring it up to date.
+pub fn refresh_appimage_copy() {
+    #[cfg(unix)]
+    {
+        if std::env::var_os("APPIMAGE").is_none() {
+            return;
+        }
+        let (Some(bundled), Ok(home)) = (bundled_binary(), home_dir()) else {
+            return;
+        };
+        if let Err(e) = refresh_copy(&bundled, &stable_copy_path(&home)) {
+            eprintln!("tildone-axi copy refresh failed: {e}");
+        }
+    }
+}
+
 #[cfg(not(unix))]
 fn install_with(_bundled: &Path, _copy: Option<&Path>, _link: &Path) -> Result<(), String> {
     Err("Linking is not supported on Windows. Add the Tildone app folder to PATH instead.".to_string())
@@ -278,6 +311,21 @@ mod tests {
         install_with(&mount.join(BIN), Some(&copy), &link).unwrap();
         assert_eq!(fs::read_to_string(&copy).unwrap(), "v2");
         assert_eq!(fs::read_link(&link).unwrap(), copy);
+
+        // An upgraded app refreshes a stale copy at launch, and leaves a current one alone.
+        fs::write(mount.join(BIN), "v3").unwrap();
+        assert!(refresh_copy(&mount.join(BIN), &copy).unwrap());
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "v3");
+        assert!(!refresh_copy(&mount.join(BIN), &copy).unwrap());
+    }
+
+    #[test]
+    fn refresh_never_creates_a_copy_the_user_did_not_install() {
+        let root = scratch("refresh-none");
+        let bin = fake_bin(&root);
+        let copy = stable_copy_path(&root.join("home"));
+        assert!(!refresh_copy(&bin, &copy).unwrap());
+        assert!(!copy.exists());
     }
 
     #[test]

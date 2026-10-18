@@ -261,6 +261,8 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // Off the main thread: it reads two ~3 MB files and is rarely needed.
+            std::thread::spawn(clilink::refresh_appimage_copy);
             // The default window size (tauri.conf.json) is chosen so the board's
             // three columns render at their full 340px width. On a display whose
             // work area is smaller than that default, shrink to fit instead of
