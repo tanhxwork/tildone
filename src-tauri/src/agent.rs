@@ -8,11 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
-    handler::server::{
-        router::tool::ToolRouter,
-        tool::ToolCallContext,
-        wrapper::Parameters,
-    },
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
         DiscoverResult, ListToolsResult, MetaObject, PaginatedRequestParams, ProtocolVersion,
@@ -4502,9 +4498,7 @@ impl ServerHandler for TildoneAgent {
             CallToolResponse::Task(r) => &mut r.meta,
             _ => return Ok(response),
         };
-        meta.get_or_insert_default()
-            .0
-            .extend(self.server_info_meta().0);
+        meta.get_or_insert_default().0.extend(self.server_info_meta().0);
         Ok(response)
     }
 
