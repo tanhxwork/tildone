@@ -170,7 +170,7 @@ fn lookup_bin(adapter: &Adapter) -> Option<String> {
 /// rc-file noise (banners, prompts) can't corrupt the answer, and killed on
 /// a deadline so a hung rc file can't wedge every spawn. Cache only
 /// successes, same discipline as `resolve_bin`.
-fn shell_path() -> Option<String> {
+pub(crate) fn shell_path() -> Option<String> {
     static CACHE: Mutex<Option<String>> = Mutex::new(None);
     if let Some(hit) = CACHE.lock().unwrap().clone() {
         return Some(hit);

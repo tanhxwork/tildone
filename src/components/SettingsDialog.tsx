@@ -22,6 +22,8 @@ interface CliStatus {
   /** The tildone-axi binary ships next to the app. False in dev and e2e builds. */
   bundled: boolean;
   linked: boolean;
+  /** False on Windows: there is no link to make, the user adds the app folder to PATH. */
+  can_link: boolean;
   /** Where the symlink goes. Shown so the user can go look. */
   link_path: string;
   /** Whether the link's folder is on $PATH. */
@@ -386,6 +388,8 @@ export function SettingsDialog() {
                     <>
                       Not bundled in this build. From the repo: <code>bun run cli:install</code>
                     </>
+                  ) : !cli.can_link ? (
+                    "Add the Tildone app folder to PATH to use tildone-axi."
                   ) : cli.linked ? (
                     <>
                       Installed at <code>{cli.link_path}</code>
@@ -395,7 +399,7 @@ export function SettingsDialog() {
                   )}
                 </span>
               </div>
-              {cli.bundled && (
+              {cli.bundled && cli.can_link && (
                 <button
                   className="btn small"
                   disabled={cliBusy}
