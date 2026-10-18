@@ -2,13 +2,14 @@ tildone-axi: the Tildone board for agents. Stateless; each run opens one connect
 commands:
   tildone-axi                     the card this session holds, its open subtasks, a next step
   doctor                          URL, reachability, server version, tool count
-  ls [--project p] [--done]       tasks as a table; the project defaults to the repo folder
+  ls [--project p] [--done] [--search s]   tasks as a table; the project defaults to the repo folder
   show <ref> [--full]             one card; notes are cut to 40 lines unless --full
-  claim <ref>                     set doing and bind this session, checkout and branch
+  claim <ref> [--session id] [--cwd p] [--branch b]   set doing and bind this session, checkout and branch
   log|note <text> [--id <ref>]    progress log entry | append to the notes
   sub add <title> | sub done <id> add a subtask | tick a subtask by its id
   done [--id <ref>]               complete the card
-  new "<title>" [--follow-up] [--force]   create; --follow-up first looks for duplicates
+  new "<title>" [--follow-up] [--force] [--tags a,b] [--owner human|agent] [--from-task ref]
+                                  create; --follow-up first looks for duplicates
   next [--project p]              the top agent todo
   wait [--since N] [--ms N]       park until the board changes
   settings                        every setting as key: value

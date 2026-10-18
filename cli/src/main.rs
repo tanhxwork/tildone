@@ -45,6 +45,9 @@ enum Cmd {
         /// Include finished tasks
         #[arg(long)]
         done: bool,
+        /// Only tasks whose title or notes contain this text
+        #[arg(long)]
+        search: Option<String>,
     },
     /// Show one card
     Show {
@@ -54,7 +57,18 @@ enum Cmd {
         full: bool,
     },
     /// Set a card to doing and bind this session to it
-    Claim { r#ref: String },
+    Claim {
+        r#ref: String,
+        /// The session to bind; defaults to CLAUDE_CODE_SESSION_ID
+        #[arg(long)]
+        session: Option<String>,
+        /// Defaults to this checkout's root
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Defaults to the checked-out branch
+        #[arg(long)]
+        branch: Option<String>,
+    },
     /// Add a progress log entry
     Log {
         #[command(flatten)]
@@ -91,6 +105,14 @@ enum Cmd {
         /// Create even when --follow-up finds matches
         #[arg(long)]
         force: bool,
+        /// Comma-separated tag names
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        #[arg(long, value_parser = ["human", "agent"])]
+        owner: Option<String>,
+        /// The card whose work spawned this one; wins over the claimed card
+        #[arg(long)]
+        from_task: Option<String>,
     },
     /// The top agent todo
     Next {
@@ -229,9 +251,18 @@ async fn dispatch(hub: &Hub, cmd: Cmd) -> Res<()> {
     match cmd {
         Cmd::Doctor => cmd::doctor(hub).await,
         Cmd::Help => cmd::help(hub).await,
-        Cmd::Ls { project, done } => cmd::ls(hub, project, done).await,
+        Cmd::Ls {
+            project,
+            done,
+            search,
+        } => cmd::ls(hub, project, done, search).await,
         Cmd::Show { r#ref, full } => cmd::show(hub, &r#ref, full).await,
-        Cmd::Claim { r#ref } => cmd::claim(hub, &r#ref).await,
+        Cmd::Claim {
+            r#ref,
+            session,
+            cwd,
+            branch,
+        } => cmd::claim(hub, &r#ref, session, cwd, branch).await,
         Cmd::Log { target, text: t } => cmd::verb(hub, Verb::Log(text(t)), target.id).await,
         Cmd::Note { target, text: t } => cmd::verb(hub, Verb::Note(text(t)), target.id).await,
         Cmd::Sub {
@@ -246,7 +277,17 @@ async fn dispatch(hub: &Hub, cmd: Cmd) -> Res<()> {
             project,
             follow_up,
             force,
-        } => cmd::new(hub, &text(title), project, follow_up, force).await,
+            tags,
+            owner,
+            from_task,
+        } => {
+            let extra = cmd::NewExtra {
+                tags,
+                owner,
+                from_task,
+            };
+            cmd::new(hub, &text(title), project, follow_up, force, extra).await
+        }
         Cmd::Next { project } => cmd::next(hub, project).await,
         Cmd::Wait { since, ms } => cmd::wait(hub, since, ms).await,
         Cmd::Call { tool, args } => cmd::call(hub, &tool, &args).await,

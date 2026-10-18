@@ -141,6 +141,19 @@ async fn ls_default_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ls_search_passes_through() {
+    let fake = Fake::start().await;
+    fake.reply_json("list_tasks", json!({"count": 0, "tasks": []}));
+    tildone(&fake, &["ls", "--project", "p", "--search", "hub token"])
+        .run()
+        .await;
+    assert_eq!(
+        fake.calls_to("list_tasks")[0],
+        json!({"project": "p", "search": "hub token"})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn ls_empty_hint() {
     let fake = Fake::start().await;
     fake.reply_json("list_tasks", json!({"count": 0, "tasks": []}));
@@ -274,6 +287,23 @@ async fn claim_without_session_id() {
     );
     assert!(out.stderr.contains("\nhelp: "), "{}", out.stderr);
     no_calls(&fake, "update_task");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claim_flags_override_defaults() {
+    let fake = Fake::start().await;
+    // --session works with no CLAUDE_CODE_SESSION_ID; --cwd and --branch beat git.
+    let out = tildone(
+        &fake,
+        &["claim", "TIL-5", "--session", "s-9", "--cwd", "/x/tree", "--branch", "b-2"],
+    )
+    .run()
+    .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        fake.calls_to("update_task")[0],
+        json!({"id": "TIL-5", "status": "doing", "session_id": "s-9", "cwd": "/x/tree", "branch": "b-2"})
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -433,6 +463,37 @@ async fn new_follow_up_force_creates() {
         .session("sess-1")
         .run()
         .await;
+    assert_eq!(fake.calls_to("create_task").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_passes_tags_owner_from_task() {
+    let fake = Fake::start().await;
+    fake.claim(
+        "sess-1",
+        json!({"task_id": 77, "ref": "TIL-77", "title": "T", "status": "doing"}),
+    );
+    fake.reply_json(
+        "create_task",
+        json!({"id": 81, "ref": "TIL-81", "status": "todo", "title": "Ask"}),
+    );
+    let base = ["new", "Ask", "--project", "p", "--tags", "a,b", "--owner", "human"];
+    tildone(&fake, &base).session("sess-1").run().await;
+    // With --follow-up the tag joins --tags, and --from-task wins over the claimed card.
+    let follow = [&base[..], &["--follow-up", "--force", "--from-task", "TIL-3"]].concat();
+    tildone(&fake, &follow).session("sess-1").run().await;
+    let calls = fake.calls_to("create_task");
+    assert_eq!(
+        calls[0],
+        json!({"title": "Ask", "project": "p", "tags": ["a", "b"], "owner": "human"})
+    );
+    assert_eq!(
+        calls[1],
+        json!({"title": "Ask", "project": "p", "tags": ["a", "b", "follow-up"], "owner": "human", "from_task": "TIL-3"})
+    );
+    // An owner outside human|agent is refused before any call.
+    let out = tildone(&fake, &["new", "X", "--owner", "bot"]).run().await;
+    assert_ne!(out.code, 0);
     assert_eq!(fake.calls_to("create_task").len(), 2);
 }
 
