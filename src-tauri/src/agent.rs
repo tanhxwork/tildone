@@ -4548,12 +4548,16 @@ const SERVER_INFO_META_KEY: &str = "io.modelcontextprotocol/serverInfo";
 
 impl TildoneAgent {
     /// `_meta` holding this server's identity, for `list_tools` and `call_tool`.
-    /// Discovery gets the same entry from rmcp's `from_server_info`.
+    /// Discovery gets the same entry from rmcp's `from_server_info`. The identity
+    /// is fixed per build, so it is serialized once rather than on every call.
     fn server_info_meta(&self) -> MetaObject {
-        let info = serde_json::to_value(self.get_info().server_info)
-            .expect("Implementation serialization cannot fail");
+        static INFO: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let info = INFO.get_or_init(|| {
+            serde_json::to_value(self.get_info().server_info)
+                .expect("Implementation serialization cannot fail")
+        });
         let mut meta = MetaObject::default();
-        meta.0.insert(SERVER_INFO_META_KEY.to_owned(), info);
+        meta.0.insert(SERVER_INFO_META_KEY.to_owned(), info.clone());
         meta
     }
 }
