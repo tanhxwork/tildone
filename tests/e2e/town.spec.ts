@@ -260,6 +260,11 @@ describe("town page", () => {
 
   // TIL-216: opening Town while a goal is selected narrows it to that goal.
   it("narrows to the selected goal, and Whole town brings the rest back", async () => {
+    // The Escape above can leave the Edit Project dialog up; it would cover the shots.
+    if (await $(".modal").isExisting()) {
+      await $(".modal-footer").$("button=Cancel").click();
+      await $(".modal").waitForExist({ reverse: true });
+    }
     const url = `${base}/mcp`;
     await tool(url, "create_goal", { project: "Atlas", name: "Bridge" });
     await tool(url, "update_task", { id: seeded.blocked.id, goal: "Bridge" });
