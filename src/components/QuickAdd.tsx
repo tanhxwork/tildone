@@ -10,6 +10,7 @@ import {
 import { format } from "date-fns";
 import { useDropTarget } from "../fileDrop";
 import { useSettings } from "../settings";
+import { notify, useOffline } from "../offline";
 import { useStore } from "../store";
 import { PRIORITY_LABELS } from "../types";
 import { dueLabel } from "../utils/dates";
@@ -109,7 +110,16 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
           : (goalProjectId ?? defaultProjectId));
     const due_date = p?.dueDate ?? null;
     const tag_ids: number[] = [];
-    for (const name of p?.tagNames ?? []) tag_ids.push(await addTag(name));
+    // Offline a new tag cannot be made; the task still goes in, with the tags that exist.
+    const skipped: string[] = [];
+    for (const name of p?.tagNames ?? []) {
+      try {
+        tag_ids.push(await addTag(name));
+      } catch (err) {
+        if (!useOffline.getState().offline) throw err;
+        skipped.push(name);
+      }
+    }
     const id = await addTask({
       // An input that is all tokens ("tomorrow !high") keeps the raw text as
       // title; an image-only capture auto-titles and stays editable in the card.
@@ -119,6 +129,9 @@ export function QuickAdd({ inputRef }: { inputRef: RefObject<HTMLInputElement | 
       priority: p?.priority ?? 0,
       tag_ids,
     });
+    if (skipped.length > 0) {
+      notify(`Task added without ${skipped.map((n) => `#${n}`).join(", ")}: new tags need the hub.`);
+    }
     // Read the ref, not the render-time closure: addTask and the addTag loop
     // above are awaited, and an image dropped or pasted in that window would
     // otherwise be wiped by setPending([]) without ever being attached, leaking

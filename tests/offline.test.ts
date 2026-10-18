@@ -211,6 +211,14 @@ describe("offline queue", () => {
     ]);
   });
 
+  it("writes a board the hub just gave us at once", async () => {
+    await gated.fetchAll(); // no debounce: a quit right after must not leave an older copy
+    await filesSettled();
+    const copy = await loadBoardCopy();
+    expect(copy?.syncedAt).toBe(useOffline.getState().lastSynced!);
+    expect(copy?.data.tasks).toEqual([]);
+  });
+
   it("never replays or opens what belongs to another hub", async () => {
     const theirs = JSON.stringify({
       hub: "http://other",
@@ -230,7 +238,9 @@ describe("offline queue", () => {
     await comeBack(); // the hub answers: nothing of the other hub's goes up
     expect(db.deleteTask).not.toHaveBeenCalled();
     useOffline.setState({ offline: true });
-    await expect(gated.deleteTask(1)).rejects.toThrow("queued for http://other");
+    await expect(gated.deleteTask(1)).rejects.toThrow(
+      "1 change queued for http://other waits for that hub. Not available offline.",
+    );
     expect(db.deleteTask).not.toHaveBeenCalled();
     await filesSettled();
     expect(files.get("outbox")).toBe(theirs);

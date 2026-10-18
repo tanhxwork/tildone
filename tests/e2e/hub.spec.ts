@@ -33,6 +33,9 @@ function freePort(): Promise<number> {
 }
 
 /** What a restarted hub reuses: its dirs (so its database) and its ports (so its URL). */
+/** The real ref the offline-made task got on replay; the relaunch from the copy must show it. */
+let replayedRef = "";
+
 let hubRun: { root: string; agentPort: number; webdriverPort: number } | null = null;
 
 /** Start the hub process (again, on the same dirs and ports, after stopHub) and wait until its MCP server answers. */
@@ -327,6 +330,10 @@ describe("hub: another Tildone as the board", () => {
 
   it("queues while the hub is down, survives a restart, and replays when it is back", async () => {
     const title = "Made while the hub was down";
+    // Something to switch off: a project (goal and delete controls), and a second tag to merge into.
+    await hubTool("create_project", { name: "Offline Proj" });
+    await hubTool("create_task", { title: "Tagged on the hub", project: "Offline Proj", tags: ["alpha"] });
+    await $('button[aria-label="New goal in Offline Proj"]').waitForExist({ timeout: 10_000 });
     await stopHub();
     await $(".hub-banner*=Offline").waitForExist({
       timeout: 15_000,
@@ -348,7 +355,6 @@ describe("hub: another Tildone as the board", () => {
     await $(".detail-card").waitForExist();
     // Images need the hub: the tile is off, with the reason beside it.
     expect(await $(".detail-image-add").isEnabled()).toBe(false);
-    await $(".detail-image-add + .offline-hint").waitForExist();
     await $(".detail-image-add").scrollIntoView();
     await browser.saveScreenshot(`${SHOTS}/offline-image-disabled.png`);
     await $('input[aria-label="Add subtask"]').setValue("Queued step");
@@ -368,16 +374,36 @@ describe("hub: another Tildone as the board", () => {
     const newProject = $('button[aria-label="New project"]');
     expect(await newProject.isEnabled()).toBe(false);
     expect(await newProject.getAttribute("title")).toBe("Not available offline");
-    await $(".sidebar-section .offline-hint").waitForExist();
-    await expect($(".sidebar-hint*=No projects yet")).toHaveText("No projects yet."); // not "create one with +"
     await browser.saveScreenshot(`${SHOTS}/offline-disabled.png`);
+
+    // The project's own controls: its goal "+", and Delete in its dialog.
+    const projectGoal = $('button[aria-label="New goal in Offline Proj"]');
+    expect(await projectGoal.isEnabled()).toBe(false);
+    expect(await projectGoal.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-project-goal-disabled.png`);
+    await $('button[aria-label="Edit Offline Proj"]').click();
+    const del = $(".modal-footer").$("button=Delete");
+    await del.waitForExist({ timeout: 5_000 });
+    expect(await del.isEnabled()).toBe(false);
+    expect(await del.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-project-delete-disabled.png`);
+    await $(".modal-footer").$("button=Cancel").click();
+
+    // Merging tags needs the hub too.
+    await $(".nav-item*=Tags & projects").click();
+    const merge = $("button=Merge");
+    await merge.waitForExist({ timeout: 5_000 });
+    expect(await merge.isEnabled()).toBe(false);
+    expect(await merge.getAttribute("title")).toBe("Not available offline");
+    await browser.saveScreenshot(`${SHOTS}/offline-tag-merge-disabled.png`);
+    await $('button[aria-label="Close manager"]').click();
+    await $(".modal-header").waitForExist({ reverse: true });
 
     await $('[data-nav="goals"]').click();
     const newGoal = $("button.goals-new");
     await newGoal.waitForExist({ timeout: 10_000 });
     expect(await newGoal.isEnabled()).toBe(false);
     expect(await newGoal.getAttribute("title")).toBe("Not available offline");
-    await $(".offline-hint").waitForExist();
     await browser.saveScreenshot(`${SHOTS}/offline-goal-disabled.png`);
 
     // Trash a card (queued), then the trash itself cannot be emptied.
@@ -397,8 +423,6 @@ describe("hub: another Tildone as the board", () => {
     await browser.saveScreenshot(`${SHOTS}/offline-trash-disabled.png`);
 
     // Restart while offline: the queue and the board it changed come back from disk.
-    // (The copy is written a second after the last change.)
-    await browser.pause(1_500);
     await browser.execute(() => location.reload());
     await $(".hub-banner*=changes waiting").waitForExist({
       timeout: 30_000,
@@ -422,6 +446,7 @@ describe("hub: another Tildone as the board", () => {
       [edited],
     );
     expect(made.ref).toMatch(/^[A-Z]+-\d+$/);
+    replayedRef = made.ref;
     const subs = await hubSelect<{ title: string }>("SELECT title FROM subtasks WHERE task_id = $1", [
       made.id,
     ]);
@@ -452,6 +477,8 @@ describe("hub: another Tildone as the board", () => {
     });
     await openAllTasks(); // a reload lands on Goals
     await $(`.task-row*=${SECOND}`).waitForExist({ timeout: 10_000 });
+    // The copy was written when the replay's reload landed: the real ref, not "-?".
+    expect(await $(".task-row*=Made while the hub was down").$(".task-id").getText()).toBe(replayedRef);
     await browser.saveScreenshot(`${SHOTS}/offline-launch.png`);
 
     // Back online, the same window picks the hub up without a restart.

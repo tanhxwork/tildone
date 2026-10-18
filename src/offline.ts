@@ -19,6 +19,10 @@ import { remoteDb } from "./remoteDb";
 
 export const NOT_AVAILABLE = "Not available offline";
 
+/** What the banner and a refused write say about changes queued for another hub. */
+export const foreignLine = ({ hub, count }: { hub: string; count: number }) =>
+  `${count} ${count === 1 ? "change" : "changes"} queued for ${hub} ${count === 1 ? "waits" : "wait"} for that hub.`;
+
 export const useOffline = create<{
   offline: boolean;
   /** ISO time of the last board the hub gave us (or the copy on disk). */
@@ -94,35 +98,34 @@ export async function loadBoardCopy() {
   return copy && copy.hub === getBoardHubUrl() ? copy : null;
 }
 
+const writeCopy = (syncedAt: string, data: Board) =>
+  void persist("board-copy", { hub: getBoardHubUrl(), syncedAt, data });
+
+/** A board the hub just gave us is the copy, written at once: a quit right after must
+ *  not leave a copy that still holds temporary ids with nothing queued to replay them. */
+function saveFetchedCopy(data: Board) {
+  clearTimeout(copyTimer);
+  copyTimer = undefined;
+  const syncedAt = new Date().toISOString();
+  useOffline.setState({ lastSynced: syncedAt });
+  writeCopy(syncedAt, data);
+}
+
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
-let copyBoard: Board | undefined;
-/**
- * Write the copy soon, not now: a burst of reloads or edits writes the whole board once.
- * `fetched` is a board the hub just gave us (it sets the sync time); without it the copy
- * is the board on screen, queued changes included, with its old sync time.
- */
-function saveCopySoon(fetched?: Board) {
-  if (fetched) {
-    copyBoard = fetched;
-    useOffline.setState({ lastSynced: new Date().toISOString() });
-  } else {
-    copyBoard = undefined;
-  }
+/** After a queued write the copy is the board on screen (so a restart shows what waits),
+ *  with its old sync time. Written a second later, so typing does not write it per key. */
+function saveCopySoon() {
   clearTimeout(copyTimer);
   copyTimer = setTimeout(flushCopy, 1_000);
 }
 
-/** Write a pending copy now. */
+/** Write the copy now if one waits. Also runs when the page hides or reloads. */
 export function flushCopy() {
+  if (copyTimer === undefined) return;
   clearTimeout(copyTimer);
+  copyTimer = undefined;
   const { lastSynced } = useOffline.getState();
-  if (!lastSynced) return;
-  void persist("board-copy", {
-    hub: getBoardHubUrl(),
-    syncedAt: lastSynced,
-    data: copyBoard ?? host.board(),
-  });
-  copyBoard = undefined;
+  if (lastSynced) writeCopy(lastSynced, host.board());
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +409,7 @@ let watching = false;
 export function watchOffline() {
   if (watching) return;
   watching = true;
+  window.addEventListener("pagehide", flushCopy);
   useHubStatus.subscribe(({ status }) => {
     if (!status) return;
     if (status.state === "connected") void comeBack();
@@ -439,7 +443,7 @@ for (const fn of Object.keys(QUEUED)) {
     const { foreign } = useOffline.getState();
     if (foreign) {
       // The one outbox file is another hub's; writing to it would erase those changes.
-      const message = `${foreign.count} changes queued for ${foreign.hub} wait for that hub. Not available offline`;
+      const message = `${foreignLine(foreign)} ${NOT_AVAILABLE}.`;
       notify(message);
       throw new Error(message);
     }
@@ -484,7 +488,7 @@ gated.fetchAll = async () => {
   if (!isClientMode()) return real.fetchAll();
   try {
     const data = await real.fetchAll();
-    saveCopySoon(data);
+    saveFetchedCopy(data);
     return data;
   } catch (err) {
     if (isUnreachable(err)) goOffline();

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { goalProgress } from "../selectors";
 import { useSettings } from "../settings";
+import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import { dueLabel, todayStr } from "../utils/dates";
 import { IconCheck, IconPencil } from "./Icons";
@@ -22,6 +23,7 @@ export function GoalBand({ goalId }: { goalId: number }) {
   const goals = useStore((s) => s.goals);
   const tasks = useStore((s) => s.tasks);
   const setGoalCompleted = useStore((s) => s.setGoalCompleted);
+  const offline = useOffline((s) => s.offline);
   const dismissedAt = useSettings((s) => s.goalCloseDismissed[goalId]);
   const dismissGoalClose = useSettings((s) => s.dismissGoalClose);
   const goal = goals.find((g) => g.id === goalId);
@@ -81,6 +83,8 @@ export function GoalBand({ goalId }: { goalId: number }) {
             </button>
             <button
               className="btn small primary"
+              disabled={offline}
+              title={offline ? NOT_AVAILABLE : undefined}
               onClick={() => void setGoalCompleted(goal.id, true)}
             >
               Close goal

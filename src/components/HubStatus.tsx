@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { classifyHubError } from "../hubError";
-import { NOT_AVAILABLE, useOffline } from "../offline";
+import { foreignLine, NOT_AVAILABLE, useOffline } from "../offline";
 import { useSettings } from "../settings";
 import { useHubStatus } from "../hubStatus";
 import { useStore } from "../store";
@@ -82,9 +82,7 @@ export function HubStatusBanner() {
   if (foreign) {
     return (
       <>
-        {line(
-          `${foreign.count} ${foreign.count === 1 ? "change" : "changes"} queued for ${foreign.hub} ${foreign.count === 1 ? "waits" : "wait"} for that hub.`,
-        )}
+        {line(foreignLine(foreign))}
         {note}
       </>
     );
