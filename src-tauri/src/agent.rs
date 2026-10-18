@@ -1116,6 +1116,17 @@ fn ok_json(value: &Value) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
+/// Settings as an agent sees them: a token's value never goes into a tool result
+/// (and so a transcript). A set token reads "(set)"; an empty one stays "".
+fn hide_tokens(mut settings: JsonMap) -> JsonMap {
+    for (key, value) in settings.iter_mut() {
+        if key.ends_with("_token") && value.as_str().is_some_and(|s| !s.is_empty()) {
+            *value = json!("(set)");
+        }
+    }
+    settings
+}
+
 fn ok_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::text(msg.into())]))
 }
@@ -4525,7 +4536,7 @@ impl TildoneAgent {
     fn get_settings(&self) -> Result<CallToolResult, ErrorData> {
         match self.actions.settings_get() {
             // Not ok_json: a cleared default_project_id is null, and every key stays.
-            Ok(settings) => ok_text(Value::Object(settings).to_string()),
+            Ok(settings) => ok_text(Value::Object(hide_tokens(settings)).to_string()),
             Err(e) => Ok(err(e)),
         }
     }
@@ -4545,9 +4556,9 @@ impl TildoneAgent {
             return Ok(err("Nothing to change: pass at least one setting."));
         }
         match self.actions.settings_set(patch) {
-            Ok((settings, changed)) => {
-                ok_text(json!({ "settings": settings, "changed": changed }).to_string())
-            }
+            Ok((settings, changed)) => ok_text(
+                json!({ "settings": hide_tokens(settings), "changed": changed }).to_string(),
+            ),
             Err(e) => Ok(err(e)),
         }
     }
@@ -12269,6 +12280,29 @@ mod tests {
             assert!(v.get(*key).is_some(), "missing {key}: {v}");
         }
         assert_eq!(v["default_project_id"], Value::Null);
+        assert_eq!(v["board_hub_token"], json!(""));
+    }
+
+    /// The board hub token is a secret: an agent learns only that it is set.
+    #[test]
+    fn settings_tools_never_return_the_board_hub_token() {
+        let (agent, _) = app_agent();
+        agent
+            .actions
+            .settings_set(json!({"board_hub_token": "s3cret"}).as_object().unwrap().clone())
+            .unwrap();
+        let got = agent.get_settings().unwrap();
+        let (_, v) = extract(&got);
+        assert_eq!(v["board_hub_token"], json!("(set)"));
+        let changed = agent
+            .update_settings(Parameters(
+                serde_json::from_value(json!({"theme": "dark"})).unwrap(),
+            ))
+            .unwrap();
+        let (is_err, v) = extract(&changed);
+        assert!(!is_err, "{v}");
+        assert_eq!(v["settings"]["board_hub_token"], json!("(set)"));
+        assert!(!format!("{got:?}{changed:?}").contains("s3cret"));
     }
 
     #[test]
