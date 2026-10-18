@@ -27,7 +27,7 @@ Helpers that more than one spec needs live in `tests/e2e/support/`. Import them 
 
 WebdriverIO's `selectByVisibleText()` resolves without error but leaves the `<select>` unchanged. The spec then passes while nothing was selected. TIL-204 found this in `goals.spec.ts`: both tasks kept `goal_id` NULL in the database.
 
-It happens on both platforms: on macOS (WKWebView) in TIL-204, and on Linux (WebKitGTK) in TIL-207, where both selects still read "No goal" after the call.
+It was measured on macOS (WKWebView, TIL-204) and on Linux (WebKitGTK, TIL-207). On Linux, both selects still read "No goal" after the call.
 
 Use `selectOption(selector, visibleText)` from `support/select.ts` instead. It sets the value and dispatches a bubbling `change` event, which React's `onChange` listens for. Then assert the effect the app shows, not the select's value.
 
