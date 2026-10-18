@@ -208,7 +208,7 @@ export function TownPage() {
           aria-pressed={focused === null}
           onClick={() => setFocusId(null)}
         >
-          All projects
+          {goal ? goal.name : "All projects"}
         </button>
         {islands.map((r) => (
           <button

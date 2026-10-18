@@ -287,6 +287,7 @@ describe("town page", () => {
     await expect(agent("quiet")).not.toBeExisting();
     await expect(agent("working")).not.toBeExisting();
     await expect($$(".town-focusbar button")).toBeElementsArrayOfSize(2);
+    await expect($$(".town-focusbar button")[0]).toHaveText("Bridge");
     await shot("goal-filtered");
 
     await whole().click();
