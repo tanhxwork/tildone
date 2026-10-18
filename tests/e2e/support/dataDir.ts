@@ -13,11 +13,20 @@ import { join } from "node:path";
  */
 const slug = execFileSync("./scripts/worktree-slug.sh", { encoding: "utf8" }).trim();
 
-export const E2E_DATA_DIR = join(
-  homedir(),
-  "Library/Application Support",
-  `com.tildone.e2e.${slug}`,
-);
+/** Tauri's appDataDir root (attachments): ~/Library/Application Support on macOS, $XDG_DATA_HOME on Linux. */
+export const APP_DATA_ROOT =
+  process.platform === "darwin"
+    ? join(homedir(), "Library/Application Support")
+    : (process.env.XDG_DATA_HOME ?? join(homedir(), ".local/share"));
 
-export const E2E_DB = join(E2E_DATA_DIR, "tildone.db");
+/** Tauri's appConfigDir root (tildone.db, via tauri-plugin-sql): the same folder on macOS, $XDG_CONFIG_HOME on Linux. */
+export const APP_CONFIG_ROOT =
+  process.platform === "darwin"
+    ? join(homedir(), "Library/Application Support")
+    : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+
+export const E2E_DATA_DIR = join(APP_DATA_ROOT, `com.tildone.e2e.${slug}`);
+export const E2E_CONFIG_DIR = join(APP_CONFIG_ROOT, `com.tildone.e2e.${slug}`);
+
+export const E2E_DB = join(E2E_CONFIG_DIR, "tildone.db");
 export const E2E_ATTACHMENTS = join(E2E_DATA_DIR, "attachments");

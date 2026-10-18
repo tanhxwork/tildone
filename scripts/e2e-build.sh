@@ -59,7 +59,7 @@ fi
 
 # A temp *directory* with a fixed filename inside: `$(mktemp …).json` created
 # one file and then wrote a second one beside it, leaking both (TIL-150).
-tmpdir=$(mktemp -d -t tildone-e2e)
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tildone-e2e.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 overlay="$tmpdir/e2e.conf.json"
 cat > "$overlay" <<EOF

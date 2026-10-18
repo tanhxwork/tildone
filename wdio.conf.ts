@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { SevereServiceError } from "webdriverio";
+import { APP_CONFIG_ROOT, APP_DATA_ROOT } from "./tests/e2e/support/dataDir.js";
 import { resetAppState } from "./tests/e2e/support/reset.js";
 
 // Which worktree is this? scripts/worktree-slug.sh is the single source of
@@ -11,7 +11,8 @@ import { resetAppState } from "./tests/e2e/support/reset.js";
 const slug = execFileSync("./scripts/worktree-slug.sh", { encoding: "utf8" }).trim();
 
 const IDENTIFIER = `com.tildone.e2e.${slug}`;
-const DATA_DIR = join(homedir(), "Library/Application Support", IDENTIFIER);
+const DATA_DIR = join(APP_DATA_ROOT, IDENTIFIER);
+const CONFIG_DIR = join(APP_CONFIG_ROOT, IDENTIFIER); // tildone.db; DATA_DIR on macOS
 
 // The binary is per-worktree (scripts/e2e-build.sh sets CARGO_TARGET_DIR),
 // because the identifier is compiled in: a shared target/debug/tildone hands
@@ -339,6 +340,7 @@ export const config: WebdriverIO.Config = {
     takeRunLock();
     console.log(`[e2e] ${IDENTIFIER} · webdriver port ${WEBDRIVER_PORT}`);
     rmSync(DATA_DIR, { recursive: true, force: true });
+    rmSync(CONFIG_DIR, { recursive: true, force: true });
   },
 
   onComplete: () => {

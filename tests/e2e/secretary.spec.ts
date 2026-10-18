@@ -46,7 +46,8 @@ async function until(check: () => boolean, label: string, ms = 20_000) {
 
 const SESSION = "e2ee2ee2-aaaa-4bbb-8ccc-000000000001";
 const FAKE_REPO = join(homedir(), ".tildone-e2e-secretary", "repo");
-const SCRATCH = "/private/tmp/tildone-e2e-secretary";
+// /tmp's real path: macOS resolves it under /private (secretary.rs SCRATCH_ROOTS has both).
+const SCRATCH = `${process.platform === "darwin" ? "/private" : ""}/tmp/tildone-e2e-secretary`;
 const TRANSCRIPT_DIR = join(homedir(), ".claude", "projects", slugOf(FAKE_REPO));
 const TRANSCRIPT = join(TRANSCRIPT_DIR, `${SESSION}.jsonl`);
 

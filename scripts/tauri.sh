@@ -50,8 +50,10 @@ export TILDONE_DEV_PORT=$port
 # --- database: seed from the installed app on first run -------------------
 # sqlite3 .backup takes a consistent snapshot even while the installed app
 # is running (WAL); the source is only ever read.
-devdir="$HOME/Library/Application Support/com.tildone.dev.$slug"
-srcdb="$HOME/Library/Application Support/com.tildone.desktop/tildone.db"
+# tildone.db lives in Tauri's appConfigDir: ~/Library/Application Support on macOS, $XDG_CONFIG_HOME on Linux.
+if [ "$(uname)" = Darwin ]; then appconfig="$HOME/Library/Application Support"; else appconfig="${XDG_CONFIG_HOME:-$HOME/.config}"; fi
+devdir="$appconfig/com.tildone.dev.$slug"
+srcdb="$appconfig/com.tildone.desktop/tildone.db"
 if [ ! -e "$devdir/tildone.db" ] && [ "${TILDONE_DEV_DB:-copy}" != "fresh" ] && [ -e "$srcdb" ]; then
   mkdir -p "$devdir"
   if sqlite3 "$srcdb" ".backup '$devdir/tildone.db'" 2>/dev/null; then
@@ -101,7 +103,7 @@ if command -v magick >/dev/null 2>&1; then
 fi
 
 # --- per-run overlay -------------------------------------------------------
-overlay=$(mktemp -t "tildone-dev-$slug").json
+overlay=$(mktemp "${TMPDIR:-/tmp}/tildone-dev-$slug.XXXXXX").json
 cat > "$overlay" <<EOF
 {
   "\$schema": "https://schema.tauri.app/config/2",
