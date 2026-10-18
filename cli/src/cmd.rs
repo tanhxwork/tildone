@@ -65,11 +65,14 @@ pub async fn help(hub: &Hub) -> Res<()> {
     Ok(())
 }
 
-pub async fn ls(hub: &Hub, project: Option<String>, done: bool) -> Res<()> {
+pub async fn ls(hub: &Hub, project: Option<String>, done: bool, search: Option<String>) -> Res<()> {
     let project = project.unwrap_or_else(git::default_project);
     let mut a = args(&[("project", json!(project))]);
     if done {
         a.insert("include_done".into(), json!(true));
+    }
+    if let Some(s) = search {
+        a.insert("search".into(), json!(s));
     }
     let text = hub
         .call("list_tasks", a, "tildone-axi call list_tasks --help")
@@ -246,20 +249,27 @@ pub async fn status() -> Res<()> {
     Ok(())
 }
 
-pub async fn claim(hub: &Hub, r: &str) -> Res<()> {
-    let Some(session) = hub::session_id() else {
+/// Each flag overrides the default from the environment and the checkout.
+pub async fn claim(
+    hub: &Hub,
+    r: &str,
+    session: Option<String>,
+    cwd: Option<String>,
+    branch: Option<String>,
+) -> Res<()> {
+    let Some(session) = session.or_else(hub::session_id) else {
         return Err(Fail::tool(
             "CLAUDE_CODE_SESSION_ID is not set, so there is no session to claim the card for",
-            "run inside a Claude Code session, or: tildone-axi call update-task --id <ref> --status doing",
+            "run inside a Claude Code session, or pass --session <id>",
         ));
     };
     let mut a = args(&[
         ("id", task_ref(r)),
         ("status", json!("doing")),
         ("session_id", json!(session)),
-        ("cwd", json!(git::checkout())),
+        ("cwd", json!(cwd.unwrap_or_else(git::checkout))),
     ]);
-    if let Some(b) = git::branch() {
+    if let Some(b) = branch.or_else(git::branch) {
         a.insert("branch".into(), json!(b));
     }
     let reply = hub
@@ -368,15 +378,29 @@ pub async fn sub_done(hub: &Hub, n: i64) -> Res<()> {
     Ok(())
 }
 
+/// The `new` flags that pass straight through to create_task.
+pub struct NewExtra {
+    pub tags: Vec<String>,
+    pub owner: Option<String>,
+    pub from_task: Option<String>,
+}
+
 pub async fn new(
     hub: &Hub,
     title: &str,
     project: Option<String>,
     follow_up: bool,
     force: bool,
+    extra: NewExtra,
 ) -> Res<()> {
     let project = project.unwrap_or_else(git::default_project);
     let mut a = args(&[("title", json!(title)), ("project", json!(project))]);
+    let mut tags: Vec<String> = extra
+        .tags
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     if follow_up {
         if !force {
             let search = args(&[
@@ -406,10 +430,23 @@ pub async fn new(
                 return Ok(());
             }
         }
-        a.insert("tags".into(), json!(["follow-up"]));
-        if let Some(card) = hub::claimed_card().await? {
-            a.insert("from_task".into(), card["task_id"].clone());
+        if !tags.iter().any(|t| t == "follow-up") {
+            tags.push("follow-up".into());
         }
+        if extra.from_task.is_none() {
+            if let Some(card) = hub::claimed_card().await? {
+                a.insert("from_task".into(), card["task_id"].clone());
+            }
+        }
+    }
+    if !tags.is_empty() {
+        a.insert("tags".into(), json!(tags));
+    }
+    if let Some(o) = extra.owner {
+        a.insert("owner".into(), json!(o));
+    }
+    if let Some(f) = extra.from_task {
+        a.insert("from_task".into(), task_ref(&f));
     }
     let reply = hub
         .call("create_task", a, "tildone-axi call create-task --help")
