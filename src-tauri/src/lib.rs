@@ -1,6 +1,7 @@
 mod agent;
 mod ai;
 mod artifacts;
+mod clilink;
 mod drops;
 mod evidence;
 mod forge;
@@ -391,6 +392,8 @@ pub fn run() {
             hookinstall::hook_status,
             hookinstall::hook_install,
             hookinstall::hook_uninstall,
+            clilink::cli_status,
+            clilink::cli_install,
             icons::discover_project_icon,
             evidence::read_evidence_image,
             evidence::git_remote_url,
