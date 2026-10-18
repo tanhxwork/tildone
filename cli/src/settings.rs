@@ -5,6 +5,7 @@
 //! turning Agent access on needs no person at the app.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
@@ -284,6 +285,17 @@ pub async fn engine(action: &str, arg: Option<&str>) -> Res<()> {
     run_action("engine", "engine", a).await
 }
 
+/// How long an app action may run before the CLI stops waiting. Install downloads
+/// the runtime and a model (about 1.3 GB for "default") inside the call; start waits
+/// up to 60 s for the engine to be ready. Everything else answers at once.
+fn action_limit(tool: &str, args: &Value) -> Duration {
+    match (tool, args["action"].as_str()) {
+        ("engine", Some("install")) => Duration::from_secs(60 * 60),
+        ("engine", Some("start")) => Duration::from_secs(120),
+        _ => Duration::from_secs(30),
+    }
+}
+
 async fn run_action(tool: &str, verb: &str, args: Value) -> Res<()> {
     let hub = Hub::connect().await.map_err(|e| match e {
         Fail::Conn { msg, .. } => Fail::Conn {
@@ -292,13 +304,33 @@ async fn run_action(tool: &str, verb: &str, args: Value) -> Res<()> {
         },
         other => other,
     })?;
+    // TILDONE_ACTION_TIMEOUT_MS replaces every limit; the tests use it.
+    let limit = std::env::var("TILDONE_ACTION_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| action_limit(tool, &args));
     let Value::Object(a) = args else {
         unreachable!()
     };
-    let out = hub.call(tool, a, HELP).await;
+    let out = hub.call_within(tool, a, HELP, limit).await;
     hub.close().await;
-    say(&out?);
-    Ok(())
+    match out {
+        Ok(text) => {
+            say(&text);
+            Ok(())
+        }
+        // The hub answered earlier, so a timeout means the action is still going in
+        // the app, not that the app is gone.
+        Err(Fail::Conn { msg, .. }) if msg.ends_with(hub::TIMED_OUT) => Err(Fail::tool(
+            format!(
+                "settings {verb}: no answer within {} s, but the action is still running in Tildone",
+                limit.as_secs().max(1)
+            ),
+            "tildone-axi settings engine status",
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 // ---- the local file ---------------------------------------------------------
@@ -387,4 +419,20 @@ fn write_file(dir: &std::path::Path, name: &str, value: Value) -> Res<()> {
         return Err(io(&format!("write {}", path.display()), e));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_install_and_start_get_a_long_limit() {
+        let limit = |tool, action| action_limit(tool, &json!({ "action": action }));
+        assert_eq!(limit("engine", "install"), Duration::from_secs(3600));
+        assert_eq!(limit("engine", "start"), Duration::from_secs(120));
+        for action in ["status", "stop", "delete"] {
+            assert_eq!(limit("engine", action), Duration::from_secs(30));
+        }
+        assert_eq!(limit("claude_hook", "connect"), Duration::from_secs(30));
+    }
 }

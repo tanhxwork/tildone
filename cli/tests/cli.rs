@@ -1001,3 +1001,41 @@ async fn settings_actions_offline_need_the_running_app() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_action_timeout_says_it_is_still_running() {
+    let fake = Fake::start().await;
+    fake.delay("engine", 3000);
+    let out = tildone(&fake, &["settings", "engine", "install"])
+        .env("TILDONE_ACTION_TIMEOUT_MS", "300")
+        .run()
+        .await;
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("still running in Tildone"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("tildone-axi settings engine status"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("cannot reach"), "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_engine_install_already_running_passes_through() {
+    let fake = Fake::start().await;
+    fake.fail("engine", "an engine install is already running");
+    let out = tildone(&fake, &["settings", "engine", "install"])
+        .run()
+        .await;
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .starts_with("error: an engine install is already running"),
+        "{}",
+        out.stderr
+    );
+}
