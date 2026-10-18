@@ -88,7 +88,7 @@ describe("settings: settings.json", () => {
 
   it("dialog change lands in settings.json", async () => {
     await $(".nav-item*=Settings").click();
-    await $('[aria-label="Theme"] button=Dark').click();
+    await $('[aria-label="Theme"]').$("button=Dark").click();
     await browser.waitUntil(async () => fileTheme() === "dark", {
       timeout: 5000,
       timeoutMsg: "theme dark never reached settings.json",
@@ -103,6 +103,9 @@ describe("settings: settings.json", () => {
       timeout: 6000,
       timeoutMsg: "the window never picked up the edit to settings.json",
     });
+    // The open dialog follows the file too, not just the page.
+    await $('[aria-label="Theme"]').$("button.active=Light").waitForExist({ timeout: 2000 });
+    await browser.saveScreenshot(`${SHOTS}/settings-outside-write-light.png`);
   });
 
   it("update_settings over MCP switches the theme", async () => {
@@ -113,6 +116,8 @@ describe("settings: settings.json", () => {
       timeoutMsg: "the window never applied the MCP settings change",
     });
     expect(fileTheme()).toBe("dark");
+    await $('[aria-label="Theme"]').$("button.active=Dark").waitForExist({ timeout: 2000 });
+    await browser.saveScreenshot(`${SHOTS}/settings-mcp-dark.png`);
   });
 
   it("old localStorage theme survives the upgrade", async () => {
