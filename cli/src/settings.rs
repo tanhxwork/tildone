@@ -61,6 +61,16 @@ const KEYS: &[Key] = &[
         default: || json!(""),
     },
     Key {
+        name: "board_hub_url",
+        kind: Kind::Text,
+        default: || json!(""),
+    },
+    Key {
+        name: "board_hub_token",
+        kind: Kind::Text,
+        default: || json!(""),
+    },
+    Key {
         name: "agent_server",
         kind: Kind::Bool,
         default: || json!(false),
@@ -152,7 +162,8 @@ fn wire_value(key: &Key, raw: &str) -> Res<Value> {
             }
         }
         Kind::Text => Ok(json!(match name {
-            "ws_hub_url" | "ai_base_url" => raw.trim(),
+            "ws_hub_url" | "ai_base_url" | "board_hub_token" => raw.trim(),
+            "board_hub_url" => raw.trim().trim_end_matches('/'),
             _ => raw,
         })),
     }

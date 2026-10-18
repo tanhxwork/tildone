@@ -38,6 +38,11 @@ pub struct Settings {
     pub week_start: String,
     pub default_project_id: Option<i64>,
     pub ws_hub_url: String,
+    /// The board's hub: another Tildone's agent server URL, e.g. http://ws:11502.
+    /// Empty means this machine's own tildone.db (no client mode).
+    pub board_hub_url: String,
+    /// The hub's token (its Settings → Agent access shows it).
+    pub board_hub_token: String,
     pub agent_server: bool,
     pub agent_notify: bool,
     pub ai_mode: String,
@@ -61,6 +66,8 @@ impl Default for Settings {
             week_start: "monday".into(),
             default_project_id: None,
             ws_hub_url: String::new(),
+            board_hub_url: String::new(),
+            board_hub_token: String::new(),
             agent_server: false,
             agent_notify: true,
             ai_mode: "off".into(),
@@ -81,6 +88,8 @@ pub const KEYS: &[&str] = &[
     "week_start",
     "default_project_id",
     "ws_hub_url",
+    "board_hub_url",
+    "board_hub_token",
     "agent_server",
     "agent_notify",
     "ai_mode",
@@ -104,6 +113,10 @@ impl Settings {
                 "ai_mode" => next.ai_mode = one_of(key, value, AI_MODES)?,
                 "ai_engine_model" => next.ai_engine_model = one_of(key, value, ENGINE_MODELS)?,
                 "ws_hub_url" => next.ws_hub_url = text(key, value)?.trim().to_string(),
+                "board_hub_url" => {
+                    next.board_hub_url = text(key, value)?.trim().trim_end_matches('/').to_string()
+                }
+                "board_hub_token" => next.board_hub_token = text(key, value)?.trim().to_string(),
                 "ai_base_url" => next.ai_base_url = text(key, value)?.trim().to_string(),
                 "ai_model" => next.ai_model = text(key, value)?,
                 "agent_server" => next.agent_server = flag(key, value)?,

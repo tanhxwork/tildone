@@ -7,6 +7,8 @@ mod drops;
 mod evidence;
 mod forge;
 mod hookinstall;
+mod hub;
+mod hubclient;
 mod host;
 mod icons;
 mod pty;
@@ -354,6 +356,14 @@ pub fn run() {
             appsettings::settings_get,
             appsettings::settings_set,
             appsettings::settings_migrate,
+            hub::hub_token,
+            hubclient::hub_connect,
+            hubclient::hub_sql,
+            hubclient::hub_presence,
+            hubclient::hub_claim_cwds,
+            hubclient::hub_git_remote,
+            hubclient::hub_file,
+            hubclient::hub_image_put,
             settingsfile::export_settings_file,
             settingsfile::import_settings_file,
             ai::ai_probe,
