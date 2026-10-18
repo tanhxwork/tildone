@@ -10,20 +10,43 @@ import { db, resetDbMock, useStore } from "./support/dbMock";
 const files = new Map<string, string>();
 let hubNotes = "";
 
+// The hub's /sql as the client sees it. A write sent with an op key that the hub has
+// already run returns the stored result and does not run again, as the real hub does.
+// `loseOnce`: the next write starting with this runs, then its response is lost.
+const hub = {
+  sent: [] as { sql: string; op?: string }[],
+  ran: [] as string[],
+  stored: new Map<string, unknown>(),
+  lastId: 100,
+  loseOnce: "",
+};
+const resetHub = () => Object.assign(hub, { sent: [], ran: [], stored: new Map(), lastId: 100, loseOnce: "" });
+
 const realCore = await import("@tauri-apps/api/core");
 mock.module("@tauri-apps/api/core", () => ({
   ...realCore,
-  invoke: async (cmd: string, args: { name?: string; json?: string } = {}) => {
+  invoke: async (cmd: string, args: { name?: string; json?: string; kind?: string; sql?: string; op?: string } = {}) => {
+    if (cmd === "hub_sql" && args.kind === "select") return [{ notes: hubNotes }];
+    if (cmd === "hub_sql") {
+      hub.sent.push({ sql: args.sql!, op: args.op });
+      if (args.op && hub.stored.has(args.op)) return hub.stored.get(args.op);
+      const result = { rowsAffected: 1, lastInsertId: ++hub.lastId };
+      hub.ran.push(args.sql!);
+      if (args.op) hub.stored.set(args.op, result);
+      if (hub.loseOnce && args.sql!.startsWith(hub.loseOnce)) {
+        hub.loseOnce = "";
+        throw new Error("hub http://hub: unreachable: connection lost");
+      }
+      return result;
+    }
     if (cmd === "offline_read") return files.get(args.name!) ?? null;
     if (cmd === "offline_write") return void files.set(args.name!, args.json!);
     throw new Error("hub http://hub: unreachable: connection refused");
   },
 }));
-mock.module("../src/remoteDb", () => ({
-  remoteDb: { select: async () => [{ notes: hubNotes }], execute: async () => ({}) },
-}));
 
 const { setBoardHubUrl } = await import("../src/hubMode");
+const { remoteDb } = await import("../src/remoteDb");
 const offline = await import("../src/offline");
 const { useOffline, loadOutbox, loadBoardCopy, comeBack, flushCopy, filesSettled } = offline;
 const gated = offline.db;
@@ -41,6 +64,7 @@ beforeEach(async () => {
   resetDbMock();
   files.clear();
   hubNotes = "";
+  resetHub();
   setBoardHubUrl("http://hub");
   await loadOutbox();
   useOffline.setState({ offline: false, lastSynced: null, dropped: 0, notice: "" });
@@ -154,7 +178,7 @@ describe("offline queue", () => {
     db.updateTask.mockRejectedValueOnce(DOWN);
     await comeBack();
     await filesSettled();
-    expect(saved().ops).toEqual([{ fn: "updateTask", args: [5, {}] }]);
+    expect(saved().ops).toEqual([{ fn: "updateTask", args: [5, {}], key: expect.any(String) }]);
     expect(db.insertComment).toHaveBeenCalledTimes(1);
     await comeBack();
 
@@ -264,5 +288,62 @@ describe("offline queue", () => {
 
     await useStore.getState().reload(); // the next good reload settles the ids
     await expect(gated.updateTask(made.id, { title: "y" })).rejects.toThrow("dropped");
+  });
+  it("lands a queued write once when the hub ran it and the response was lost", async () => {
+    useOffline.setState({ offline: true });
+    const made = (await gated.insertTask({ project_id: 1, title: "a" } as never)) as { id: number };
+    await gated.updateTask(made.id, { title: "b" });
+
+    // The insert goes through remoteDb like the real db.ts does.
+    const insert = async () => {
+      const r = await remoteDb.execute("INSERT INTO tasks (title) VALUES ($1)", ["a"]);
+      return { id: r.lastInsertId!, number: 1, ref: "TIL-1", goal_id: null };
+    };
+    db.insertTask.mockImplementationOnce(insert).mockImplementationOnce(insert);
+    hub.loseOnce = "INSERT";
+    await comeBack(); // the hub ran the insert; the replay is cut short by the lost response
+    expect(useOffline.getState().offline).toBe(true);
+    await comeBack();
+
+    expect(hub.ran).toEqual(["INSERT INTO tasks (title) VALUES ($1)"]);
+    expect(hub.sent).toHaveLength(2);
+    expect(hub.sent[0].op).toBe(hub.sent[1].op);
+    expect(db.updateTask).toHaveBeenCalledWith(101, { title: "b" });
+    expect(useOffline.getState()).toMatchObject({ offline: false, waiting: 0 });
+  });
+
+  it("adds the conflict comment once when the update after it is cut short", async () => {
+    useOffline.setState({ offline: true });
+    useStore.setState({ tasks: [task(5, "base")] });
+    await gated.updateTask(5, { notes: "mine" });
+    hubNotes = "base + agent";
+
+    db.insertComment.mockImplementation(async () => {
+      await remoteDb.execute("INSERT INTO comments", []);
+      await remoteDb.execute("INSERT INTO activity", []);
+      return 1;
+    });
+    db.updateTask.mockImplementation(async () => {
+      await remoteDb.execute("UPDATE tasks SET title = $1", ["x"]);
+      return {};
+    });
+    hub.loseOnce = "UPDATE";
+    await comeBack();
+    await comeBack();
+
+    // The update's write is numbered from 0 like the comment's first one, yet it is not
+    // mistaken for it: it ran once, after the comment.
+    expect(hub.ran).toEqual(["INSERT INTO comments", "INSERT INTO activity", "UPDATE tasks SET title = $1"]);
+    expect(db.insertComment).toHaveBeenCalledTimes(1);
+    expect(useOffline.getState().waiting).toBe(0);
+  });
+
+  it("sends no op key for a write made online", async () => {
+    db.updateTask.mockImplementationOnce(async () => {
+      await remoteDb.execute("UPDATE tasks SET title = $1", ["x"]);
+      return {};
+    });
+    await gated.updateTask(1, { title: "x" });
+    expect(hub.sent).toEqual([{ sql: "UPDATE tasks SET title = $1", op: undefined }]);
   });
 });

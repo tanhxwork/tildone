@@ -27,8 +27,9 @@ export const hubDisconnect = () => invoke<void>("hub_disconnect");
 export const hubSelect = <T>(sql: string, params: unknown[] = []) =>
   invoke<T>("hub_sql", { kind: "select", sql, params });
 
-export const hubExecute = (sql: string, params: unknown[] = []) =>
-  invoke<ExecuteResult>("hub_sql", { kind: "execute", sql, params });
+/** `op` is an idempotency key: the hub runs a write with a key it has already run once and returns the stored result. */
+export const hubExecute = (sql: string, params: unknown[] = [], op?: string) =>
+  invoke<ExecuteResult>("hub_sql", { kind: "execute", sql, params, ...(op ? { op } : {}) });
 
 export const hubPresence = <T>() => invoke<T>("hub_presence");
 export const hubClaimCwds = () => invoke<string[]>("hub_claim_cwds");

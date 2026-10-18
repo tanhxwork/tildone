@@ -4,7 +4,7 @@ import * as real from "./db";
 import { hubConnect } from "./hubClient";
 import { getBoardHubUrl, isClientMode } from "./hubMode";
 import { useHubStatus } from "./hubStatus";
-import { remoteDb } from "./remoteDb";
+import { remoteDb, withOpKey } from "./remoteDb";
 
 /**
  * Client mode while the hub is unreachable. The board keeps showing its last synced
@@ -138,6 +138,8 @@ interface Op {
   temp?: number;
   /** updateTask with notes: the task's notes before the edit, to spot a conflict on replay. */
   baseNotes?: string;
+  /** Names this op's writes to the hub, so a replay that runs again does not repeat one the hub already ran. */
+  key: string;
 }
 
 /** `ids`: the argument positions that can hold a task, subtask or link id (a
@@ -257,6 +259,7 @@ export async function loadOutbox() {
       ? { hub: saved.hub ?? "another hub", count: changes(saved.ops) }
       : null;
   outbox = ours ? saved! : { nextTemp: -1, ops: [], ids: {} };
+  for (const op of outbox.ops) op.key ??= crypto.randomUUID(); // queued before keys existed
   useOffline.setState({ waiting: countWaiting(), foreign });
 }
 
@@ -273,7 +276,7 @@ const holding = () => useOffline.getState().offline || outbox.ops.length > 0;
 function queue(fn: string, args: unknown[]) {
   const spec = QUEUED[fn];
   const temp = spec.stub ? outbox.nextTemp-- : 0;
-  const op: Op = { fn, args };
+  const op: Op = { fn, args, key: crypto.randomUUID() };
   if (spec.made) op.temp = temp;
   if (fn === "updateTask" && "notes" in (args[1] as object)) {
     op.baseNotes = host.task(args[0] as number)?.notes;
@@ -389,19 +392,23 @@ async function run(op: Op, args: unknown[]) {
       [id],
     );
     if (rows[0] && rows[0].notes !== op.baseNotes) {
-      await real.insertComment(
-        id,
-        `Notes edited offline. The notes changed on the hub in the meantime, so the hub's version stays. The offline version:\n\n${notes}`,
+      await withOpKey(op.key, () =>
+        real.insertComment(
+          id,
+          `Notes edited offline. The notes changed on the hub in the meantime, so the hub's version stays. The offline version:\n\n${notes}`,
+        ),
       );
       // If the update below is cut short (or the app quits), a retry must not add the comment again.
+      // The update gets a new key: its writes are numbered from 0 again and must not match the comment's.
       args = [id, rest];
       op.args = args;
+      op.key = crypto.randomUUID();
       delete op.baseNotes;
       await saveOutbox();
     }
     delete op.baseNotes;
   }
-  return (real as any)[op.fn](...args);
+  return withOpKey(op.key, () => (real as any)[op.fn](...args));
 }
 
 /** Follow the hub's connection state for the life of the page (client mode). */
