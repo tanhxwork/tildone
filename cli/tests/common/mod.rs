@@ -170,6 +170,26 @@ fn standard_tools() -> Vec<Tool> {
             json!({"since": s("integer"), "wait_ms": s("integer")}),
             json!([]),
         ),
+        tool("get_settings", "Read every setting.", json!({}), json!([])),
+        tool(
+            "update_settings",
+            "Change settings.",
+            json!({"theme": s("string"), "week_start": s("string"), "default_project_id": s("integer"),
+                   "agent_server": s("boolean"), "ai_model": s("string")}),
+            json!([]),
+        ),
+        tool(
+            "claude_hook",
+            "Connect, disconnect or check the Claude hook.",
+            json!({"action": {"type": "string"}}),
+            json!(["action"]),
+        ),
+        tool(
+            "engine",
+            "Manage the local AI engine.",
+            json!({"action": {"type": "string"}, "model": s("string"), "file": s("string")}),
+            json!(["action"]),
+        ),
     ]
 }
 

@@ -5,6 +5,7 @@ mod callargs;
 mod cmd;
 mod git;
 mod hub;
+mod settings;
 mod toon;
 
 use std::process::ExitCode;
@@ -104,12 +105,40 @@ enum Cmd {
         #[arg(long, default_value_t = 30_000)]
         ms: u64,
     },
+    /// Read and change settings; run the Claude hook and engine actions
+    Settings {
+        #[command(subcommand)]
+        action: Option<SettingsCmd>,
+    },
     /// Call any server tool; flags come from its schema
     #[command(disable_help_flag = true)]
     Call {
         tool: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Change one setting (works with the app closed, for a local hub)
+    Set {
+        key: String,
+        /// `none` clears default_project_id; booleans take true/false or on/off
+        #[arg(required = true, allow_hyphen_values = true)]
+        value: Vec<String>,
+    },
+    /// Connect, disconnect or check the Claude hook (needs the running app)
+    Hook {
+        #[arg(value_parser = ["connect", "disconnect", "status"])]
+        action: String,
+    },
+    /// Manage the local AI engine (needs the running app)
+    Engine {
+        #[arg(value_parser = ["status", "install", "start", "stop", "delete"])]
+        action: String,
+        /// A model (small, default, better) for install and start; a file for delete
+        arg: Option<String>,
     },
 }
 
@@ -177,6 +206,17 @@ async fn run(cmd: Option<Cmd>) -> Res<()> {
     let Some(cmd) = cmd else {
         return cmd::status().await;
     };
+    // Settings picks its own path: it works with the hub down.
+    if let Cmd::Settings { action } = cmd {
+        return match action {
+            None => settings::list().await,
+            Some(SettingsCmd::Set { key, value }) => settings::set(&key, &value.join(" ")).await,
+            Some(SettingsCmd::Hook { action }) => settings::hook(&action).await,
+            Some(SettingsCmd::Engine { action, arg }) => {
+                settings::engine(&action, arg.as_deref()).await
+            }
+        };
+    }
     let hub = Hub::connect().await?;
     let out = dispatch(&hub, cmd).await;
     hub.close().await;
@@ -210,5 +250,6 @@ async fn dispatch(hub: &Hub, cmd: Cmd) -> Res<()> {
         Cmd::Next { project } => cmd::next(hub, project).await,
         Cmd::Wait { since, ms } => cmd::wait(hub, since, ms).await,
         Cmd::Call { tool, args } => cmd::call(hub, &tool, &args).await,
+        Cmd::Settings { .. } => unreachable!("run() handles settings before connecting"),
     }
 }
