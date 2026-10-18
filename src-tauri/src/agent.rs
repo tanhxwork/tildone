@@ -8,10 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
     model::{
-        CacheScope, CallToolResult, ContentBlock, DiscoverResult, ListToolsResult,
-        PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities, ServerInfo,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        DiscoverResult, ListToolsResult, MetaObject, PaginatedRequestParams, ProtocolVersion,
+        ResultType, ServerCapabilities, ServerInfo,
     },
     schemars,
     service::{NotificationContext, RequestContext},
@@ -4445,10 +4446,14 @@ impl ServerHandler for TildoneAgent {
         if let Some(tools) = info.capabilities.tools.as_mut() {
             tools.list_changed = None;
         }
+        // rmcp defaults discovery to `ttlMs: 0`, "immediately stale", for a
+        // capability set that cannot change in-process. The tools/list TTL already
+        // bounds staleness across an app upgrade, so discovery shares it.
         Ok(DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
             info,
-        ))
+        )
+        .with_ttl_ms(TOOL_LIST_TTL_MS))
     }
 
     /// Serves the slimmed tool list (see `new()`), plus the cache hints the
@@ -4466,7 +4471,7 @@ impl ServerHandler for TildoneAgent {
         Ok(ListToolsResult {
             result_type: Some(ResultType::COMPLETE),
             tools: self.tool_router.list_all(),
-            meta: None,
+            meta: Some(self.server_info_meta()),
             next_cursor: None,
             ttl_ms: Some(TOOL_LIST_TTL_MS),
             // Private, not Public: nothing between this server and its client is
@@ -4475,6 +4480,26 @@ impl ServerHandler for TildoneAgent {
             // may hold the list.
             cache_scope: Some(CacheScope::Private),
         })
+    }
+
+    /// The macro's `call_tool`, plus serverInfo in the result's `_meta`. Every
+    /// `#[tool]` returns through here, so this is the one place a tool result
+    /// gets stamped, not one edit per tool.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let tcc = ToolCallContext::new(self, request, context);
+        let mut response = self.tool_router.call(tcc).await?;
+        let meta = match &mut response {
+            CallToolResponse::Complete(r) => &mut r.meta,
+            CallToolResponse::InputRequired(r) => &mut r.meta,
+            CallToolResponse::Task(r) => &mut r.meta,
+            _ => return Ok(response),
+        };
+        meta.get_or_insert_default().0.extend(self.server_info_meta().0);
+        Ok(response)
     }
 
     /// Tildone's tool set is fixed at compile time, so it never changes *within*
@@ -4515,6 +4540,27 @@ static SUPPORTED_PROTOCOL_VERSIONS: [ProtocolVersion; 2] =
 /// one. Five minutes: an upgrade is picked up promptly, and the re-list it costs
 /// is one loopback round trip.
 const TOOL_LIST_TTL_MS: u64 = 5 * 60 * 1000;
+
+/// Result `_meta` key for the answering server's identity. The 2026-07-28 spec
+/// says servers SHOULD put it on every result, because there is no `initialize`
+/// result to carry it any more. rmcp keeps its own copy of the key private.
+const SERVER_INFO_META_KEY: &str = "io.modelcontextprotocol/serverInfo";
+
+impl TildoneAgent {
+    /// `_meta` holding this server's identity, for `list_tools` and `call_tool`.
+    /// Discovery gets the same entry from rmcp's `from_server_info`. The identity
+    /// is fixed per build, so it is serialized once rather than on every call.
+    fn server_info_meta(&self) -> MetaObject {
+        static INFO: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let info = INFO.get_or_init(|| {
+            serde_json::to_value(self.get_info().server_info)
+                .expect("Implementation serialization cannot fail")
+        });
+        let mut meta = MetaObject::default();
+        meta.0.insert(SERVER_INFO_META_KEY.to_owned(), info.clone());
+        meta
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle commands
@@ -10102,6 +10148,13 @@ mod tests {
              app upgrade that adds a tool stays invisible — the append_note bug, again: {tools}"
         );
         assert_eq!(tools["result"]["cacheScope"], json!("private"), "{tools}");
+        // No initialize result carries identity any more, so each result must
+        // (TIL-202): a client that never discovers still learns who answered.
+        assert_eq!(
+            tools["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "tildone",
+            "{tools}"
+        );
 
         // --- tools/call: the client said who it is, so the card must say so too.
         let named = post(
@@ -10120,6 +10173,11 @@ mod tests {
         )
         .await;
         assert_eq!(named["result"]["isError"], Value::Bool(false), "{named}");
+        assert_eq!(
+            named["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "tildone",
+            "every tool result carries serverInfo, not just tools/list: {named}"
+        );
 
         // --- and the anonymous caller must read as unknown, never as "tildone".
         let anon = post(
@@ -10268,9 +10326,8 @@ mod tests {
             "discovery must not advertise listChanged — the modern path has no way \
              to deliver it, and ttlMs is what bounds staleness there: {body}"
         );
-        // Note where identity lives on a discover result: `_meta`, not a top-level
-        // field. rmcp populates it here and nowhere else, which is why tools/list
-        // still ships none (TIL-202).
+        // Identity lives in `_meta`, not a top-level field. rmcp fills it in here;
+        // list_tools and call_tool fill it in themselves (TIL-202).
         assert_eq!(
             body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
             "tildone",
@@ -10281,6 +10338,11 @@ mod tests {
                 .as_array()
                 .is_some_and(|v| v.len() == 2),
             "discovery reports the audited list: {body}"
+        );
+        assert_eq!(
+            body["result"]["ttlMs"],
+            json!(TOOL_LIST_TTL_MS),
+            "rmcp's default ttlMs 0 makes a fixed capability set stale at once: {body}"
         );
 
         ct.cancel();
