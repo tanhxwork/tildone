@@ -298,11 +298,11 @@ describe("hub: another Tildone as the board", () => {
   it("a file chip in the review band says the file is on the hub", async () => {
     const title = "Client review task";
     const task = await hubTool("create_task", { title, status: "doing", tags: ["needs-review"] });
-    await hubTool("add_link", { task_id: task.id, url: "/home/someone/evidence/shot.png" });
+    await hubTool("add_link", { task_id: task.id, url: "/home/someone/evidence/shot.png", label: "Shot" });
     await $(`.task-row*=${title}`).waitForExist({ timeout: 5_000 });
     await $(`.task-title*=${title}`).click();
-    await $(".review-band-links .card-link*=shot.png").click();
-    await expect($(".detail-link-error")).toHaveText("shot.png is on the hub — open it there.");
+    await $(".review-band-links").$("button*=Shot").click();
+    await expect($(".detail-link-error")).toHaveText("Shot is on the hub — open it there.");
     await browser.saveScreenshot(`${SHOTS}/client-review-file-chip.png`);
     await browser.keys("Escape");
     await $(".detail-card").waitForExist({ reverse: true });
