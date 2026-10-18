@@ -830,13 +830,13 @@ async fn settings_lists_every_key() {
     let fake = Fake::start().await;
     fake.reply_json(
         "get_settings",
-        json!({"theme": "dark", "default_project_id": null, "agent_server": true, "ai_model": ""}),
+        json!({"theme": "dark", "default_project_id": null, "agent_server": true, "ai_model": "", "board_hub_token": "s3cret", "other_token": ""}),
     );
     let out = tildone(&fake, &["settings"]).run().await;
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         out.stdout.trim_end(),
-        "theme: dark\ndefault_project_id: none\nagent_server: true\nai_model: \"\""
+        "theme: dark\ndefault_project_id: none\nagent_server: true\nai_model: \"\"\nboard_hub_token: (set)\nother_token: (empty)"
     );
 }
 
@@ -855,6 +855,8 @@ async fn settings_set_sends_each_type() {
             "default_project_id: none",
         ),
         ("ai_model", "gpt 4", json!("gpt 4"), "ai_model: gpt 4"),
+        // The token is sent but never printed.
+        ("board_hub_token", "s3cret", json!("s3cret"), "board_hub_token: (set)"),
     ];
     for (key, raw, sent, shown) in cases {
         let before = fake.calls_to("update_settings").len();
@@ -987,6 +989,20 @@ async fn settings_set_offline_writes_the_file() {
         serde_json::from_str(&std::fs::read_to_string(fresh.join("settings.json")).unwrap())
             .unwrap();
     assert_eq!(file, json!({"default_project_id": null}));
+
+    // Written to the file, never printed.
+    let out = tildone(&fake, &["settings", "set", "board_hub_token", "s3cret"])
+        .url(Some("http://127.0.0.1:1/mcp"))
+        .env("TILDONE_CONFIG_DIR", fresh.to_str().unwrap())
+        .run()
+        .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(!out.stdout.contains("s3cret"), "{}", out.stdout);
+    assert!(out.stdout.contains("board_hub_token: (set)"), "{}", out.stdout);
+    let file: Value =
+        serde_json::from_str(&std::fs::read_to_string(fresh.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(file["board_hub_token"], json!("s3cret"));
     assert!(fake.calls_to("update_settings").is_empty());
 }
 

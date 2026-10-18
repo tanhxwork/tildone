@@ -170,9 +170,15 @@ fn wire_value(key: &Key, raw: &str) -> Res<Value> {
 }
 
 /// A value as shown to the agent: an unset project id reads `none`.
+/// A token never reaches the terminal (and so an agent's transcript): it shows as
+/// `(set)` or `(empty)`.
 fn show(name: &str, v: &Value) -> String {
     if name == "default_project_id" && (v.is_null() || v == &json!(0)) {
         return toon::kv(name, &json!("none"));
+    }
+    if name.ends_with("_token") {
+        let set = v.as_str().is_some_and(|s| !s.is_empty());
+        return toon::kv(name, &json!(if set { "(set)" } else { "(empty)" }));
     }
     toon::kv(name, v)
 }
