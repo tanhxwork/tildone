@@ -21,6 +21,9 @@ export interface ExecuteResult {
 /** Check the hub's schema and start following its changes (re-emitted as agent-db-changed). */
 export const hubConnect = () => invoke<{ version: number }>("hub_connect");
 
+/** Stop following a hub (no-op when not following); called when this window uses its own board. */
+export const hubDisconnect = () => invoke<void>("hub_disconnect");
+
 export const hubSelect = <T>(sql: string, params: unknown[] = []) =>
   invoke<T>("hub_sql", { kind: "select", sql, params });
 
@@ -32,9 +35,15 @@ export const hubClaimCwds = () => invoke<string[]>("hub_claim_cwds");
 export const hubGitRemote = (cwd: string) => invoke<string | null>("hub_git_remote", { cwd });
 export const hubFile = (path: string) => invoke<ArrayBuffer>("hub_file", { path });
 
-/** Store an image on the hub; resolves to the hub's absolute path for db.insertImage. */
+/**
+ * Store an image on the hub; resolves to its path relative to the hub's app data
+ * (`attachments/<task>/<name>`, as a local attachment is stored) for db.insertImage.
+ * The bytes go as a raw IPC body, not a JSON array.
+ */
 export const hubImagePut = (taskId: number, name: string, bytes: Uint8Array) =>
-  invoke<string>("hub_image_put", { taskId, name, bytes: Array.from(bytes) });
+  invoke<string>("hub_image_put", bytes, {
+    headers: { "x-task-id": String(taskId), "x-name": encodeURIComponent(name) },
+  });
 
 /** This machine's hub token (Settings → Agent access), created on first use. */
 export const hubToken = () => invoke<string>("hub_token");
