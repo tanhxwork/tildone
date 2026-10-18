@@ -1,0 +1,32 @@
+# Standalone crate (not a workspace member): building it never compiles Tauri.
+[package]
+name = "tildone-cli"
+version = "0.1.0"
+edition = "2021"
+description = "tildone-axi: a stateless agent CLI for the Tildone board"
+publish = false
+
+[[bin]]
+name = "tildone-axi"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.0.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+reqwest = { version = "0.13.2", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+rmcp = { version = "3.0.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+tokio-util = "0.7.18"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

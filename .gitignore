@@ -47,3 +47,4 @@ AGENTS.md
 
 # tildone-axi sidecar, built by scripts/cli-sidecar.sh for release bundles.
 src-tauri/binaries/
+cli/target/
