@@ -115,7 +115,8 @@ async function rpc(method: string, params: unknown, notify = false) {
   return JSON.parse(data);
 }
 
-async function hubCreateTask(title: string) {
+/** Call an MCP tool on the hub; resolves to its JSON result. */
+async function hubTool(name: string, args: Record<string, unknown>) {
   if (!mcpSession) {
     await rpc("initialize", {
       protocolVersion: "2025-03-26",
@@ -124,9 +125,12 @@ async function hubCreateTask(title: string) {
     });
     await rpc("notifications/initialized", {}, true);
   }
-  const out = await rpc("tools/call", { name: "create_task", arguments: { title } });
-  if (out.error || out.result?.isError) throw new Error(`create_task: ${JSON.stringify(out)}`);
+  const out = await rpc("tools/call", { name, arguments: args });
+  if (out.error || out.result?.isError) throw new Error(`${name}: ${JSON.stringify(out)}`);
+  return JSON.parse(out.result.content[0].text);
 }
+
+const hubCreateTask = (title: string) => hubTool("create_task", { title });
 
 /** The hub's own database, over its /sql route with the known token. */
 async function hubSelect<T>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -289,6 +293,19 @@ describe("hub: another Tildone as the board", () => {
       timeoutMsg: "the hub's task did not reach the client within 5s",
     });
     await browser.saveScreenshot(`${SHOTS}/client-live-update.png`);
+  });
+
+  it("a file chip in the review band says the file is on the hub", async () => {
+    const title = "Client review task";
+    const task = await hubTool("create_task", { title, status: "doing", tags: ["needs-review"] });
+    await hubTool("add_link", { task_id: task.id, url: "/home/someone/evidence/shot.png" });
+    await $(`.task-row*=${title}`).waitForExist({ timeout: 5_000 });
+    await $(`.task-title*=${title}`).click();
+    await $(".review-band-links .card-link*=shot.png").click();
+    await expect($(".detail-link-error")).toHaveText("shot.png is on the hub — open it there.");
+    await browser.saveScreenshot(`${SHOTS}/client-review-file-chip.png`);
+    await browser.keys("Escape");
+    await $(".detail-card").waitForExist({ reverse: true });
   });
 
   it("wrong token shows the error, and this machine's board is one click away", async () => {
