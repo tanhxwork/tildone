@@ -5447,17 +5447,31 @@ fn resolve_port(env_override: Option<&str>, is_dev_build: bool) -> u16 {
 /// from a `tauri build` run out of a worktree, so a worktree release build binds
 /// 11502 and silently steals the installed app's board. We still bind (a
 /// legitimately relocated install must keep working), but warn when the running
-/// bundle is not under an `/Applications/` dir — the one cheap signal that this
+/// bundle is not where an installer puts it — the one cheap signal that this
 /// might be a squatter. Pure so the decision is unit-testable without a binary.
 fn should_warn_port_squat(
     is_dev: bool,
     port: u16,
     explicit: Option<u16>,
-    in_applications: bool,
+    installed: bool,
 ) -> bool {
     // Only when a RELEASE build DEFAULTED onto 11502 (not asked for it explicitly)
-    // and is running from outside /Applications.
-    !is_dev && port == AGENT_PORT && explicit != Some(AGENT_PORT) && !in_applications
+    // and is running from outside an install location.
+    !is_dev && port == AGENT_PORT && explicit != Some(AGENT_PORT) && !installed
+}
+
+/// Where an installer puts the binary: /Applications or ~/Applications on macOS;
+/// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_* or Program Files
+/// elsewhere. A worktree target dir is none of these.
+fn is_installed_path(exe: &str, macos: bool) -> bool {
+    if macos {
+        exe.contains("/Applications/")
+    } else {
+        exe.starts_with("/usr/")
+            || exe.starts_with("/opt/")
+            || exe.contains("/.mount_")
+            || exe.contains("\\Program Files")
+    }
 }
 
 fn requested_port() -> u16 {
@@ -5468,13 +5482,11 @@ fn requested_port() -> u16 {
         .and_then(|s| s.trim().parse::<u16>().ok());
     let port = resolve_port(env_override.as_deref(), is_dev);
     if let Ok(exe) = std::env::current_exe() {
-        // Covers both /Applications and ~/Applications; a worktree target dir has
-        // neither, so it is the honest discriminator here.
-        let in_applications = exe.to_string_lossy().contains("/Applications/");
-        if should_warn_port_squat(is_dev, port, explicit, in_applications) {
+        let installed = is_installed_path(&exe.to_string_lossy(), cfg!(target_os = "macos"));
+        if should_warn_port_squat(is_dev, port, explicit, installed) {
             eprintln!(
                 "tildone: WARNING — this release build ({}) is claiming port {AGENT_PORT} \
-                 but is not installed under /Applications. If the installed Tildone is \
+                 but is not running from an install location. If the installed Tildone is \
                  running, this steals its agent board. Quit this build, or set \
                  TILDONE_AGENT_PORT to point it elsewhere.",
                 exe.display()
@@ -8739,10 +8751,10 @@ mod tests {
     /// binding (a relocated install is legitimate) but warn — this is exactly when.
     #[test]
     fn warns_when_a_release_build_outside_applications_claims_the_port() {
-        // The squatter: release build, defaulted onto 11502, not in /Applications.
+        // The squatter: release build, defaulted onto 11502, not installed.
         assert!(should_warn_port_squat(false, AGENT_PORT, None, false));
 
-        // The installed app: same port, but under /Applications — no warning.
+        // The installed app: same port, but installed — no warning.
         assert!(!should_warn_port_squat(false, AGENT_PORT, None, true));
 
         // A dev build never claims 11502, so it is never the squatter.
@@ -8753,6 +8765,20 @@ mod tests {
 
         // An explicit override to some *other* port means we aren't on 11502 at all.
         assert!(!should_warn_port_squat(false, 11599, Some(11599), false));
+    }
+
+    /// The .deb puts the app in /usr/bin, which has no /Applications in it: the
+    /// installed Linux app must not warn, and a worktree build on Linux still must.
+    #[test]
+    fn install_location_depends_on_the_os() {
+        assert!(is_installed_path("/Applications/Tildone.app/Contents/MacOS/tildone", true));
+        assert!(is_installed_path("/Users/me/Applications/Tildone.app/Contents/MacOS/tildone", true));
+        assert!(!is_installed_path("/Users/me/projects/tildone/src-tauri/target/release/tildone", true));
+        assert!(is_installed_path("/usr/bin/tildone", false));
+        assert!(is_installed_path("/opt/tildone/tildone", false));
+        assert!(is_installed_path("/tmp/.mount_TildoXyz12/usr/bin/tildone", false));
+        assert!(is_installed_path(r"C:\Program Files\Tildone\tildone.exe", false));
+        assert!(!is_installed_path("/home/me/.factory/tildone-cargo-target/release/tildone", false));
     }
 
     /// The connect briefing must name every level of the model, not just the two
