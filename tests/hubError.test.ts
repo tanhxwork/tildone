@@ -12,6 +12,9 @@ describe("classifyHubError", () => {
     expect(classifyHubError("hub http://h:1: unreachable: connection refused").heading).toBe(
       "Couldn’t reach the hub.",
     );
+    expect(classifyHubError("hub http://h:1: refused (Origin/Host)").heading).toBe(
+      "The hub refused this address.",
+    );
     expect(classifyHubError("Error: something else").kind).toBe("unreachable");
   });
 });

@@ -5,7 +5,8 @@
 //! here instead of opening its own tildone.db, and follows /events to stay live.
 //!
 //! Every route below requires all three guards, in this order:
-//! - Host in the agent server's allow-list (`server_config` in agent.rs), else 403;
+//! - Host in the agent server's allow-list (`server_config` in agent.rs) or one of
+//!   this machine's tailnet names (`agent::tailnet_hosts`), else 403;
 //! - no `Origin` header (a browser page must never reach SQL), else 403;
 //! - `Authorization: Bearer <token>` matching `hub-token`, else 401.
 //!
@@ -98,7 +99,7 @@ pub struct HubConfig {
     /// One `()` per agent-db-changed app event; /events turns each into a `change`.
     pub events: tokio::sync::broadcast::Sender<()>,
     pub token: String,
-    /// Host names the agent server answers to (`agent::allowed_hosts`).
+    /// Host names the hub answers to (`agent::allowed_hosts` plus `agent::tailnet_hosts`).
     pub allowed_hosts: Vec<String>,
     /// The app data dir; attachments live in `<data_dir>/attachments/`.
     pub data_dir: PathBuf,
@@ -313,8 +314,9 @@ fn column_json(v: ValueRef<'_>) -> Value {
 const NOT_ALLOWED: &str = "statement not allowed";
 
 /// True for ATTACH, DETACH and VACUUM (which includes VACUUM INTO): they reach
-/// files outside the board. Judged by the first keyword, after whitespace and
-/// comments, because a statement that starts with one of them is that statement.
+/// files outside the board. Judged by the first keyword, after whitespace, comments
+/// and `;` (SQLite skips an empty statement and compiles the next one), because a
+/// statement that starts with one of them is that statement.
 fn refused_statement(sql: &str) -> bool {
     let mut rest = sql;
     loop {
@@ -323,6 +325,8 @@ fn refused_statement(sql: &str) -> bool {
             rest = r.split_once('\n').map_or("", |(_, tail)| tail);
         } else if let Some(r) = rest.strip_prefix("/*") {
             rest = r.split_once("*/").map_or("", |(_, tail)| tail);
+        } else if let Some(r) = rest.strip_prefix(';') {
+            rest = r;
         } else {
             break;
         }
@@ -880,8 +884,13 @@ mod tests {
         let other = hub.dir.join("other.db");
         let attach = format!("ATTACH DATABASE '{}' AS o", other.display());
         let vacuum = format!("VACUUM INTO '{}'", hub.dir.join("copy.db").display());
+        let empty_first = format!(";{attach}");
+        let spaced_vacuum = format!(" ; /* x */ ;{vacuum}");
         for (kind, sql) in [
             ("execute", attach.as_str()),
+            ("execute", empty_first.as_str()),
+            ("select", empty_first.as_str()),
+            ("execute", spaced_vacuum.as_str()),
             ("execute", "  -- note\n /* x */ detach database o"),
             ("execute", vacuum.as_str()),
             ("select", "INSERT INTO t (a) VALUES (1)"),
@@ -1018,6 +1027,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ev.bytes().await.unwrap().as_ref(), b"EVIDENCE");
+
+        // A relative path is an attachment as /image records it; `~/` is the hub's home.
+        for (rel, want) in [
+            ("attachments/7/a.png", b"PNGDATA".as_slice()),
+            ("~/shot.png", b"EVIDENCE".as_slice()),
+        ] {
+            let r = hub.get("/file").query(&[("path", rel)]).send().await.unwrap();
+            assert_eq!(r.status().as_u16(), 200, "{rel}");
+            assert_eq!(r.bytes().await.unwrap().as_ref(), want, "{rel}");
+        }
+        let r = hub
+            .get("/file")
+            .query(&[("path", "../secret.txt")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 403);
     }
 
     #[tokio::test]

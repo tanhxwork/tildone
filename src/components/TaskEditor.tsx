@@ -345,6 +345,11 @@ export function TaskEditor() {
   // Finder instead — the user opens them deliberately if they trust the source.
   async function openLink(link: TaskLink) {
     if (asLinkKind(link.kind) === "file") {
+      // Client mode: the path is the hub's, not this machine's.
+      if (isClientMode()) {
+        setLinkError(`${link.label} is on the hub — open it there.`);
+        return;
+      }
       if (isRevealOnlyEvidence(link.url)) {
         void revealItemInDir(link.url);
         return;

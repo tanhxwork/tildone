@@ -4886,6 +4886,40 @@ fn own_hostnames() -> Vec<String> {
     vec![format!("{short}.local"), short]
 }
 
+/// The names other machines reach this one by over Tailscale (`ws`,
+/// `ws.tail….ts.net`, its tailnet IPs). The hub routes accept them on top of
+/// `allowed_hosts`; /mcp does not. Empty when the tailscale CLI is missing or down.
+pub(crate) fn tailnet_hosts() -> Vec<String> {
+    std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+        .map(|v| tailnet_hosts_from(&v))
+        .unwrap_or_default()
+}
+
+fn tailnet_hosts_from(status: &Value) -> Vec<String> {
+    let me = &status["Self"];
+    let mut hosts = Vec::new();
+    if let Some(dns) = me["DNSName"].as_str() {
+        let full = dns.trim_end_matches('.').to_ascii_lowercase();
+        if let Some(short) = full.split('.').next().filter(|s| !s.is_empty()) {
+            hosts.push(short.to_string());
+        }
+        if !full.is_empty() {
+            hosts.push(full);
+        }
+    }
+    for ip in me["TailscaleIPs"].as_array().into_iter().flatten() {
+        if let Some(ip) = ip.as_str() {
+            hosts.push(ip.to_string());
+        }
+    }
+    hosts
+}
+
 #[derive(serde::Deserialize)]
 pub struct HeartbeatBody {
     /// The agent's session id — the same value it sent when it claimed a task.
@@ -5515,7 +5549,7 @@ fn hub_config(
         beats,
         events,
         token: crate::hub::ensure_token(&config_dir)?,
-        allowed_hosts: allowed_hosts(),
+        allowed_hosts: [allowed_hosts(), tailnet_hosts()].concat(),
         data_dir,
         evidence_home: crate::evidence::home_dir(),
         shutdown,
@@ -5943,6 +5977,19 @@ fn remove_tray(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailnet_hosts_are_the_magicdns_names_and_ips() {
+        let status = json!({"Self": {
+            "DNSName": "WS.tail8e5688.ts.net.",
+            "TailscaleIPs": ["100.104.71.85", "fd7a:115c:a1e0::7b29:4756"]
+        }});
+        assert_eq!(
+            tailnet_hosts_from(&status),
+            ["ws", "ws.tail8e5688.ts.net", "100.104.71.85", "fd7a:115c:a1e0::7b29:4756"]
+        );
+        assert!(tailnet_hosts_from(&json!({})).is_empty());
+    }
 
     fn extract(result: &CallToolResult) -> (bool, Value) {
         let text = match &result.content[0] {
