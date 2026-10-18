@@ -23,13 +23,18 @@
 //! - `GET /presence` → the JSON `agent_presence` returns.
 //! - `GET /claim-cwds` → the JSON array `recent_claim_cwds` returns.
 //! - `GET /git-remote?cwd=<path>` → JSON string or null, as `git_remote_url`.
-//! - `GET /file?path=<abs path>` → the file's bytes (`application/octet-stream`).
-//!   Only paths `read_evidence_image` allows, or files under the hub's
-//!   `<app data>/attachments/`; anything else → 403.
-//! - `POST /image?task_id=<n>&name=<file name>` raw body bytes → `{"path": "<abs>"}`.
+//! - `GET /file?path=<path>` → the file's bytes (`application/octet-stream`).
+//!   The path is absolute, relative to the hub's `<app data>` (as attachments are
+//!   recorded: `attachments/<task_id>/<file>`), or starts with `~/` (expanded with
+//!   the hub's home). Only paths `read_evidence_image` allows, or files under the
+//!   hub's `<app data>/attachments/`, are served; anything else → 403.
+//! - `POST /image?task_id=<n>&name=<file name>` raw body bytes → `{"path": "<rel>"}`.
 //!   Stores the image as `<app data>/attachments/<task_id>/<name>`, as the window's
-//!   saveImageFile does locally (src/utils/images.ts), and returns the absolute
-//!   path the client then records with db.insertImage through /sql.
+//!   saveImageFile does locally (src/utils/images.ts), and returns that path
+//!   relative to `<app data>` (`attachments/<task_id>/<name>`), the form
+//!   db.insertImage records through /sql.
+//! - `/sql` refuses `ATTACH`, `DETACH` and `VACUUM`, and a `select` that is not
+//!   read-only, with 400 "statement not allowed".
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -280,7 +285,10 @@ async fn blocking<T: Send + 'static>(
 fn bind_value(v: &Value) -> SqlValue {
     match v {
         Value::Null => SqlValue::Null,
-        // plugin-sql/sqlx has no bool in SQLite: 0 or 1.
+        // SQLite has no bool, and the schema keeps flags as 0/1 integers. plugin-sql
+        // would bind a JSON bool as the text "true" (wrapper.rs falls through to
+        // sqlx's JSON encoding), which `WHERE flag = 1` never matches, so the hub
+        // binds the integer instead.
         Value::Bool(b) => SqlValue::Integer(*b as i64),
         Value::Number(n) => match n.as_i64() {
             Some(i) => SqlValue::Integer(i),
@@ -302,10 +310,41 @@ fn column_json(v: ValueRef<'_>) -> Value {
     }
 }
 
+const NOT_ALLOWED: &str = "statement not allowed";
+
+/// True for ATTACH, DETACH and VACUUM (which includes VACUUM INTO): they reach
+/// files outside the board. Judged by the first keyword, after whitespace and
+/// comments, because a statement that starts with one of them is that statement.
+fn refused_statement(sql: &str) -> bool {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix("--") {
+            rest = r.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(r) = rest.strip_prefix("/*") {
+            rest = r.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(word.as_str(), "attach" | "detach" | "vacuum")
+}
+
 /// Run one statement. Parameters named `$N` bind by their number, so `$2` before
 /// `$1` and a repeated `$1` work; `?` parameters bind by position.
 fn run_sql(conn: &Connection, req: &SqlRequest) -> Result<Value, String> {
+    if refused_statement(&req.sql) {
+        return Err(NOT_ALLOWED.into());
+    }
     let mut stmt = conn.prepare(&req.sql).map_err(|e| e.to_string())?;
+    if req.kind == "select" && !stmt.readonly() {
+        return Err(NOT_ALLOWED.into());
+    }
     for i in 1..=stmt.parameter_count() {
         let n = match stmt.parameter_name(i) {
             Some(name) => name
@@ -481,6 +520,18 @@ fn attachments_dir(cfg: &HubConfig) -> PathBuf {
 /// The bytes at `path` if it is an attachment of this hub, or evidence
 /// `read_evidence_image` would serve. Otherwise `Err`: the caller answers 403.
 fn read_allowed(cfg: &HubConfig, path: &Path) -> Result<Vec<u8>, String> {
+    // `~/x` is the hub's own home (its agents write evidence paths that way); a
+    // relative path is relative to the app data dir, as attachments are recorded.
+    let resolved = match path.strip_prefix("~") {
+        Ok(rest) if !rest.as_os_str().is_empty() => cfg
+            .evidence_home
+            .as_deref()
+            .ok_or("no home directory")?
+            .join(rest),
+        _ if path.is_relative() => cfg.data_dir.join(path),
+        _ => path.to_path_buf(),
+    };
+    let path = resolved.as_path();
     if let (Ok(real), Ok(root)) = (
         std::fs::canonicalize(path),
         std::fs::canonicalize(attachments_dir(cfg)),
@@ -536,15 +587,16 @@ async fn image(State(cfg): State<HubConfig>, headers: HeaderMap, uri: Uri, body:
         return err(StatusCode::PAYLOAD_TOO_LARGE, "image too large");
     };
     let dir = attachments_dir(&cfg).join(task_id.to_string());
-    let path = dir.join(&name);
-    let stored = path.clone();
+    let stored = dir.join(&name);
     let written = blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         std::fs::write(&stored, &bytes).map_err(|e| e.to_string())
     })
     .await;
     match written {
-        Ok(Ok(())) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
+        Ok(Ok(())) => {
+            Json(json!({ "path": format!("attachments/{task_id}/{name}") })).into_response()
+        }
         Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(r) => r,
     }
@@ -784,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sql_maps_params_like_plugin_sql_and_reports_errors_as_400() {
+    async fn sql_binds_a_bool_as_0_or_1_and_reports_errors_as_400() {
         let hub = start("params").await;
         hub.sql(
             "execute",
@@ -820,6 +872,39 @@ mod tests {
         assert_eq!(missing.status().as_u16(), 400);
         // A failed write is not a change.
         assert_eq!(hub.changes.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn sql_refuses_attach_detach_vacuum_and_a_write_under_select() {
+        let hub = start("refuse").await;
+        let other = hub.dir.join("other.db");
+        let attach = format!("ATTACH DATABASE '{}' AS o", other.display());
+        let vacuum = format!("VACUUM INTO '{}'", hub.dir.join("copy.db").display());
+        for (kind, sql) in [
+            ("execute", attach.as_str()),
+            ("execute", "  -- note\n /* x */ detach database o"),
+            ("execute", vacuum.as_str()),
+            ("select", "INSERT INTO t (a) VALUES (1)"),
+            ("select", "DELETE FROM t"),
+        ] {
+            let (status, msg) = error_of(hub.sql(kind, sql, json!([])).await).await;
+            assert_eq!(
+                (status, msg.as_str()),
+                (400, "statement not allowed"),
+                "{sql}"
+            );
+        }
+        assert!(!other.exists() && !hub.dir.join("copy.db").exists());
+        assert_eq!(hub.changes.load(Ordering::SeqCst), 0);
+        // A WITH … SELECT is still a select.
+        let ok = hub
+            .sql(
+                "select",
+                "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
+                json!([]),
+            )
+            .await;
+        assert_eq!(ok.status().as_u16(), 200);
     }
 
     #[tokio::test]
@@ -947,7 +1032,7 @@ mod tests {
         assert_eq!(r.status().as_u16(), 200);
         let body: Value = r.json().await.unwrap();
         let expected = hub.dir.join("data/attachments/12/img-1.png");
-        assert_eq!(body["path"], json!(expected.to_string_lossy()));
+        assert_eq!(body["path"], json!("attachments/12/img-1.png"));
         assert_eq!(std::fs::read(&expected).unwrap(), b"BYTES");
 
         for q in [
