@@ -186,7 +186,6 @@ pub(crate) fn report(actions: &dyn AppActions, id: &str) -> ClientReport {
     }
 }
 
-/// What the hub accepts as a client id: 32 lowercase hex characters.
 /// A random id kept in `<dir>/client-id`: made on first use, then read back. A file
 /// holding anything else is replaced.
 fn client_id(dir: &std::path::Path) -> String {

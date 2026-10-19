@@ -321,9 +321,15 @@ fn start_update(source: &std::path::Path, data: &std::path::Path) -> Result<Valu
         .spawn()
         .map_err(|e| format!("cannot start scripts/self-update.sh: {e}"))?;
     // `exec bash` keeps this pid; the script writes the same one and removes it.
-    let _ = std::fs::write(data.join(UPDATE_PID), child.id().to_string());
+    let pid_file = data.join(UPDATE_PID);
+    let pid = child.id().to_string();
+    let _ = std::fs::write(&pid_file, &pid);
     std::thread::spawn(move || {
         let _ = child.wait();
+        // A script that stopped before its trap leaves the file behind.
+        if std::fs::read_to_string(&pid_file).is_ok_and(|p| p.trim() == pid) {
+            let _ = std::fs::remove_file(&pid_file);
+        }
     });
     Ok(json!({ "started": true, "log": log_path.to_string_lossy() }))
 }
@@ -648,6 +654,11 @@ mod tests {
             !data.join(UPDATE_LOG).exists(),
             "a refusal started something"
         );
+        // Pids 0 and -1 would ask about a process group, so they never count.
+        for pid in ["0", "-1"] {
+            std::fs::write(data.join(UPDATE_PID), pid).unwrap();
+            assert_eq!(running_update(&data), None, "pid {pid}");
+        }
         // A pid file left by a dead process does not block it.
         std::fs::write(data.join(UPDATE_PID), "2147483646").unwrap();
         assert!(call(&app, &ctx, "update", &[]).await.ok);
