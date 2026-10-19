@@ -678,6 +678,49 @@ textarea:focus-visible,
   cursor: pointer;
 }
 
+/* The header's priority filter: a ghost chip that fills with the accent while a
+   filter is on. Our own chevron; the option list stays native. */
+.filter-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.filter-chip select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 28px;
+  padding: 0 26px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.filter-chip select:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.filter-chip.set select {
+  background: var(--bg-active);
+  color: var(--accent);
+}
+
+.filter-chip svg {
+  position: absolute;
+  right: 8px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.filter-chip.set svg {
+  color: var(--accent);
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -7549,10 +7592,6 @@ textarea:focus-visible,
   color: var(--text-faint);
 }
 
-.focus-card .owner-mark {
-  flex: none;
-}
-
 .focus-pulse {
   width: 6px;
   height: 6px;
@@ -7593,8 +7632,13 @@ textarea:focus-visible,
   background: var(--border);
 }
 
+/* "Needs you" / "Stalled": sized and toned like the "Not in a goal" header above. */
 .focus-fold {
   gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .focus-fold.quiet {

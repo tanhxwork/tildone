@@ -7,6 +7,7 @@ import { ProjectGlyph } from "./ProjectGlyph";
 import { WsPill, WsServersHeader } from "./WsServers";
 import {
   IconBoard,
+  IconChevronDown,
   IconEye,
   IconEyeOff,
   IconList,
@@ -130,17 +131,19 @@ export function Header({ searchRef }: { searchRef: RefObject<HTMLInputElement | 
                 )}
               </div>
 
-              <select
-                className="priority-filter"
-                aria-label="Filter by priority"
-                value={priorityFilter}
-                onChange={(e) => setPriorityFilter(Number(e.target.value))}
-              >
-                <option value={0}>Any priority</option>
-                <option value={3}>High</option>
-                <option value={2}>Medium</option>
-                <option value={1}>Low</option>
-              </select>
+              <span className={`filter-chip ${priorityFilter ? "set" : ""}`}>
+                <select
+                  aria-label="Filter by priority"
+                  value={priorityFilter}
+                  onChange={(e) => setPriorityFilter(Number(e.target.value))}
+                >
+                  <option value={0}>Any priority</option>
+                  <option value={3}>High</option>
+                  <option value={2}>Medium</option>
+                  <option value={1}>Low</option>
+                </select>
+                <IconChevronDown size={12} aria-hidden="true" />
+              </span>
 
               <button
                 className={`icon-btn toggle ${showCompleted ? "on" : ""}`}

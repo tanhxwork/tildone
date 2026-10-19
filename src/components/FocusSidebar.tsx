@@ -3,7 +3,6 @@ import type { FocusGoal, FocusModel, MovingCard } from "../focusViews";
 import { useStore } from "../store";
 import type { Task } from "../types";
 import { IconChevronDown, IconChevronRight } from "./Icons";
-import { OwnerMark } from "./TaskRow";
 
 // The sidebar's compass (spec focus-compass, mockup D): the goals that moved
 // this week with the cards moving toward each, then the loose work, then the
@@ -11,8 +10,8 @@ import { OwnerMark } from "./TaskRow";
 
 const CARDS_PER_GOAL = 3;
 
-/** One card line: marker, ref, title, who owns it. Opens the editor. `idle` is a
- *  stalled card: a muted dot instead of the pulse, and no owner. */
+/** One card line: marker, ref, title, and a "you" pill when it is yours. Opens the
+ *  editor. `idle` is a stalled card: a muted dot instead of the pulse, and no pill. */
 function CardLine({
   task,
   done,
@@ -44,8 +43,7 @@ function CardLine({
       )}
       <span className="focus-ref">{task.ref}</span>
       <span className="focus-card-title">{task.title}</span>
-      {!idle &&
-        (task.owner === "human" ? <span className="focus-you">you</span> : <OwnerMark task={task} />)}
+      {!idle && task.owner === "human" && <span className="focus-you">you</span>}
     </button>
   );
 }
