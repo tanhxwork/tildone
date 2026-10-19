@@ -2,6 +2,7 @@
 //! shaped for agents. See `tildone-axi help`.
 
 mod callargs;
+mod clients;
 mod cmd;
 mod git;
 mod hub;
@@ -131,6 +132,15 @@ enum Cmd {
     Settings {
         #[command(subcommand)]
         action: Option<SettingsCmd>,
+    },
+    /// List the client apps on this hub, show one, or run an action on it
+    Clients {
+        /// A client's id, id prefix or host
+        target: Option<String>,
+        /// status|restart|settings|settings-set|hook|engine|update|log
+        action: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Call any server tool; flags come from its schema
     #[command(disable_help_flag = true)]
@@ -290,6 +300,11 @@ async fn dispatch(hub: &Hub, cmd: Cmd) -> Res<()> {
         }
         Cmd::Next { project } => cmd::next(hub, project).await,
         Cmd::Wait { since, ms } => cmd::wait(hub, since, ms).await,
+        Cmd::Clients {
+            target,
+            action,
+            args,
+        } => clients::run(hub, target, action, args).await,
         Cmd::Call { tool, args } => cmd::call(hub, &tool, &args).await,
         Cmd::Settings { .. } => unreachable!("run() handles settings before connecting"),
     }
