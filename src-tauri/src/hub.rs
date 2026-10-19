@@ -560,7 +560,10 @@ async fn events(State(cfg): State<HubConfig>, headers: HeaderMap) -> Response {
     let link = match headers.get(CLIENT_HEADER) {
         None => None,
         Some(v) => match parse_hello(v) {
-            Ok(hello) => Some(cfg.clients.connect(hello)),
+            Ok(hello) => match cfg.clients.connect(hello) {
+                Ok(link) => Some(link),
+                Err(e) => return err(StatusCode::SERVICE_UNAVAILABLE, e),
+            },
             Err(e) => return err(StatusCode::BAD_REQUEST, e),
         },
     };
@@ -635,8 +638,11 @@ fn parse_hello(v: &header::HeaderValue) -> Result<ClientHello, String> {
     let json = percent_decode(&raw.replace('+', "%2B"));
     let hello: ClientHello =
         serde_json::from_str(&json).map_err(|e| format!("bad client header: {e}"))?;
-    if hello.id.is_empty() {
-        return Err("bad client header: empty id".into());
+    // The one shape a real client makes (hubclient `client_id`). Anything else could
+    // pose as another client's host name, since a command is addressed by id or host.
+    let id = &hello.id;
+    if id.len() != 32 || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err("bad client header: id must be 32 lowercase hex characters".into());
     }
     Ok(hello)
 }
@@ -654,8 +660,11 @@ struct Waiter {
     done: tokio::sync::oneshot::Sender<CommandResult>,
 }
 
-#[derive(Default)]
+/// How many clients the registry remembers, connected or not.
+const MAX_CLIENTS: usize = 64;
+
 struct ClientsInner {
+    cap: usize,
     slots: HashMap<String, Slot>,
     /// Callers of `command` waiting for a result, by Command.id.
     waiters: HashMap<String, Waiter>,
@@ -665,8 +674,27 @@ struct ClientsInner {
 
 /// The client apps that follow this hub, and the commands waiting on them. Memory
 /// only: a hub restart forgets everyone until they reconnect.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Clients(std::sync::Arc<std::sync::Mutex<ClientsInner>>);
+
+impl Default for Clients {
+    fn default() -> Self {
+        Self::with_cap(MAX_CLIENTS)
+    }
+}
+
+/// Removes a command's waiter when its caller stops waiting, however it stops
+/// (result, timeout, or the caller's future being dropped).
+struct WaiterGuard<'a> {
+    clients: &'a Clients,
+    command_id: String,
+}
+
+impl Drop for WaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.clients.lock().waiters.remove(&self.command_id);
+    }
+}
 
 /// One client's open /events connection. Dropping it marks the client gone, unless
 /// a newer connection already took the entry over.
@@ -696,11 +724,37 @@ impl Clients {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Register (or replace) the client for a new /events connection.
-    pub fn connect(&self, hello: ClientHello) -> ClientStream {
+    fn with_cap(cap: usize) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(ClientsInner {
+            cap,
+            slots: HashMap::new(),
+            waiters: HashMap::new(),
+            streams: 0,
+            commands: 0,
+        })))
+    }
+
+    /// Register (or replace) the client for a new /events connection. A new id in
+    /// a full registry evicts the disconnected client seen longest ago; with all
+    /// of them connected it is refused.
+    pub fn connect(&self, hello: ClientHello) -> Result<ClientStream, String> {
         let now = unix_now();
         let (tx, commands) = tokio::sync::mpsc::unbounded_channel();
         let mut g = self.lock();
+        if !g.slots.contains_key(&hello.id) && g.slots.len() >= g.cap {
+            let oldest = g
+                .slots
+                .iter()
+                .filter(|(_, s)| !s.entry.connected)
+                .min_by_key(|(_, s)| s.entry.last_seen)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => {
+                    g.slots.remove(&id);
+                }
+                None => return Err(format!("hub already has {} connected clients", g.cap)),
+            }
+        }
         g.streams += 1;
         let stream = g.streams;
         let id = hello.id.clone();
@@ -721,12 +775,12 @@ impl Clients {
             },
         );
         drop(g);
-        ClientStream {
+        Ok(ClientStream {
             clients: self.clone(),
             id,
             stream,
             commands: Some(commands),
-        }
+        })
     }
 
     /// The stream ended. A newer connection of the same id stays connected, and
@@ -773,6 +827,11 @@ impl Clients {
             }
             None => Err("no command waits for that result"),
         }
+    }
+
+    #[cfg(test)]
+    fn waiting(&self) -> usize {
+        self.lock().waiters.len()
     }
 
     /// Every client, connected first, then by host.
@@ -861,17 +920,18 @@ impl Clients {
                 .insert(command_id.clone(), Waiter { client: id, done });
             (label, command_id, rx)
         };
+        let _waiter = WaiterGuard {
+            clients: self,
+            command_id,
+        };
         match tokio::time::timeout(timeout, done).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(format!(
                 "client {label} went offline before it answered {action}"
             )),
-            Err(_) => {
-                self.lock().waiters.remove(&command_id);
-                Err(format!(
-                    "client {label} did not answer {action} within {timeout:?}"
-                ))
-            }
+            Err(_) => Err(format!(
+                "client {label} did not answer {action} within {timeout:?}"
+            )),
         }
     }
 }
@@ -1052,6 +1112,12 @@ mod tests {
     use futures_util::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    // Client ids are 32 lowercase hex characters, as hubclient makes them.
+    const A1: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const A2: &str = "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2";
+    const B1: &str = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+    const C1: &str = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
 
     const TOKEN: &str = "test-token-0123456789-abcdefghijklmnop";
 
@@ -1606,7 +1672,7 @@ mod tests {
     #[tokio::test]
     async fn a_client_is_listed_while_connected_and_kept_after_it_drops() {
         let hub = start("clients-list").await;
-        let a = hello("a1", "alpha");
+        let a = hello(A1, "alpha");
         let stream = follow(&hub, &a).await;
         // An ordinary follower (no header) is not a client.
         let _plain = hub.get("/events").send().await.unwrap();
@@ -1617,7 +1683,7 @@ mod tests {
         assert!(listed[0].report.is_none());
 
         drop(stream);
-        gone(&hub, "a1").await;
+        gone(&hub, A1).await;
         let kept = hub.clients.list();
         assert_eq!(kept.len(), 1);
         assert!(!kept[0].connected && kept[0].last_seen >= kept[0].connected_since);
@@ -1635,10 +1701,10 @@ mod tests {
     #[tokio::test]
     async fn status_is_stored_for_a_known_client_and_refused_for_others() {
         let hub = start("clients-status").await;
-        let _stream = follow(&hub, &hello("a1", "alpha")).await;
+        let _stream = follow(&hub, &hello(A1, "alpha")).await;
         let r = hub
             .post(STATUS_ROUTE)
-            .json(&report("a1", json!({"theme": "dark"})))
+            .json(&report(A1, json!({"theme": "dark"})))
             .send()
             .await
             .unwrap();
@@ -1670,8 +1736,8 @@ mod tests {
     #[tokio::test]
     async fn a_command_reaches_only_its_client_and_returns_the_posted_result() {
         let hub = start("clients-command").await;
-        let mut a = follow(&hub, &hello("a1", "alpha")).await;
-        let mut b = follow(&hub, &hello("b1", "beta")).await;
+        let mut a = follow(&hub, &hello(A1, "alpha")).await;
+        let mut b = follow(&hub, &hello(B1, "beta")).await;
         // By host: "alpha" is unique.
         let clients = hub.clients.clone();
         let call = tokio::spawn(async move {
@@ -1696,38 +1762,23 @@ mod tests {
             output: json!("done"),
         };
         // A result from another client, or for a command nobody waits on, is refused.
-        let foreign = hub
-            .post(RESULT_ROUTE)
-            .json(&from("b1"))
-            .send()
-            .await
-            .unwrap();
+        let foreign = hub.post(RESULT_ROUTE).json(&from(B1)).send().await.unwrap();
         assert_eq!(foreign.status().as_u16(), 404);
         let stray = CommandResult {
             id: "nope".into(),
-            ..from("a1")
+            ..from(A1)
         };
         let r = hub.post(RESULT_ROUTE).json(&stray).send().await.unwrap();
         assert_eq!(r.status().as_u16(), 404);
-        let r = hub
-            .post(RESULT_ROUTE)
-            .json(&from("a1"))
-            .send()
-            .await
-            .unwrap();
+        let r = hub.post(RESULT_ROUTE).json(&from(A1)).send().await.unwrap();
         assert_eq!(r.status().as_u16(), 200);
         let result = call.await.unwrap().unwrap();
         assert_eq!(
             (result.client.as_str(), result.ok, result.output),
-            ("a1", true, json!("done"))
+            (A1, true, json!("done"))
         );
         // The same result twice: the waiter is gone.
-        let again = hub
-            .post(RESULT_ROUTE)
-            .json(&from("a1"))
-            .send()
-            .await
-            .unwrap();
+        let again = hub.post(RESULT_ROUTE).json(&from(A1)).send().await.unwrap();
         assert_eq!(again.status().as_u16(), 404);
     }
 
@@ -1735,9 +1786,9 @@ mod tests {
     async fn a_command_that_cannot_complete_errors_naming_the_client() {
         let hub = start("clients-errors").await;
         let short = Duration::from_millis(150);
-        let stream = follow(&hub, &hello("a1", "alpha")).await;
-        let _other = follow(&hub, &hello("a2", "alpha")).await;
-        let _third = follow(&hub, &hello("c1", "gamma")).await;
+        let stream = follow(&hub, &hello(A1, "alpha")).await;
+        let _other = follow(&hub, &hello(A2, "alpha")).await;
+        let _third = follow(&hub, &hello(C1, "gamma")).await;
 
         let e = hub
             .clients
@@ -1751,18 +1802,18 @@ mod tests {
             .command("alpha", "status", vec![], short)
             .await
             .unwrap_err();
-        assert!(e.contains("a1") && e.contains("a2"), "{e}");
+        assert!(e.contains(A1) && e.contains(A2), "{e}");
         // An action outside ACTIONS never leaves the hub.
         let e = hub
             .clients
-            .command("c1", "rm -rf", vec![], short)
+            .command(C1, "rm -rf", vec![], short)
             .await
             .unwrap_err();
         assert!(e.contains("rm -rf"), "{e}");
         // The client is connected but silent.
         let e = hub
             .clients
-            .command("c1", "status", vec![], short)
+            .command(C1, "status", vec![], short)
             .await
             .unwrap_err();
         assert!(e.contains("gamma") && e.contains("status"), "{e}");
@@ -1770,7 +1821,7 @@ mod tests {
         let clients = hub.clients.clone();
         let call = tokio::spawn(async move {
             clients
-                .command("a1", "restart", vec![], Duration::from_secs(30))
+                .command(A1, "restart", vec![], Duration::from_secs(30))
                 .await
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1784,22 +1835,22 @@ mod tests {
         // Offline now.
         let e = hub
             .clients
-            .command("a1", "status", vec![], short)
+            .command(A1, "status", vec![], short)
             .await
             .unwrap_err();
-        assert!(e.contains("offline") && e.contains("a1"), "{e}");
+        assert!(e.contains("offline") && e.contains(A1), "{e}");
     }
 
     #[tokio::test]
     async fn a_reconnect_takes_over_and_the_old_stream_ending_does_not_disconnect_it() {
         let hub = start("clients-reconnect").await;
-        let old = follow(&hub, &hello("a1", "alpha")).await;
-        let mut new = follow(&hub, &hello("a1", "alpha")).await;
+        let old = follow(&hub, &hello(A1, "alpha")).await;
+        let mut new = follow(&hub, &hello(A1, "alpha")).await;
         assert_eq!(hub.clients.list().len(), 1);
         let clients = hub.clients.clone();
         let call = tokio::spawn(async move {
             clients
-                .command("a1", "status", vec![], Duration::from_secs(5))
+                .command(A1, "status", vec![], Duration::from_secs(5))
                 .await
         });
         let cmd = command_frame(&mut new).await;
@@ -1812,14 +1863,68 @@ mod tests {
         );
         let done = CommandResult {
             id: cmd.id,
-            client: "a1".into(),
+            client: A1.into(),
             ok: true,
             output: json!({}),
         };
         hub.post(RESULT_ROUTE).json(&done).send().await.unwrap();
         assert!(call.await.unwrap().unwrap().ok);
         drop(new);
-        gone(&hub, "a1").await;
+        gone(&hub, A1).await;
+    }
+
+    #[tokio::test]
+    async fn only_a_32_hex_id_registers_so_no_client_can_pose_as_a_host_name() {
+        let hub = start("clients-id").await;
+        let _victim = follow(&hub, &hello(A1, "alpha")).await;
+        for bad in ["alpha", "", &A1.to_uppercase(), &A1[1..], &format!("{A1}0")] {
+            let r = hub
+                .get("/events")
+                .header(CLIENT_HEADER, hello_header(&hello(bad, "evil")))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status().as_u16(), 400, "id {bad:?}");
+        }
+        assert_eq!(hub.clients.list().len(), 1);
+    }
+
+    #[test]
+    fn a_full_registry_evicts_the_oldest_disconnected_client_or_refuses() {
+        let clients = Clients::with_cap(2);
+        let a = clients.connect(hello(A1, "alpha")).unwrap();
+        let b = clients.connect(hello(B1, "beta")).unwrap();
+        // All connected: a new id is refused, naming the cap; a known id still reconnects.
+        let e = clients.connect(hello(C1, "gamma")).err().unwrap();
+        assert!(e.contains('2'), "{e}");
+        let b = {
+            drop(b);
+            clients.connect(hello(B1, "beta")).unwrap()
+        };
+        // Both gone; B1 was seen longer ago, so it goes.
+        drop(a);
+        drop(b);
+        clients.lock().slots.get_mut(B1).unwrap().entry.last_seen -= 100;
+        let _c = clients.connect(hello(C1, "gamma")).unwrap();
+        let ids: Vec<String> = clients.list().into_iter().map(|c| c.hello.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            ids.contains(&A1.to_string()) && ids.contains(&C1.to_string()),
+            "{ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_future_dropped_while_waiting_leaves_no_waiter() {
+        let clients = Clients::default();
+        let _stream = clients.connect(hello(A1, "alpha")).unwrap();
+        let waited = tokio::time::timeout(
+            Duration::from_millis(100),
+            clients.command(A1, "status", vec![], Duration::from_secs(30)),
+        )
+        .await;
+        assert!(waited.is_err(), "the client never answers");
+        assert_eq!(clients.waiting(), 0);
     }
 
     #[tokio::test]
