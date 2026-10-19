@@ -5476,8 +5476,9 @@ fn should_warn_port_squat(
 }
 
 /// Where an installer puts the binary: /Applications or ~/Applications on macOS;
-/// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_* or Program Files
-/// elsewhere. A worktree target dir is none of these.
+/// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_*, Program Files (the
+/// MSI) or %LOCALAPPDATA%\Tildone (the per-user NSIS installer) elsewhere. A worktree
+/// target dir is none of these.
 fn is_installed_path(exe: &str, macos: bool) -> bool {
     if macos {
         exe.contains("/Applications/")
@@ -5486,6 +5487,7 @@ fn is_installed_path(exe: &str, macos: bool) -> bool {
             || exe.starts_with("/opt/")
             || exe.contains("/.mount_")
             || exe.contains("\\Program Files")
+            || exe.contains("\\AppData\\Local\\Tildone\\")
     }
 }
 
@@ -8793,6 +8795,8 @@ mod tests {
         assert!(is_installed_path("/opt/tildone/tildone", false));
         assert!(is_installed_path("/tmp/.mount_TildoXyz12/usr/bin/tildone", false));
         assert!(is_installed_path(r"C:\Program Files\Tildone\tildone.exe", false));
+        assert!(is_installed_path(r"C:\Users\me\AppData\Local\Tildone\tildone.exe", false));
+        assert!(!is_installed_path(r"C:\Users\me\projects\tildone\target\release\tildone.exe", false));
         assert!(!is_installed_path("/home/me/.factory/tildone-cargo-target/release/tildone", false));
     }
 

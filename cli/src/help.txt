@@ -2,20 +2,25 @@ tildone-axi: the Tildone board for agents. Stateless; each run opens one connect
 commands:
   tildone-axi                     the card this session holds, its open subtasks, a next step
   doctor                          URL, reachability, server version, tool count
-  ls [--project p] [--done] [--search s]   tasks as a table; the project defaults to the repo folder
+  ls [--project p] [--done] [--search s]
+                                  tasks as a table; the project defaults to the repo folder
   show <ref> [--full]             one card; notes are cut to 40 lines unless --full
-  claim <ref> [--session id] [--cwd p] [--branch b]   set doing and bind this session, checkout and branch
+  claim <ref> [--session id] [--cwd p] [--branch b]
+                                  set doing and bind this session, checkout and branch
   log|note <text> [--id <ref>]    progress log entry | append to the notes
-  sub add <title> | sub done <id> add a subtask | tick a subtask by its id
+  sub add <title> | sub done <id>
+                                  add a subtask | tick a subtask by its id
   done [--id <ref>]               complete the card
   new "<title>" [--follow-up] [--force] [--tags a,b] [--owner human|agent] [--from-task ref]
                                   create; --follow-up first looks for duplicates
   next [--project p]              the top agent todo
   wait [--since N] [--ms N]       park until the board changes
   settings                        every setting as key: value
-  settings set <key> <value>      change one; works with the app closed (writes settings.json)
-  settings hook connect|disconnect|status    the Claude hook (needs the running app)
-  settings engine status|install|start|stop|delete [model|file]   the local AI engine (needs the running app)
+  settings set <key> <value>      change one; with the app closed it writes settings.json
+  settings hook connect|disconnect|status
+                                  the Claude hook (needs the running app)
+  settings engine status|install|start|stop|delete [model|file]
+                                  the local AI engine (needs the running app)
   call <tool> [--flag v ...]      any server tool; flags come from its schema (create-task = create_task)
 env: TILDONE_URL (default http://127.0.0.1:11502/mcp), TILDONE_TOKEN, TILDONE_CONFIG_DIR (settings.json folder for an offline set), CLAUDE_CODE_SESSION_ID
 exit: 0 ok, 1 error (error: and help: on stderr), 2 hub unreachable
