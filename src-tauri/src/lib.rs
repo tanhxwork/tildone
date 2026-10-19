@@ -3,6 +3,7 @@ mod ai;
 mod appsettings;
 mod artifacts;
 mod clilink;
+mod clients;
 mod drops;
 mod evidence;
 mod forge;

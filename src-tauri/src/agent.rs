@@ -754,12 +754,12 @@ pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
 /// is what a click on the notification opens — see `send_user_notification`.
 type NotifyUser = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
-type JsonMap = serde_json::Map<String, Value>;
+pub(crate) type JsonMap = serde_json::Map<String, Value>;
 
 /// One engine operation, for `AppActions::engine`. `Status` returns the status JSON;
 /// the rest return null.
 #[derive(Debug)]
-enum EngineOp {
+pub(crate) enum EngineOp {
     Status(String),
     Install(String),
     Start(String),
@@ -771,7 +771,7 @@ enum EngineOp {
 /// (they are built per session from plain closures), so `agent_server_start` hands
 /// them this instead. The real impl calls the same functions as the Tauri commands;
 /// tests use a fake, and an agent built without an app gets `NoApp`.
-trait AppActions: Send + Sync {
+pub(crate) trait AppActions: Send + Sync {
     /// The public settings: every key in `appsettings::KEYS`.
     fn settings_get(&self) -> Result<JsonMap, String>;
     /// Apply a patch, save, and emit `settings-changed`. Returns the public settings
@@ -811,7 +811,7 @@ impl AppActions for NoApp {
 }
 
 /// The real thing: the command functions, called with the app's handle.
-struct TauriActions(AppHandle);
+pub(crate) struct TauriActions(pub(crate) AppHandle);
 
 impl AppActions for TauriActions {
     fn settings_get(&self) -> Result<JsonMap, String> {
@@ -1125,7 +1125,7 @@ fn ok_json(value: &Value) -> Result<CallToolResult, ErrorData> {
 
 /// Settings as an agent sees them: a token's value never goes into a tool result
 /// (and so a transcript). A set token reads "(set)"; an empty one stays "".
-fn hide_tokens(mut settings: JsonMap) -> JsonMap {
+pub(crate) fn hide_tokens(mut settings: JsonMap) -> JsonMap {
     for (key, value) in settings.iter_mut() {
         if key.ends_with("_token") && value.as_str().is_some_and(|s| !s.is_empty()) {
             *value = json!("(set)");
