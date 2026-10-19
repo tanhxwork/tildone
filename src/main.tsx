@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./settings";
+import { installErrorReporting } from "./hubClient";
 
 // Dev builds paint themselves red (the [data-dev-build] tokens in App.css) so
 // a dev window is never mistaken for the installed app. The name half of the
@@ -15,6 +16,9 @@ if (import.meta.env.DEV) {
 if (import.meta.env.VITE_E2E) {
   import("@wdio/tauri-plugin");
 }
+
+// Uncaught window errors reach the client report a hub reads (src-tauri/src/hubclient.rs).
+installErrorReporting(window);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

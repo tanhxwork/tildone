@@ -2,7 +2,9 @@ mod agent;
 mod ai;
 mod appsettings;
 mod artifacts;
+mod clientactions;
 mod clilink;
+mod clients;
 mod drops;
 mod evidence;
 mod forge;
@@ -266,6 +268,7 @@ pub fn run() {
     builder
         .setup(|app| {
             appsettings::init(app.handle());
+            hubclient::started_at();
             // Off the main thread: it reads two ~3 MB files and is rarely needed.
             std::thread::spawn(clilink::refresh_appimage_copy);
             // The default window size (tauri.conf.json) is chosen so the board's
@@ -362,6 +365,7 @@ pub fn run() {
             offlinestore::offline_write,
             hubclient::hub_connect,
             hubclient::hub_disconnect,
+            hubclient::client_report_error,
             hubclient::hub_sql,
             hubclient::hub_presence,
             hubclient::hub_claim_cwds,

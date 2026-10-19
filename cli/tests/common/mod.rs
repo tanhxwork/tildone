@@ -189,6 +189,13 @@ fn standard_tools() -> Vec<Tool> {
                    "agent_server": s("boolean"), "ai_model": s("string")}),
             json!([]),
         ),
+        tool("list_clients", "List client apps.", json!({}), json!([])),
+        tool(
+            "client_command",
+            "Run an action on a client app.",
+            json!({"client": {"type": "string"}, "action": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}}}),
+            json!(["client", "action"]),
+        ),
         tool(
             "claude_hook",
             "Connect, disconnect or check the Claude hook.",

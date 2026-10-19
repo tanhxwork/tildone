@@ -48,3 +48,29 @@ export const hubImagePut = (taskId: number, name: string, bytes: Uint8Array) =>
 
 /** This machine's hub token (Settings → Agent access), created on first use. */
 export const hubToken = () => invoke<string>("hub_token");
+
+/** One line about an uncaught window error or rejection, for the client report the hub shows. */
+export const reportWindowError = (message: string) =>
+  invoke<void>("client_report_error", { message });
+
+const lineOf = (reason: unknown) =>
+  reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+
+/**
+ * Send uncaught errors and unhandled rejections to Rust (client_report_error), so a
+ * hub can see them in `tildone-axi clients <id>`. Never throws: a failing report must
+ * not become another uncaught error.
+ */
+export function installErrorReporting(target: Pick<Window, "addEventListener">) {
+  const send = (message: string) => {
+    try {
+      void reportWindowError(message).catch(() => {});
+    } catch {
+      // invoke is missing outside Tauri.
+    }
+  };
+  target.addEventListener("error", (e) => send(e.error ? lineOf(e.error) : String(e.message)));
+  target.addEventListener("unhandledrejection", (e) =>
+    send(`Unhandled rejection: ${lineOf(e.reason)}`),
+  );
+}

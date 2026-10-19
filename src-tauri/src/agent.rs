@@ -754,12 +754,12 @@ pub(crate) type Notify = Arc<dyn Fn() + Send + Sync>;
 /// is what a click on the notification opens — see `send_user_notification`.
 type NotifyUser = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
-type JsonMap = serde_json::Map<String, Value>;
+pub(crate) type JsonMap = serde_json::Map<String, Value>;
 
 /// One engine operation, for `AppActions::engine`. `Status` returns the status JSON;
 /// the rest return null.
 #[derive(Debug)]
-enum EngineOp {
+pub(crate) enum EngineOp {
     Status(String),
     Install(String),
     Start(String),
@@ -771,7 +771,7 @@ enum EngineOp {
 /// (they are built per session from plain closures), so `agent_server_start` hands
 /// them this instead. The real impl calls the same functions as the Tauri commands;
 /// tests use a fake, and an agent built without an app gets `NoApp`.
-trait AppActions: Send + Sync {
+pub(crate) trait AppActions: Send + Sync {
     /// The public settings: every key in `appsettings::KEYS`.
     fn settings_get(&self) -> Result<JsonMap, String>;
     /// Apply a patch, save, and emit `settings-changed`. Returns the public settings
@@ -811,7 +811,7 @@ impl AppActions for NoApp {
 }
 
 /// The real thing: the command functions, called with the app's handle.
-struct TauriActions(AppHandle);
+pub(crate) struct TauriActions(pub(crate) AppHandle);
 
 impl AppActions for TauriActions {
     fn settings_get(&self) -> Result<JsonMap, String> {
@@ -895,6 +895,9 @@ struct TildoneAgent {
     shutdown: CancellationToken,
     /// The running app, for the Settings tools. See `AppActions`.
     actions: Arc<dyn AppActions>,
+    /// The hub's client registry, for `list_clients` and `client_command`. None
+    /// when this agent has no hub.
+    clients: Option<crate::hub::Clients>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1125,13 +1128,34 @@ fn ok_json(value: &Value) -> Result<CallToolResult, ErrorData> {
 
 /// Settings as an agent sees them: a token's value never goes into a tool result
 /// (and so a transcript). A set token reads "(set)"; an empty one stays "".
-fn hide_tokens(mut settings: JsonMap) -> JsonMap {
+pub(crate) fn hide_tokens(mut settings: JsonMap) -> JsonMap {
     for (key, value) in settings.iter_mut() {
         if key.ends_with("_token") && value.as_str().is_some_and(|s| !s.is_empty()) {
             *value = json!("(set)");
         }
     }
     settings
+}
+
+/// A client entry as an agent sees it: no token in its settings, even if the client
+/// sent one in clear.
+fn hide_entry_tokens(mut entry: crate::clients::ClientEntry) -> crate::clients::ClientEntry {
+    if let Some(report) = entry.report.as_mut() {
+        report.settings = hide_output_tokens(std::mem::take(&mut report.settings));
+    }
+    entry
+}
+
+/// A client's JSON through `hide_tokens`: the object itself, and its `settings`
+/// member (the shape of a ClientReport and of the `settings` action's output).
+fn hide_output_tokens(value: Value) -> Value {
+    let Value::Object(mut map) = value else {
+        return value;
+    };
+    if let Some(Value::Object(inner)) = map.remove("settings") {
+        map.insert("settings".into(), Value::Object(hide_tokens(inner)));
+    }
+    Value::Object(hide_tokens(map))
 }
 
 fn ok_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -1212,12 +1236,46 @@ impl TildoneAgent {
             beats,
             shutdown,
             actions: Arc::new(NoApp),
+            clients: None,
         }
     }
 
     /// Give the agent a running app to act on (see `AppActions`).
     fn with_actions(mut self, actions: Arc<dyn AppActions>) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// `client_command`, with the wait for the result as a parameter so tests need
+    /// not wait `COMMAND_TIMEOUT`.
+    async fn run_client_command(
+        &self,
+        params: ClientCommandParams,
+        timeout: std::time::Duration,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Some(clients) = &self.clients else {
+            return Ok(err("this app has no clients"));
+        };
+        let args = params.args.unwrap_or_default();
+        match clients.command(&params.client, &params.action, args, timeout).await {
+            Ok(mut result) => {
+                result.output = hide_output_tokens(result.output);
+                if result.ok {
+                    ok_json(&json!(result))
+                } else {
+                    Ok(err(match &result.output {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    }))
+                }
+            }
+            Err(e) => Ok(err(e)),
+        }
+    }
+
+    /// Give the agent the hub's clients (see `Clients`).
+    fn with_clients(mut self, clients: crate::hub::Clients) -> Self {
+        self.clients = Some(clients);
         self
     }
 
@@ -2536,6 +2594,16 @@ struct UpdateSettingsParams {
 struct ClaudeHookParams {
     #[schemars(description = "connect | disconnect | status")]
     action: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ClientCommandParams {
+    #[schemars(description = "A client's id, or its host name when only one client has it (see list_clients)")]
+    client: String,
+    #[schemars(description = "status | restart | settings | settings-set | hook | engine | update | log")]
+    action: String,
+    #[schemars(description = "The action's arguments, e.g. [\"theme\", \"dark\"] for settings-set, [\"connect\"] for hook, [\"50\"] for log")]
+    args: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -4594,6 +4662,31 @@ impl TildoneAgent {
     }
 
     #[tool(
+        description = "List the Tildone apps that use this one as their board hub, connected or not. Returns [{hello: {id, host, os, version, commit, ...}, report: {hub_state, hub_errors, window_errors, settings, hook}, connected, connected_since, last_seen}]; report is absent until the client's first report. Empty when no client has connected."
+    )]
+    fn list_clients(&self) -> Result<CallToolResult, ErrorData> {
+        let entries: Vec<_> = self
+            .clients
+            .as_ref()
+            .map(|c| c.list())
+            .unwrap_or_default()
+            .into_iter()
+            .map(hide_entry_tokens)
+            .collect();
+        ok_json(&json!(entries))
+    }
+
+    #[tool(
+        description = "Run an action on one client app (see list_clients) and wait for its result. client is an id, or a host name when only one client has it. action: status (fresh report) | restart | settings | settings-set key value (not board_hub_url or board_hub_token) | hook connect|disconnect|status | engine status|start|stop | update (pulls main, rebuilds and installs from the client's checkout; replies with the log path) | log [n] (last n lines of the update log). Returns {id, client, ok, output}; ok=false is an error with the client's message. An offline client, or one that does not answer within 30 seconds, is an error naming it."
+    )]
+    async fn client_command(
+        &self,
+        Parameters(params): Parameters<ClientCommandParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_client_command(params, crate::clients::COMMAND_TIMEOUT).await
+    }
+
+    #[tool(
         description = "Run the built-in AI engine (Settings > AI). status | install (downloads the model; can take minutes) | start | stop | delete (needs file, a name from the models folder). install, start and status take model small|default|better, default the ai_engine_model setting. Returns the engine status after the action."
     )]
     async fn engine(
@@ -5487,7 +5580,7 @@ fn should_warn_port_squat(
 /// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_*, Program Files (the
 /// MSI) or %LOCALAPPDATA%\Tildone (the per-user NSIS installer) elsewhere. A worktree
 /// target dir is none of these.
-fn is_installed_path(exe: &str, macos: bool) -> bool {
+pub(crate) fn is_installed_path(exe: &str, macos: bool) -> bool {
     if macos {
         exe.contains("/Applications/")
     } else {
@@ -5578,6 +5671,7 @@ fn hub_config(
     beats: Beats,
     events: tokio::sync::broadcast::Sender<()>,
     shutdown: CancellationToken,
+    clients: crate::hub::Clients,
 ) -> Result<crate::hub::HubConfig, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -5591,6 +5685,7 @@ fn hub_config(
         data_dir,
         evidence_home: crate::evidence::home_dir(),
         shutdown,
+        clients,
     })
 }
 
@@ -5666,6 +5761,9 @@ pub async fn agent_server_start(
     let hub_on_change = on_change.clone();
     let hub_db = sidecar_db.clone();
     let hub_beats = live.beats.clone();
+    // The client apps of this hub, shared by the hub routes and the MCP tools.
+    let clients = crate::hub::Clients::default();
+    let mcp_clients = clients.clone();
     // The MCP side shares the live beats map so a claim can copy the session's
     // already-beaten pid onto its durable row (see record_claim).
     let mcp_beats = live.beats.clone();
@@ -5680,7 +5778,8 @@ pub async fn agent_server_start(
                     mcp_beats.clone(),
                     agent_ct.clone(),
                 )
-                .with_actions(actions.clone()))
+                .with_actions(actions.clone())
+                .with_clients(mcp_clients.clone()))
             },
             Default::default(),
             config,
@@ -5729,6 +5828,7 @@ pub async fn agent_server_start(
         hub_beats,
         events_tx,
         ct.clone(),
+        clients,
     ) {
         Ok(cfg) => {
             let hub = crate::hub::router(cfg);
@@ -10490,6 +10590,8 @@ mod tests {
             "update_settings",
             "claude_hook",
             "engine",
+            "list_clients",
+            "client_command",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -12306,6 +12408,116 @@ mod tests {
     fn update_settings(agent: &TildoneAgent, patch: Value) -> (bool, Value) {
         let params: UpdateSettingsParams = serde_json::from_value(patch).unwrap();
         extract(&agent.update_settings(Parameters(params)).unwrap())
+    }
+
+    fn client_hello(id: &str, host: &str) -> crate::clients::ClientHello {
+        crate::clients::ClientHello {
+            id: id.into(),
+            host: host.into(),
+            os: "linux".into(),
+            version: "0.1.0".into(),
+            commit: "abc".into(),
+            schema: 1,
+            exe: "/usr/bin/tildone".into(),
+            installed: true,
+            source_dir: "/src".into(),
+            started_at: 1,
+        }
+    }
+
+    /// A connected client that answers every command with `ok` and `output`.
+    fn client_that_answers(
+        clients: &crate::hub::Clients,
+        id: &str,
+        host: &str,
+        ok: bool,
+        output: Value,
+    ) {
+        let mut stream = clients.connect(client_hello(id, host)).unwrap();
+        let clients = clients.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            while let Some(cmd) = stream.commands.as_mut().unwrap().recv().await {
+                let _ = clients.result(crate::clients::CommandResult {
+                    id: cmd.id,
+                    client: id.clone(),
+                    ok,
+                    output: output.clone(),
+                });
+            }
+        });
+    }
+
+    async fn client_command(agent: &TildoneAgent, client: &str, action: &str) -> (bool, Value) {
+        let params = ClientCommandParams {
+            client: client.into(),
+            action: action.into(),
+            args: None,
+        };
+        let r = agent
+            .run_client_command(params, std::time::Duration::from_millis(300))
+            .await
+            .unwrap();
+        extract(&r)
+    }
+
+    #[tokio::test]
+    async fn client_command_picks_by_id_or_unique_host_and_maps_a_failed_result_to_an_error() {
+        let clients = crate::hub::Clients::default();
+        let agent = test_agent().with_clients(clients.clone());
+        client_that_answers(&clients, "a1", "alpha", true, json!({"from": "a1"}));
+        client_that_answers(&clients, "b1", "beta", false, json!("no checkout"));
+
+        let (is_err, v) = client_command(&agent, "a1", "status").await;
+        assert!(!is_err, "{v}");
+        assert_eq!(v["client"], "a1");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["output"], json!({"from": "a1"}));
+        let (is_err, v) = client_command(&agent, "alpha", "status").await;
+        assert!(!is_err && v["client"] == "a1", "{v}");
+
+        // ok=false is a tool error carrying the client's message.
+        let (is_err, v) = client_command(&agent, "b1", "update").await;
+        assert!(is_err && v == json!("no checkout"), "{v}");
+
+        let (is_err, v) = client_command(&test_agent(), "a1", "status").await;
+        assert!(is_err && v == json!("this app has no clients"), "{v}");
+    }
+
+    /// A client report is the client's word: a token in clear in it still never
+    /// reaches an agent.
+    #[tokio::test]
+    async fn client_tools_never_return_a_board_hub_token() {
+        let clients = crate::hub::Clients::default();
+        let agent = test_agent().with_clients(clients.clone());
+        let (is_err, v) = extract(&agent.list_clients().unwrap());
+        assert!(!is_err && v == json!([]));
+        let (_, v) = extract(&test_agent().list_clients().unwrap());
+        assert_eq!(v, json!([]));
+
+        let _stream = clients.connect(client_hello("a1", "alpha")).unwrap();
+        clients.report(crate::clients::ClientReport {
+            id: "a1".into(),
+            hub_state: "connected".into(),
+            hub_message: String::new(),
+            hub_errors: vec![],
+            window_errors: vec![],
+            settings: json!({"theme": "dark", "board_hub_token": "s3cret"}),
+            hook: Value::Null,
+        });
+        let listed = agent.list_clients().unwrap();
+        let (_, v) = extract(&listed);
+        assert_eq!(v[0]["hello"]["host"], "alpha");
+        assert_eq!(v[0]["report"]["settings"]["board_hub_token"], "(set)");
+        assert_eq!(v[0]["report"]["settings"]["theme"], "dark");
+        assert!(!format!("{listed:?}").contains("s3cret"));
+
+        // The same for an action that returns settings in clear.
+        let clear = json!({"board_hub_token": "s3cret", "theme": "dark"});
+        client_that_answers(&clients, "b1", "beta", true, clear);
+        let (is_err, v) = client_command(&agent, "b1", "settings").await;
+        assert!(!is_err, "{v}");
+        assert_eq!(v["output"]["board_hub_token"], "(set)");
     }
 
     #[test]

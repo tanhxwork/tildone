@@ -28,7 +28,7 @@ async fn doctor_reachable() {
     );
     assert!(out.stdout.contains("reachable: true"));
     assert!(out.stdout.contains("server: fake-hub 9.9.9"));
-    assert!(out.stdout.contains("tools: 15"));
+    assert!(out.stdout.contains("tools: 17"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -690,7 +690,7 @@ async fn help_includes_instructions() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(out.stdout.contains(INSTRUCTIONS), "{}", out.stdout);
     assert!(
-        out.stdout.contains("tools[15]{name,about}:"),
+        out.stdout.contains("tools[17]{name,about}:"),
         "{}",
         out.stdout
     );
@@ -1092,6 +1092,235 @@ async fn settings_action_timeout_says_it_is_still_running() {
     );
     assert!(
         out.stderr.contains("tildone-axi settings engine status"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("cannot reach"), "{}", out.stderr);
+}
+
+// ---- clients -----------------------------------------------------------------
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+fn client(id: &str, host: &str, connected: bool, last_seen: i64, report: Value) -> Value {
+    json!({
+        "hello": {"id": id, "host": host, "os": "linux", "version": "0.9.0", "commit": "abc1234", "schema": 3,
+                  "exe": "/usr/bin/tildone", "installed": true, "source_dir": "/src/tildone", "started_at": 1_700_000_000},
+        "report": report,
+        "connected": connected,
+        "connected_since": 1_700_000_100,
+        "last_seen": last_seen,
+    })
+}
+
+fn report(hub_errors: Value, window_errors: Value) -> Value {
+    json!({"id": "x", "hub_state": "connected", "hub_message": "", "hub_errors": hub_errors,
+           "window_errors": window_errors, "settings": {"board_hub_url": "http://hub:11502", "theme": "dark"}, "hook": {"connected": true}})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_table_marks_connected_and_last_seen() {
+    let fake = Fake::start().await;
+    let errs = json!([{"at": 1_700_000_500, "message": "boom"}]);
+    fake.reply_json(
+        "list_clients",
+        json!([
+            client(
+                "aaaaaaaa-1111",
+                "laptop",
+                true,
+                unix_now(),
+                report(errs.clone(), errs)
+            ),
+            client(
+                "bbbbbbbb-2222",
+                "desk",
+                false,
+                unix_now() - 7200,
+                Value::Null
+            ),
+        ]),
+    );
+    let out = tildone(&fake, &["clients"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.contains(
+            "clients[2]{id,host,os,commit,link,hub,errors}:\n  aaaaaaaa,laptop,linux,abc1234,connected,connected,2\n  bbbbbbbb,desk,linux,abc1234,seen 2h ago,unreported,\"\""
+        ),
+        "{}",
+        out.stdout
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_detail_by_host_or_id_prefix_lists_errors_newest_first() {
+    let fake = Fake::start().await;
+    let hub_errors = json!([{"at": 1_700_000_200, "message": "older hub"}]);
+    let window_errors = json!([{"at": 1_700_000_900, "message": "newest window"}]);
+    fake.reply_json(
+        "list_clients",
+        json!([
+            client(
+                "aaaaaaaa-1111",
+                "laptop",
+                true,
+                unix_now(),
+                report(hub_errors, window_errors)
+            ),
+            client("bbbbbbbb-2222", "desk", true, unix_now(), Value::Null),
+        ]),
+    );
+    for q in ["laptop", "aaaa"] {
+        let out = tildone(&fake, &["clients", q]).run().await;
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert!(out.stdout.contains("id: aaaaaaaa-1111"), "{}", out.stdout);
+        assert!(out.stdout.contains("theme: dark"), "{}", out.stdout);
+        let newest = out.stdout.find("newest window").expect("window error");
+        let older = out.stdout.find("older hub").expect("hub error");
+        assert!(newest < older, "{}", out.stdout);
+        assert!(
+            out.stdout.contains("2023-11-14T22:28:20Z"),
+            "{}",
+            out.stdout
+        );
+    }
+    let none = tildone(&fake, &["clients", "nope"]).run().await;
+    assert_eq!(none.code, 1);
+    assert!(
+        none.stderr
+            .starts_with("error: no client matches `nope`\nhelp: "),
+        "{}",
+        none.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_ambiguous_target_exits_1_naming_matches() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([
+            client("aaaaaaaa-1111", "twin", true, unix_now(), Value::Null),
+            client("bbbbbbbb-2222", "twin", true, unix_now(), Value::Null),
+        ]),
+    );
+    let out = tildone(&fake, &["clients", "twin", "restart"]).run().await;
+    assert_eq!(out.code, 1);
+    assert!(out.stdout.is_empty());
+    assert!(
+        out.stderr.contains("aaaaaaaa-1111")
+            && out.stderr.contains("bbbbbbbb-2222")
+            && out.stderr.contains("\nhelp: "),
+        "{}",
+        out.stderr
+    );
+    no_calls(&fake, "client_command");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_action_sends_resolved_id_and_prints_output() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([client(
+            "aaaaaaaa-1111",
+            "laptop",
+            true,
+            unix_now(),
+            Value::Null
+        )]),
+    );
+    fake.reply_json(
+        "client_command",
+        json!({"id": "c1", "client": "aaaaaaaa-1111", "ok": true, "output": "restarting"}),
+    );
+    let out = tildone(&fake, &["clients", "laptop", "settings-set", "theme", "-1"])
+        .run()
+        .await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout.trim_end(), "restarting");
+    assert_eq!(
+        fake.calls_to("client_command"),
+        vec![json!({"client": "aaaaaaaa-1111", "action": "settings-set", "args": ["theme", "-1"]})]
+    );
+
+    fake.fail(
+        "client_command",
+        "client aaaaaaaa-1111 did not answer in 30s",
+    );
+    let bad = tildone(&fake, &["clients", "laptop", "status"]).run().await;
+    assert_eq!(bad.code, 1);
+    assert!(
+        bad.stderr
+            .starts_with("error: client aaaaaaaa-1111 did not answer in 30s\nhelp: "),
+        "{}",
+        bad.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_unknown_action_is_refused_locally() {
+    let fake = Fake::start().await;
+    let out = tildone(&fake, &["clients", "laptop", "reboot"]).run().await;
+    assert_eq!(out.code, 1);
+    assert!(
+        out.stderr.starts_with("error: unknown client action `reboot`\nhelp: actions: status|restart|settings|settings-set|hook|engine|update|log"),
+        "{}",
+        out.stderr
+    );
+    no_calls(&fake, "list_clients");
+    no_calls(&fake, "client_command");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_action_output_cannot_drive_the_terminal() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([client(
+            "aaaaaaaa-1111",
+            "laptop",
+            true,
+            unix_now(),
+            Value::Null
+        )]),
+    );
+    fake.reply_json(
+        "client_command",
+        json!({"id": "c1", "client": "aaaaaaaa-1111", "ok": true, "output": "ok\u{1b}[2J\nnext\tline"}),
+    );
+    let out = tildone(&fake, &["clients", "laptop", "log"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(!out.stdout.contains('\u{1b}'), "{:?}", out.stdout);
+    assert_eq!(out.stdout.trim_end(), "ok\\u001B[2J\nnext\tline");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_action_timeout_names_the_client_not_the_hub() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([client(
+            "aaaaaaaa-1111",
+            "laptop",
+            true,
+            unix_now(),
+            Value::Null
+        )]),
+    );
+    fake.delay("client_command", 3000);
+    let out = tildone(&fake, &["clients", "laptop", "status"])
+        .env("TILDONE_ACTION_TIMEOUT_MS", "300")
+        .run()
+        .await;
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("aaaaaaaa-1111") && out.stderr.contains("status"),
         "{}",
         out.stderr
     );

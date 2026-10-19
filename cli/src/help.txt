@@ -21,6 +21,10 @@ commands:
                                   the Claude hook (needs the running app)
   settings engine status|install|start|stop|delete [model|file]
                                   the local AI engine (needs the running app)
+  clients                         the client apps connected to this hub (hub machine only)
+  clients <id|host>               one client in full: status, settings and recent errors
+  clients <id|host> <action> [args...]
+                                  run status|restart|settings|settings-set|hook|engine|update|log on it
   call <tool> [--flag v ...]      any server tool; flags come from its schema (create-task = create_task)
 env: TILDONE_URL (default http://127.0.0.1:11502/mcp), TILDONE_TOKEN, TILDONE_CONFIG_DIR (settings.json folder for an offline set), CLAUDE_CODE_SESSION_ID
 exit: 0 ok, 1 error (error: and help: on stderr), 2 hub unreachable
