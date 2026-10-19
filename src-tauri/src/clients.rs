@@ -59,6 +59,12 @@ pub const ACTIONS: &[&str] = &[
     "log",
 ];
 
+/// The one id shape a client makes: 32 lowercase hex characters. The hub refuses
+/// any other, so no client can pose as another client's host name.
+pub fn is_client_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Who a client is. Sent once per /events connection.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ClientHello {

@@ -638,10 +638,7 @@ fn parse_hello(v: &header::HeaderValue) -> Result<ClientHello, String> {
     let json = percent_decode(&raw.replace('+', "%2B"));
     let hello: ClientHello =
         serde_json::from_str(&json).map_err(|e| format!("bad client header: {e}"))?;
-    // The one shape a real client makes (hubclient `client_id`). Anything else could
-    // pose as another client's host name, since a command is addressed by id or host.
-    let id = &hello.id;
-    if id.len() != 32 || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+    if !crate::clients::is_client_id(&hello.id) {
         return Err("bad client header: id must be 32 lowercase hex characters".into());
     }
     Ok(hello)

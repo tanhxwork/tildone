@@ -308,7 +308,9 @@ async fn command(hub: &Hub, c: &Value, action: &str, args: Vec<String>) -> Res<(
     }
     match output {
         Value::String(t) => say(&plain(&t)),
-        other => say(&serde_json::to_string_pretty(&other).unwrap_or_default()),
+        other => say(&plain(
+            &serde_json::to_string_pretty(&other).unwrap_or_default(),
+        )),
     }
     Ok(())
 }

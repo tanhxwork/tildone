@@ -39,12 +39,16 @@ printf '%s\n' "$out" | grep -qF "git pull --ff-only origin main" || fail "no ff-
 printf '%s\n' "$out" | grep -qF "tauri build --bundles" || fail "no bundle build: $out"
 printf '%s\n' "$out" | grep -qF "/nonexistent/target/release/bundle" || fail "CARGO_TARGET_DIR not used: $out"
 
-# A missing tool stops it early, naming the tool.
+# A missing tool stops it early, naming the tool. Skipped where bun sits in a dir
+# the script adds to PATH itself (a Homebrew Mac).
 rm "$scratch/bin/bun"
-if out=$(HOME="$scratch/home" PATH="$scratch/bin:/usr/bin:/bin" "$script" 99999999 /usr/bin/tildone --dry-run 2>&1); then
+if [ -x /usr/local/bin/bun ] || [ -x /opt/homebrew/bin/bun ]; then
+  echo "skip: bun is in a dir self-update.sh always adds"
+elif out=$(HOME="$scratch/home" PATH="$scratch/bin:/usr/bin:/bin" "$script" 99999999 /usr/bin/tildone --dry-run 2>&1); then
   fail "ran without bun: $out"
+else
+  printf '%s\n' "$out" | grep -qE "cannot find bun on PATH" || fail "the missing tool is not named: $out"
 fi
-printf '%s\n' "$out" | grep -qE "cannot find bun on PATH" || fail "the missing tool is not named: $out"
 
 if "$script" 2>/dev/null; then fail "ran without the pid and exe arguments"; fi
 

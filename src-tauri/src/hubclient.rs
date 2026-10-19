@@ -187,10 +187,6 @@ pub(crate) fn report(actions: &dyn AppActions, id: &str) -> ClientReport {
 }
 
 /// What the hub accepts as a client id: 32 lowercase hex characters.
-fn is_valid_id(id: &str) -> bool {
-    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
 /// A random id kept in `<dir>/client-id`: made on first use, then read back. A file
 /// holding anything else is replaced.
 fn client_id(dir: &std::path::Path) -> String {
@@ -198,7 +194,7 @@ fn client_id(dir: &std::path::Path) -> String {
     if let Some(id) = std::fs::read_to_string(&file)
         .ok()
         .map(|t| t.trim().to_string())
-        .filter(|t| is_valid_id(t))
+        .filter(|t| clients::is_client_id(t))
     {
         return id;
     }
@@ -1450,7 +1446,7 @@ mod tests {
         for bad in ["me", "ABCDEF0123456789ABCDEF0123456789", ""] {
             std::fs::write(dir.join("client-id"), bad).unwrap();
             let fresh = client_id(&dir);
-            assert!(is_valid_id(&fresh), "{bad:?} gave {fresh}");
+            assert!(clients::is_client_id(&fresh), "{bad:?} gave {fresh}");
             assert_eq!(client_id(&dir), fresh);
         }
         let id = client_id(&dir);

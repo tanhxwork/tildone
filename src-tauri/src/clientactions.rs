@@ -193,15 +193,17 @@ fn log_tail(ctx: &Ctx, n: usize) -> Result<Value, String> {
 
 /// The pid in the update pid file, when that process is alive.
 #[cfg(unix)]
-fn running_update(data: &std::path::Path) -> Option<u32> {
-    let pid: u32 = std::fs::read_to_string(data.join(UPDATE_PID))
+fn running_update(data: &std::path::Path) -> Option<i32> {
+    // 0 or a negative pid would ask kill about a whole process group.
+    let pid: i32 = std::fs::read_to_string(data.join(UPDATE_PID))
         .ok()?
         .trim()
         .parse()
-        .ok()?;
+        .ok()
+        .filter(|p| *p > 0)?;
     // Signal 0 only checks; EPERM means the process exists but is not ours.
     // SAFETY: kill with signal 0 sends nothing.
-    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+    let alive = unsafe { libc::kill(pid, 0) } == 0
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
     alive.then_some(pid)
 }
@@ -283,9 +285,14 @@ fn start_update(source: &std::path::Path, data: &std::path::Path) -> Result<Valu
             "update refused: {shown}/scripts/self-update.sh is missing"
         ));
     }
+    // Held from the check until the pid file names the new run, so two update
+    // commands arriving together cannot both start.
+    static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _starting = STARTING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(pid) = running_update(data) {
         return Err(format!(
-            "update refused: an update is already running (pid {pid}); see `log`"
+            "update refused: an update is already running (pid {pid}, in {}); see `log`",
+            data.join(UPDATE_PID).display()
         ));
     }
     let log_path = data.join(UPDATE_LOG);
@@ -313,6 +320,8 @@ fn start_update(source: &std::path::Path, data: &std::path::Path) -> Result<Valu
         .process_group(0)
         .spawn()
         .map_err(|e| format!("cannot start scripts/self-update.sh: {e}"))?;
+    // `exec bash` keeps this pid; the script writes the same one and removes it.
+    let _ = std::fs::write(data.join(UPDATE_PID), child.id().to_string());
     std::thread::spawn(move || {
         let _ = child.wait();
     });
