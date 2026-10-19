@@ -22,6 +22,10 @@ operating guide an agent can load on demand instead, install
   forward the tailnet there once: `tailscale serve --bg --tcp 11502
   tcp://localhost:11503`. Never forward the tailnet to 11502: through a raw TCP
   forward a client can send `Host: localhost` and use /mcp with no token.
+- The same 11503 carries two routes for the client apps of this hub:
+  `POST /client-status` (a client's report) and `POST /client-result` (the answer
+  to a command), each needing the hub token. Commands go out on the client's own
+  `GET /events` stream, never to a client directly.
 - Start Tildone **before** the agent session. Clients connect to MCP servers
   once, at startup — a session that began while Tildone was closed (or Agent
   access was Off) has no tildone tools, and calls fail with "No such tool
@@ -226,6 +230,25 @@ and where, so when you tag a task `needs-review`, in the same breath:
 
 A card that reaches review with no PR link and no verify steps is flagged in the
 UI as "In review with no PR and no verify steps" — that line is about your write.
+
+### Clients
+
+On the hub machine, the other Tildone apps that use this one as their board hub.
+A client appears while its `/events` stream is open and stays listed (offline)
+after it drops; the list is memory only, so a hub restart forgets it until the
+clients reconnect.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_clients` | — | `[{hello: {id, host, os, version, commit, ...}, report?, connected, connected_since, last_seen}]`; `report` has `hub_state`, `hub_errors`, `window_errors`, `settings` (tokens read `(set)`), `hook` |
+| `client_command` | `client` (id, or host when only one client has it), `action`, optional `args` (string array) | `{id, client, ok, output}` |
+
+`action` is one of `status`, `restart`, `settings`, `settings-set key value`,
+`hook connect|disconnect|status`, `engine status|start|stop`, `update`, `log [n]`.
+An unknown client, an ambiguous host (the error lists the ids), an offline
+client, an action outside that list, or no answer within 30 seconds is an error
+naming the client. A client's `ok: false` is an error carrying its message.
+`client_command` works only on the hub machine; elsewhere `list_clients` is `[]`.
 
 ### Examples
 
