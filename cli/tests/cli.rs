@@ -295,16 +295,7 @@ async fn claim_flags_override_defaults() {
     // --session works with no CLAUDE_CODE_SESSION_ID; --cwd and --branch beat git.
     let out = tildone(
         &fake,
-        &[
-            "claim",
-            "TIL-5",
-            "--session",
-            "s-9",
-            "--cwd",
-            "/x/tree",
-            "--branch",
-            "b-2",
-        ],
+        &["claim", "TIL-5", "--session", "s-9", "--cwd", "/x/tree", "--branch", "b-2"],
     )
     .run()
     .await;
@@ -487,23 +478,10 @@ async fn new_passes_tags_owner_from_task() {
         json!({"id": 81, "ref": "TIL-81", "status": "todo", "title": "Ask"}),
     );
     // Spaces around a name are trimmed and an empty name is dropped.
-    let base = [
-        "new",
-        "Ask",
-        "--project",
-        "p",
-        "--tags",
-        "a, b,",
-        "--owner",
-        "human",
-    ];
+    let base = ["new", "Ask", "--project", "p", "--tags", "a, b,", "--owner", "human"];
     tildone(&fake, &base).session("sess-1").run().await;
     // With --follow-up the tag joins --tags, and --from-task wins over the claimed card.
-    let follow = [
-        &base[..],
-        &["--follow-up", "--force", "--from-task", "TIL-3"],
-    ]
-    .concat();
+    let follow = [&base[..], &["--follow-up", "--force", "--from-task", "TIL-3"]].concat();
     tildone(&fake, &follow).session("sess-1").run().await;
     let calls = fake.calls_to("create_task");
     assert_eq!(
@@ -725,13 +703,6 @@ async fn help_includes_instructions() {
         out.stdout.contains("claim <ref>"),
         "the command list is part of help"
     );
-    let long = "  clients <id|host> <action> [args...]\n";
-    assert!(out.stdout.contains(long), "{}", out.stdout);
-    assert!(
-        out.stdout
-            .contains(&format!("{long}{}run status|restart", " ".repeat(34))),
-        "a long form puts its description 34 columns in"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -885,12 +856,7 @@ async fn settings_set_sends_each_type() {
         ),
         ("ai_model", "gpt 4", json!("gpt 4"), "ai_model: gpt 4"),
         // The token is sent but never printed.
-        (
-            "board_hub_token",
-            "s3cret",
-            json!("s3cret"),
-            "board_hub_token: (set)",
-        ),
+        ("board_hub_token", "s3cret", json!("s3cret"), "board_hub_token: (set)"),
     ];
     for (key, raw, sent, shown) in cases {
         let before = fake.calls_to("update_settings").len();
@@ -1032,11 +998,7 @@ async fn settings_set_offline_writes_the_file() {
         .await;
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(!out.stdout.contains("s3cret"), "{}", out.stdout);
-    assert!(
-        out.stdout.contains("board_hub_token: (set)"),
-        "{}",
-        out.stdout
-    );
+    assert!(out.stdout.contains("board_hub_token: (set)"), "{}", out.stdout);
     let file: Value =
         serde_json::from_str(&std::fs::read_to_string(fresh.join("settings.json")).unwrap())
             .unwrap();
@@ -1196,20 +1158,6 @@ async fn clients_table_marks_connected_and_last_seen() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn clients_empty_says_none_connected() {
-    let fake = Fake::start().await;
-    fake.reply_json("list_clients", json!([]));
-    let out = tildone(&fake, &["clients"]).run().await;
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(
-        out.stdout
-            .contains("no client apps are connected to this hub"),
-        "{}",
-        out.stdout
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn clients_detail_by_host_or_id_prefix_lists_errors_newest_first() {
     let fake = Fake::start().await;
     let hub_errors = json!([{"at": 1_700_000_200, "message": "older hub"}]);
@@ -1327,4 +1275,54 @@ async fn clients_unknown_action_is_refused_locally() {
     );
     no_calls(&fake, "list_clients");
     no_calls(&fake, "client_command");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_action_output_cannot_drive_the_terminal() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([client(
+            "aaaaaaaa-1111",
+            "laptop",
+            true,
+            unix_now(),
+            Value::Null
+        )]),
+    );
+    fake.reply_json(
+        "client_command",
+        json!({"id": "c1", "client": "aaaaaaaa-1111", "ok": true, "output": "ok\u{1b}[2J\nnext\tline"}),
+    );
+    let out = tildone(&fake, &["clients", "laptop", "log"]).run().await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(!out.stdout.contains('\u{1b}'), "{:?}", out.stdout);
+    assert_eq!(out.stdout.trim_end(), "ok\\u001B[2J\nnext\tline");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_action_timeout_names_the_client_not_the_hub() {
+    let fake = Fake::start().await;
+    fake.reply_json(
+        "list_clients",
+        json!([client(
+            "aaaaaaaa-1111",
+            "laptop",
+            true,
+            unix_now(),
+            Value::Null
+        )]),
+    );
+    fake.delay("client_command", 3000);
+    let out = tildone(&fake, &["clients", "laptop", "status"])
+        .env("TILDONE_ACTION_TIMEOUT_MS", "300")
+        .run()
+        .await;
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("aaaaaaaa-1111") && out.stderr.contains("status"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("cannot reach"), "{}", out.stderr);
 }

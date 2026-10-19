@@ -3,11 +3,11 @@
 //! memory and only its own machine reaches these tools (`list_clients`,
 //! `client_command`), so this works on the hub machine and nowhere else.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
-use crate::hub::{Fail, Hub, Res};
+use crate::hub::{self, Fail, Hub, Res};
 use crate::toon;
 
 /// The actions a client accepts (mirrors ACTIONS in src-tauri/src/clients.rs).
@@ -22,10 +22,27 @@ const ACTIONS: &[&str] = &[
     "log",
 ];
 
+/// How long to wait for `client_command`: the hub gives up on a silent client after
+/// 30 s and says which one, so the CLI must outlast it to relay that answer.
+/// TILDONE_ACTION_TIMEOUT_MS replaces it (the tests use it).
+const COMMAND_LIMIT: Duration = Duration::from_secs(40);
+
 const LIST_HELP: &str = "tildone-axi clients";
 
 fn say(text: &str) {
     println!("{}", text.trim_end());
+}
+
+/// Text from a client as one safe string: control characters other than newline
+/// and tab become `\u00XX`, so a client cannot drive the operator's terminal.
+fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' | '\t' => c.to_string(),
+            c if c.is_control() => format!("\\u{:04X}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 fn now() -> i64 {
@@ -262,17 +279,35 @@ async fn command(hub: &Hub, c: &Value, action: &str, args: Vec<String>) -> Res<(
     a.insert("action".into(), json!(action));
     a.insert("args".into(), json!(args));
     let help = format!("tildone-axi clients {id}");
-    let text = hub.call("client_command", a, &help).await?;
+    let limit = std::env::var("TILDONE_ACTION_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(COMMAND_LIMIT, Duration::from_millis);
+    let text = match hub.call_within("client_command", a, &help, limit).await {
+        // The hub answered earlier, so a timeout is a silent client, not a dead hub.
+        Err(Fail::Conn { msg, .. }) if msg.ends_with(hub::TIMED_OUT) => {
+            return Err(Fail::tool(
+                format!(
+                    "client {id}: {action} got no answer within {} s",
+                    limit.as_secs().max(1)
+                ),
+                help,
+            ))
+        }
+        // The text may quote what the client sent.
+        Err(Fail::Tool { msg, help }) => return Err(Fail::tool(plain(&msg), help)),
+        other => other?,
+    };
     let result: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let output = result.get("output").cloned().unwrap_or(Value::Null);
     if result.get("ok").and_then(Value::as_bool) == Some(false) {
         let msg = output
             .as_str()
             .map_or_else(|| output.to_string(), str::to_string);
-        return Err(Fail::tool(msg, help));
+        return Err(Fail::tool(plain(&msg), help));
     }
     match output {
-        Value::String(t) => say(&t),
+        Value::String(t) => say(&plain(&t)),
         other => say(&serde_json::to_string_pretty(&other).unwrap_or_default()),
     }
     Ok(())
