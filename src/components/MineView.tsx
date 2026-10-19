@@ -3,6 +3,7 @@ import { mineGroups } from "../ownerViews";
 import { useStore } from "../store";
 import type { Task } from "../types";
 import { TildoneMark } from "./Brand";
+import { IconBot } from "./Icons";
 import { TaskRow } from "./TaskRow";
 
 // Mine: what waits on the user across every project, most blocking first — a
@@ -29,7 +30,7 @@ export function MineView() {
           className="queue-strip"
           onClick={() => select({ type: "queue" })}
         >
-          <span className="owner-glyph" aria-hidden="true">◇</span>
+          <IconBot size={12} className="owner-glyph" />
           <span className="queue-strip-label">Agent queue</span>
           <span className="queue-strip-stat">
             <b>{todo}</b> todo

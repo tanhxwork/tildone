@@ -21,6 +21,15 @@ function Svg({ size = 16, children, ...rest }: IconProps) {
   );
 }
 
+// An agent: a small robot head. Marks agent-owned work on every surface.
+export const IconBot = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="8" width="16" height="12" rx="4" />
+    <path d="M12 8V4" />
+    <path d="M9 14h.01M15 14h.01" />
+  </Svg>
+);
+
 // The Servers page: two stacked server units, each with a status light.
 export const IconServer = (p: IconProps) => (
   <Svg {...p}>

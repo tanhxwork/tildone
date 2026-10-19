@@ -3,6 +3,7 @@ import type { FocusGoal, MovingCard, NeedsYouKind } from "../focusViews";
 import { NOT_AVAILABLE, useOffline } from "../offline";
 import { useStore } from "../store";
 import type { Project, Task } from "../types";
+import { IconBot } from "./Icons";
 
 // The bands of the home view (spec focus-compass, mockup E): one per focus goal,
 // then the loose-work band. Pure rendering of focusModel; GoalsView owns the model.
@@ -50,12 +51,12 @@ function Row({ task, children }: { task: Task; children: ReactNode }) {
   );
 }
 
-/** Who the row's card waits on: an agent's ◇ with its status word, else "you". */
+/** Who the row's card waits on: an agent's bot icon with its status word, else "you". */
 function Owner({ task, word }: { task: Task; word?: string }) {
   if (task.owner === "agent") {
     return (
       <span className="compass-own">
-        <span className="owner-glyph">◇</span>
+        <IconBot size={12} className="owner-glyph" />
         {word && ` ${word}`}
       </span>
     );

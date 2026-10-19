@@ -11,7 +11,7 @@ import {
 import { dueLabel, isOverdue } from "../utils/dates";
 import { cardPresence } from "../utils/presence";
 import { taskRefLabel } from "../utils/ref";
-import { IconCheck, IconFlag } from "./Icons";
+import { IconBot, IconCheck, IconFlag } from "./Icons";
 import { ProjectGlyph } from "./ProjectGlyph";
 
 const isReserved = (name: string): name is ReservedTag =>
@@ -44,10 +44,10 @@ export function TaskMeta({
    *  (To Do, Done, the list views) leaves this off: there the pill is the only
    *  thing carrying the state. */
   hideState?: boolean;
-  /** Lead the row with the agent ◇ and "from TIL-xxx" — the board card folds
+  /** Lead the row with the agent icon and "from TIL-xxx" — the board card folds
    *  them into its meta line instead of a line of their own. */
   showOwner?: boolean;
-  /** Visible text beside the ◇ (see OwnerMark). */
+  /** Visible text beside the bot icon (see OwnerMark). */
   ownerLabel?: string;
 }) {
   const { projects, tags, goals, tasks, observeCards, selection, select } = useStore();
@@ -100,7 +100,6 @@ export function TaskMeta({
             select({ type: "goal", goalId: goal.id });
           }}
         >
-          <span className="goal-chip-glyph" aria-hidden="true" />
           <span className="goal-chip-label">{goal.name}</span>
         </button>
       )}
@@ -137,13 +136,13 @@ export function TaskMeta({
   );
 }
 
-/** The neutral ◇ an agent-owned task carries on every surface. `label` spells it
+/** The neutral bot icon an agent-owned task carries on every surface. `label` spells it
  *  out where the bare glyph would be ambiguous ("done by agent" under To verify). */
 export function OwnerMark({ task, label }: { task: Task; label?: string }) {
   if (task.owner !== "agent") return null;
   return (
     <span className="owner-mark" title="Owned by an agent">
-      <span className="owner-glyph">◇</span>
+      <IconBot size={12} className="owner-glyph" />
       {label}
     </span>
   );

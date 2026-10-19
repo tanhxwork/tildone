@@ -222,14 +222,16 @@ describe("compass home view", () => {
       "verify",
     );
     await expect(ship.$(".compass-row*=Paint the pier")).toHaveText(
-      expect.stringContaining("◇ done"),
+      expect.stringContaining("done"),
     );
     await expect(ship.$(".compass-row*=Build the quay")).toHaveText(
-      expect.stringContaining("◇ doing"),
+      expect.stringContaining("doing"),
     );
     await expect(ship.$(".compass-row*=Lay the road")).toHaveText(
-      expect.stringContaining("◇ queued"),
+      expect.stringContaining("queued"),
     );
+    // The agent's mark is the bot icon, an svg, not a text glyph.
+    await expect(ship.$(".compass-row*=Paint the pier").$("svg.owner-glyph")).toExist();
 
     const wrap = (await $$("[data-compass-goal]"))[1];
     await expect(wrap).toHaveText(expect.stringContaining("All cards done."));
