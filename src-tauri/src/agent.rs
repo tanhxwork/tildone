@@ -4871,11 +4871,10 @@ impl TildoneAgent {
 /// send an Origin header and can never legitimately talk to this server, while
 /// real MCP clients (CLIs, desktop apps) send none and pass.
 ///
-/// The machine's own hostname is allowed too, so another machine can reach the
-/// board through a TCP forward such as `tailscale serve`, which passes the
-/// client's `Host: <hostname>` through unchanged. Such a forward should target
-/// HUB_PORT instead: through it a client can send `Host: localhost`, so the Host
-/// check cannot tell it from a local agent.
+/// The machine's own hostname is allowed too. Host is the only guard here, so
+/// never forward another machine to this port: through a raw TCP forward such as
+/// `tailscale serve` a client can send `Host: localhost`. Other machines reach the
+/// hub routes on HUB_PORT, where each request needs the token.
 fn server_config(port: u16) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts())

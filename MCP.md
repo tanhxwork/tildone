@@ -17,6 +17,11 @@ operating guide an agent can load on demand instead, install
   port instead, so it never knocks the installed app off the air — Settings shows
   the real endpoint. To point an agent at a dev build, pin it with
   `TILDONE_AGENT_PORT=11599 bun run tauri dev`.
+- /mcp is for this machine only. Other machines reach a hub through 11503, which
+  serves only the hub routes, each needing the hub token. On the hub machine,
+  forward the tailnet there once: `tailscale serve --bg --tcp 11502
+  tcp://localhost:11503`. Never forward the tailnet to 11502: through a raw TCP
+  forward a client can send `Host: localhost` and use /mcp with no token.
 - Start Tildone **before** the agent session. Clients connect to MCP servers
   once, at startup — a session that began while Tildone was closed (or Agent
   access was Off) has no tildone tools, and calls fail with "No such tool

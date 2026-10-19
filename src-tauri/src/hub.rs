@@ -1,8 +1,9 @@
 //! The hub: routes another Tildone uses when this machine holds its board.
 //!
 //! Mounted on the agent server beside /mcp (same port, same lifetime as Agent
-//! access), and alone on `agent::HUB_PORT`, the port the tailnet reaches. A client (Settings → Board → hub URL + token) sends every db.ts query
-//! here instead of opening its own tildone.db, and follows /events to stay live.
+//! access), and alone on `agent::HUB_PORT`, the port the tailnet reaches. A
+//! client (Settings → Board → hub URL + token) sends every db.ts query here
+//! instead of opening its own tildone.db, and follows /events to stay live.
 //!
 //! Every route below requires all three guards, in this order:
 //! - Host in the agent server's allow-list (`server_config` in agent.rs) or one of
