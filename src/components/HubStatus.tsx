@@ -48,19 +48,25 @@ const clock = (iso: string | null) => {
 };
 
 /**
- * A quiet line while the hub connection is down; renders nothing when connected.
+ * A quiet floating pill while the hub connection is down; renders nothing when connected.
  * Offline, it says how old the board is and how many changes wait to go up. After a
  * replay, it says once how many the hub rejected.
  */
 export function HubStatusBanner() {
+  const lines = useHubStatusLines();
+  return lines && <div className="hub-float">{lines}</div>;
+}
+
+function useHubStatusLines() {
   const status = useHubStatus((s) => s.status);
   const { offline, lastSynced, waiting, dropped, foreign, notice } = useOffline();
   const line = (text: ReactNode) => (
     <div className="hub-banner" role="status">
-      {text}
+      <span className="hub-dot" aria-hidden="true" />
+      <span>{text}</span>
     </div>
   );
-  // The line under the banner: why the last write did not happen.
+  // The pill beside the status pill: why the last write did not happen.
   const note = notice && (
     <div className="hub-banner hub-notice" role="alert">
       {notice}

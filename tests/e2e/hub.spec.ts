@@ -340,11 +340,14 @@ describe("hub: another Tildone as the board", () => {
       tags: ["alpha"],
     });
     await $('button[aria-label="New goal in Offline Proj"]').waitForExist({ timeout: 10_000 });
+    const headerY = (await $(".header").getLocation("y")) as number;
     await stopHub();
     await $(".hub-banner*=Offline").waitForExist({
       timeout: 15_000,
       timeoutMsg: "the client never said it was offline",
     });
+    // The banner floats over the board: nothing below it moves.
+    expect(await $(".header").getLocation("y")).toBe(headerY);
 
     // One create is one change waiting, not the activity line that rides along.
     await $(".quick-add input").setValue(title);
