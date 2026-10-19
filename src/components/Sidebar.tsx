@@ -16,6 +16,7 @@ import { FocusSection } from "./FocusSidebar";
 import { GoalDialog } from "./GoalDialog";
 import {
   IconArchive,
+  IconBot,
   IconChart,
   IconChecklist,
   IconChevronDown,
@@ -147,8 +148,8 @@ export function Sidebar() {
     {
       sel: { type: "queue" },
       label: "Agent queue",
-      // The same neutral diamond that marks an agent-owned card.
-      icon: <span className="owner-glyph nav-owner-glyph" aria-hidden="true">◇</span>,
+      // The same bot icon that marks an agent-owned card.
+      icon: <IconBot />,
       count: counts.queue,
     },
     {

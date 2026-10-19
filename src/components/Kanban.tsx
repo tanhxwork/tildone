@@ -861,7 +861,6 @@ function CardContent({
                 select({ type: "goal", goalId: goal.id });
               }}
             >
-              <span className="goal-chip-glyph" aria-hidden="true" />
               <span className="goal-chip-label">{goal.name}</span>
             </button>
           )}

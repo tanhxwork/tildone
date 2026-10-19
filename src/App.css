@@ -503,8 +503,7 @@ textarea:focus-visible,
   flex-shrink: 0;
   /* Centring puts a 9px square on the line box's middle, which sits below the
      cap-height middle of the label beside it — the square then reads a pixel
-     high. Set here for the band and the sidebar; .goal-chip-glyph is its own
-     rule (7px) and carries the same correction. */
+     high. Set here for the band and the sidebar. */
   position: relative;
   top: -1px;
 }
@@ -1244,13 +1243,13 @@ textarea:focus-visible,
   --goal-color: var(--accent);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--goal-color) 40%, transparent);
-  color: color-mix(in srgb, var(--goal-color) 85%, var(--text));
-  background: color-mix(in srgb, var(--goal-color) 12%, transparent);
+  padding: 0 7px;
+  line-height: 20px;
+  border-radius: var(--radius-xs);
+  color: color-mix(in srgb, var(--goal-color) 80%, var(--text));
+  background: color-mix(in srgb, var(--goal-color) 13%, transparent);
   font-size: 12px;
+  font-weight: 500;
   max-width: 140px;
   transition: background 150ms;
 }
@@ -1262,16 +1261,6 @@ textarea:focus-visible,
 .goal-chip.mini {
   padding: 0 6px;
   font-size: 11px;
-}
-
-.goal-chip-glyph {
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid currentColor;
-  flex-shrink: 0;
-  /* Same cap-height correction as .goal-glyph. */
-  position: relative;
-  top: -1px;
 }
 
 .goal-chip-label {
@@ -6690,24 +6679,12 @@ textarea:focus-visible,
 
 /* ---------- Owner views: Mine, Agent queue (spec 2026-10-01 task owner) ---------- */
 
-/* The neutral diamond on agent-owned work. Never violet: it marks who owns the
+/* The neutral bot icon on agent-owned work. Never violet: it marks who owns the
    task, not an action. */
 .owner-glyph {
-  font-size: 12px;
-  line-height: 1;
+  flex-shrink: 0;
+  vertical-align: -1px;
   color: var(--text-muted);
-}
-
-/* In the sidebar the glyph fills the same 16px box as the SVG nav icons, so the
-   Agent queue label lines up with Mine and Today, and takes the active colour. */
-.nav-owner-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 14px;
-  color: inherit;
 }
 
 .owner-mark {
