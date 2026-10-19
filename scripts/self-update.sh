@@ -10,12 +10,22 @@
 # macOS:  pull, bun install, `tauri build --bundles app`, replace the running .app
 #         (derived from <exe-path>) with the built one, `open` it.
 # --dry-run prints each stage and command and runs none of them.
+#
+# The client app starts it through a login shell, which on macOS skips ~/.zshrc, so
+# the tool dirs are added to PATH here. TILDONE_UPDATE_PID_FILE, when set, gets this
+# script's pid until it exits: the app refuses a second `update` while it names a
+# live process.
 set -euo pipefail
 
 pid=${1:?usage: self-update.sh <app-pid> <exe-path> [--dry-run]}
 exe=${2:?usage: self-update.sh <app-pid> <exe-path> [--dry-run]}
 dry=
 [ "${3:-}" = "--dry-run" ] && dry=1
+
+for dir in "$HOME/.bun/bin" "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
+  [ -d "$dir" ] && PATH="$dir:$PATH"
+done
+export PATH
 
 cd "$(dirname "$0")/.."
 repo=$(pwd -P)
@@ -27,6 +37,20 @@ run() {
   stage "+ $*"
   [ -n "$dry" ] || "$@"
 }
+
+missing=
+for tool in git bun cargo; do
+  command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+if [ -n "$missing" ]; then
+  stage "update: cannot find${missing} on PATH ($PATH)"
+  exit 1
+fi
+
+if [ -n "${TILDONE_UPDATE_PID_FILE:-}" ] && [ -z "$dry" ]; then
+  echo $$ > "$TILDONE_UPDATE_PID_FILE"
+  trap 'rm -f "$TILDONE_UPDATE_PID_FILE"' EXIT
+fi
 
 case "$os" in
   Linux) bundles=deb ;;
@@ -43,7 +67,7 @@ stage "pull"
 run git pull --ff-only origin main
 
 stage "install dependencies"
-run bun install
+run bun install --frozen-lockfile
 
 stage "build the release bundle ($bundles)"
 run bun run tauri build --bundles "$bundles"
@@ -77,7 +101,9 @@ else
 fi
 
 stage "stop the app (pid $pid)"
-run kill "$pid"
+if ! run kill "$pid" 2>/dev/null; then
+  stage "the app (pid $pid) had already exited"
+fi
 if [ -z "$dry" ]; then
   for _ in $(seq 1 50); do
     kill -0 "$pid" 2>/dev/null || break

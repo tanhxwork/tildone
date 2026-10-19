@@ -268,6 +268,7 @@ pub fn run() {
     builder
         .setup(|app| {
             appsettings::init(app.handle());
+            hubclient::started_at();
             // Off the main thread: it reads two ~3 MB files and is rarely needed.
             std::thread::spawn(clilink::refresh_appimage_copy);
             // The default window size (tauri.conf.json) is chosen so the board's

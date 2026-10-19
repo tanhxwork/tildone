@@ -186,13 +186,19 @@ pub(crate) fn report(actions: &dyn AppActions, id: &str) -> ClientReport {
     }
 }
 
-/// A random id kept in `<dir>/client-id`: made on first use, then read back.
+/// What the hub accepts as a client id: 32 lowercase hex characters.
+fn is_valid_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A random id kept in `<dir>/client-id`: made on first use, then read back. A file
+/// holding anything else is replaced.
 fn client_id(dir: &std::path::Path) -> String {
     let file = dir.join("client-id");
     if let Some(id) = std::fs::read_to_string(&file)
         .ok()
         .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+        .filter(|t| is_valid_id(t))
     {
         return id;
     }
@@ -235,8 +241,9 @@ fn host_name() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_default()
 }
 
-/// When this process started (first call), unix seconds.
-fn started_at() -> i64 {
+/// When this process started, unix seconds: the first call sets it, and the app's
+/// setup makes that call.
+pub(crate) fn started_at() -> i64 {
     static START: OnceLock<i64> = OnceLock::new();
     *START.get_or_init(now)
 }
@@ -902,6 +909,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     const TOKEN: &str = "good";
+    /// A valid hello id: the hub takes only 32 lowercase hex characters.
+    const ID: &str = "0123456789abcdef0123456789abcdef";
 
     struct Seen {
         method: Method,
@@ -1437,6 +1446,14 @@ mod tests {
         assert_eq!(id.len(), 32);
         assert_eq!(client_id(&dir), id, "the id changed on the second run");
         assert_ne!(client_id(&temp_dir("id2")), id);
+        // A file the hub would refuse is replaced, and the new id is kept.
+        for bad in ["me", "ABCDEF0123456789ABCDEF0123456789", ""] {
+            std::fs::write(dir.join("client-id"), bad).unwrap();
+            let fresh = client_id(&dir);
+            assert!(is_valid_id(&fresh), "{bad:?} gave {fresh}");
+            assert_eq!(client_id(&dir), fresh);
+        }
+        let id = client_id(&dir);
 
         let (mut hub, seen) = Fake::new().serve().await;
         hub.hello = serde_json::to_string(&hello(id.clone()))
@@ -1470,7 +1487,7 @@ mod tests {
         // The window's command keeps the first line only; HubError keeps its message.
         client_report_error("Uncaught TypeError: x is undefined\n    at app.js:1".into());
         let _ = HubError::transient("hub h: unreachable: refused".into());
-        let r = report(&Quiet, "me");
+        let r = report(&Quiet, ID);
         assert_eq!(
             r.window_errors.last().unwrap().message,
             "Uncaught TypeError: x is undefined"
@@ -1526,7 +1543,7 @@ mod tests {
 
     fn real_link(hub: &Hub, relaunch: Arc<dyn Fn() + Send + Sync>) -> Link {
         let ctx = clientactions::Ctx {
-            id: "me".into(),
+            id: ID.into(),
             data_dir: temp_dir("data"),
             source_dir: temp_dir("src"),
             relaunch,
@@ -1549,7 +1566,7 @@ mod tests {
         until("the result", || !posted(&seen, "/client-result").is_empty()).await;
         let result = &posted(&seen, "/client-result")[0];
         assert_eq!(result["id"], "c9");
-        assert_eq!(result["client"], "me");
+        assert_eq!(result["client"], ID);
         assert_eq!(result["ok"], false);
         assert!(
             result["output"].as_str().unwrap().contains("`bogus`"),
@@ -1558,7 +1575,7 @@ mod tests {
         // The report went out at the start, with the id and no clear token.
         until("the report", || !posted(&seen, "/client-status").is_empty()).await;
         let report = &posted(&seen, "/client-status")[0];
-        assert_eq!(report["id"], "me");
+        assert_eq!(report["id"], ID);
         assert!(!report.to_string().contains("tok-clear"));
     }
 
@@ -1613,7 +1630,7 @@ mod tests {
         });
 
         let mut hub = Hub::new(&format!("http://{addr}"), TOKEN, client());
-        hub.hello = serde_json::to_string(&hello("me".into()))
+        hub.hello = serde_json::to_string(&hello(ID.into()))
             .ok()
             .map(|h| enc(&h));
         let link = real_link(&hub, Arc::new(|| {}));
@@ -1625,15 +1642,15 @@ mod tests {
         .await;
         let entry = &clients.list()[0];
         assert!(entry.connected);
-        assert_eq!(entry.hello, hello("me".into()));
+        assert_eq!(entry.hello, hello(ID.into()));
         assert!(!serde_json::to_string(entry).unwrap().contains("tok-clear"));
 
         let done = clients
-            .command("me", "settings", vec![], Duration::from_secs(5))
+            .command(ID, "settings", vec![], Duration::from_secs(5))
             .await
             .unwrap();
         assert!(done.ok, "{done:?}");
-        assert_eq!(done.client, "me");
+        assert_eq!(done.client, ID);
         assert_eq!(done.output["theme"], "dark");
         assert_eq!(done.output["board_hub_token"], "(set)");
     }

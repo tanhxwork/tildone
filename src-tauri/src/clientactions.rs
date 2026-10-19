@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 /// Where `update` writes and `log` reads, inside the app data dir.
 const UPDATE_LOG: &str = "self-update.log";
+/// The running update's pid, written by scripts/self-update.sh and removed on exit.
+const UPDATE_PID: &str = "self-update.pid";
+/// How much of the end of the log `log` reads.
+const LOG_WINDOW: u64 = 256 * 1024;
 /// Lines `log` returns without an argument, and the most it returns.
 const LOG_DEFAULT: usize = 100;
 const LOG_MAX: usize = 2000;
@@ -157,13 +161,27 @@ async fn engine(
     actions.engine(EngineOp::Status(model)).await
 }
 
-/// The last `n` lines of the update log; no log yet is an empty list.
+/// The last `n` lines of the update log, read from its last LOG_WINDOW bytes; no log
+/// yet is an empty list.
 fn log_tail(ctx: &Ctx, n: usize) -> Result<Value, String> {
+    use std::io::{Read, Seek, SeekFrom};
     let path = ctx.data_dir.join(UPDATE_LOG);
-    let lines: Vec<String> = match std::fs::read(&path) {
-        Ok(bytes) => {
+    let read = || -> std::io::Result<(Vec<u8>, bool)> {
+        let mut file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        let cut = len > LOG_WINDOW;
+        file.seek(SeekFrom::Start(len.saturating_sub(LOG_WINDOW)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok((bytes, cut))
+    };
+    let lines: Vec<String> = match read() {
+        Ok((bytes, cut)) => {
             let text = String::from_utf8_lossy(&bytes);
-            let all: Vec<&str> = text.lines().collect();
+            let mut all: Vec<&str> = text.lines().collect();
+            if cut && !all.is_empty() {
+                all.remove(0); // the window starts mid-line
+            }
             let from = all.len().saturating_sub(n.min(LOG_MAX));
             all[from..].iter().map(|l| l.to_string()).collect()
         }
@@ -171,6 +189,21 @@ fn log_tail(ctx: &Ctx, n: usize) -> Result<Value, String> {
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
     Ok(json!({ "log": path.to_string_lossy(), "lines": lines }))
+}
+
+/// The pid in the update pid file, when that process is alive.
+#[cfg(unix)]
+fn running_update(data: &std::path::Path) -> Option<u32> {
+    let pid: u32 = std::fs::read_to_string(data.join(UPDATE_PID))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    // Signal 0 only checks; EPERM means the process exists but is not ours.
+    // SAFETY: kill with signal 0 sends nothing.
+    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    alive.then_some(pid)
 }
 
 #[cfg(not(unix))]
@@ -250,6 +283,11 @@ fn start_update(source: &std::path::Path, data: &std::path::Path) -> Result<Valu
             "update refused: {shown}/scripts/self-update.sh is missing"
         ));
     }
+    if let Some(pid) = running_update(data) {
+        return Err(format!(
+            "update refused: an update is already running (pid {pid}); see `log`"
+        ));
+    }
     let log_path = data.join(UPDATE_LOG);
     let open = || -> std::io::Result<std::fs::File> {
         std::fs::create_dir_all(data)?;
@@ -267,6 +305,7 @@ fn start_update(source: &std::path::Path, data: &std::path::Path) -> Result<Valu
         .arg(std::process::id().to_string())
         .arg(exe)
         .current_dir(&source)
+        .env("TILDONE_UPDATE_PID_FILE", data.join(UPDATE_PID))
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log)
@@ -499,6 +538,18 @@ mod tests {
             4
         );
         assert!(!call(&app, &ctx, "log", &["lots"]).await.ok);
+
+        // A log bigger than the read window: the newest lines, whole.
+        let big: String = (0..40_000).map(|i| format!("line {i:06}\n")).collect();
+        assert!(big.len() as u64 > LOG_WINDOW);
+        std::fs::write(ctx.data_dir.join(UPDATE_LOG), big).unwrap();
+        let r = call(&app, &ctx, "log", &["3"]).await;
+        assert_eq!(
+            r.output["lines"],
+            json!(["line 039997", "line 039998", "line 039999"])
+        );
+        let all = call(&app, &ctx, "log", &["2000"]).await;
+        assert_eq!(all.output["lines"][0], "line 038000");
     }
 
     #[cfg(unix)]
@@ -569,6 +620,28 @@ mod tests {
             !data.join(UPDATE_LOG).exists(),
             "a refusal started something"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn update_refuses_while_another_update_runs() {
+        let (app, data) = (FakeApp::new(), temp_dir("data"));
+        let ctx = ctx(repo(), data.clone(), Arc::default());
+        // A pid file naming a live process (this test's own).
+        std::fs::write(data.join(UPDATE_PID), std::process::id().to_string()).unwrap();
+        let r = call(&app, &ctx, "update", &[]).await;
+        assert!(!r.ok);
+        assert!(
+            r.output.as_str().unwrap().contains("already running"),
+            "{r:?}"
+        );
+        assert!(
+            !data.join(UPDATE_LOG).exists(),
+            "a refusal started something"
+        );
+        // A pid file left by a dead process does not block it.
+        std::fs::write(data.join(UPDATE_PID), "2147483646").unwrap();
+        assert!(call(&app, &ctx, "update", &[]).await.ok);
     }
 
     #[cfg(unix)]
