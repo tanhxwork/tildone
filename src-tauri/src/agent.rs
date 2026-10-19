@@ -29,6 +29,13 @@ use tokio_util::sync::CancellationToken;
 
 pub const AGENT_PORT: u16 = 11502;
 
+/// The hub's own port, for other machines: `tailscale serve --tcp 11502
+/// tcp://localhost:11503` forwards the tailnet here. It serves only the hub routes,
+/// which all need the token. /mcp stays on AGENT_PORT, where Host is the only
+/// guard, because a raw TCP forward makes a tailnet request look local there.
+/// Bound only by the app that holds AGENT_PORT, so a worktree build never takes it.
+pub const HUB_PORT: u16 = 11503;
+
 const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 
 /// Who works a task (migration 028). An MCP create defaults to "agent": the
@@ -4864,9 +4871,10 @@ impl TildoneAgent {
 /// send an Origin header and can never legitimately talk to this server, while
 /// real MCP clients (CLIs, desktop apps) send none and pass.
 ///
-/// The machine's own hostname is allowed too, so another machine can reach the
-/// board through a TCP forward such as `tailscale serve`, which passes the
-/// client's `Host: <hostname>` through unchanged.
+/// The machine's own hostname is allowed too. Host is the only guard here, so
+/// never forward another machine to this port: through a raw TCP forward such as
+/// `tailscale serve` a client can send `Host: localhost`. Other machines reach the
+/// hub routes on HUB_PORT, where each request needs the token.
 fn server_config(port: u16) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_allowed_hosts(allowed_hosts())
@@ -5722,7 +5730,13 @@ pub async fn agent_server_start(
         events_tx,
         ct.clone(),
     ) {
-        Ok(cfg) => router.merge(crate::hub::router(cfg)),
+        Ok(cfg) => {
+            let hub = crate::hub::router(cfg);
+            if port == AGENT_PORT {
+                serve_hub_port(hub.clone(), ct.clone()).await;
+            }
+            router.merge(hub)
+        }
         Err(e) => {
             eprintln!("tildone: hub routes not mounted: {e}");
             router
@@ -5749,6 +5763,21 @@ pub async fn agent_server_start(
     }
 
     Ok(endpoint)
+}
+
+/// Serve the hub routes alone on HUB_PORT until `ct` is cancelled. A port already
+/// taken is logged, not fatal: this machine's own board still works without it.
+async fn serve_hub_port(hub: axum::Router, ct: CancellationToken) {
+    match tokio::net::TcpListener::bind(("127.0.0.1", HUB_PORT)).await {
+        Ok(listener) => {
+            tauri::async_runtime::spawn(async move {
+                let _ = axum::serve(listener, hub)
+                    .with_graceful_shutdown(async move { ct.cancelled_owned().await })
+                    .await;
+            });
+        }
+        Err(e) => eprintln!("tildone: hub port {HUB_PORT} not served: {e}"),
+    }
 }
 
 #[tauri::command]
