@@ -270,10 +270,10 @@ describe("Focus sidebar", () => {
     await expect(f.$(".focus-count")).toHaveText("2/2 ✓");
     await expect(f.$(".focus-goal-meta")).toHaveText("Factory · close it?");
 
-    // Loose doing cards: the agent one shows ◇, the human one "you".
+    // Loose doing cards: the human one says "you", the agent one carries no mark.
     const rows = await $$(".focus-card.loose").map((el) => el.getText());
     expect(rows).toHaveLength(2);
-    expect(rows.some((t) => t.includes("Why ui-check misses the map") && t.includes("◇"))).toBe(true);
+    expect(rows.some((t) => t.includes("Why ui-check misses the map") && !t.includes("◇"))).toBe(true);
     expect(rows.some((t) => t.includes("Call the carrier") && t.includes("you"))).toBe(true);
 
     await expect($('[data-nav="needs-you"] .focus-you')).toHaveText("2");
