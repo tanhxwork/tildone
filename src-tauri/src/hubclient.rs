@@ -10,15 +10,25 @@
 //! - `hub <url>: bad token` (401);
 //! - `hub <url> is at schema N, this app is at M: run the same Tildone build on both`;
 //! - `hub <url>: unreachable: <reason>` (no connection, a timeout, a dropped body).
+//!
+//! The same connection makes this app a hub client (clients.rs): GET /events says
+//! who it is (CLIENT_HEADER), a ClientReport goes to the hub after each connect,
+//! every STATUS_EVERY and when the hub state changes, and a `command` event runs one
+//! of the fixed actions in clientactions.rs and posts its result.
 
+use crate::agent::{hide_tokens, AppActions, TauriActions};
+use crate::clientactions;
+use crate::clients::{self, ClientHello, ClientReport, Command, Logged};
+use futures_util::future::{select, Either};
 use futures_util::{stream::BoxStream, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::error::Error as _;
-use std::sync::{Mutex, OnceLock};
+use std::pin::pin;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Event the window gets about the hub connection:
 /// `{"state": "connected" | "error" | "schema-mismatch", "message": string}`.
@@ -69,16 +79,186 @@ struct HubError {
 
 impl HubError {
     fn transient(message: String) -> Self {
+        record_hub_error(&message);
         Self {
             message,
             fatal_state: None,
         }
     }
     fn fatal(state: &'static str, message: String) -> Self {
+        record_hub_error(&message);
         Self {
             message,
             fatal_state: Some(state),
         }
+    }
+}
+
+/// What a ClientReport remembers: the failed hub calls and the window's uncaught
+/// errors (newest last, ERRORS_KEPT each) and the last HUB_STATUS.
+struct ClientLog {
+    hub_errors: VecDeque<Logged>,
+    window_errors: VecDeque<Logged>,
+    state: String,
+    message: String,
+}
+
+static LOG: Mutex<ClientLog> = Mutex::new(ClientLog {
+    hub_errors: VecDeque::new(),
+    window_errors: VecDeque::new(),
+    state: String::new(),
+    message: String::new(),
+});
+
+fn log() -> std::sync::MutexGuard<'static, ClientLog> {
+    LOG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Append to a ring, dropping the oldest past ERRORS_KEPT.
+fn push_logged(ring: &mut VecDeque<Logged>, message: &str) {
+    ring.push_back(Logged {
+        at: now(),
+        message: message.to_string(),
+    });
+    while ring.len() > clients::ERRORS_KEPT {
+        ring.pop_front();
+    }
+}
+
+/// A failed hub call. HubError is the only producer of these.
+fn record_hub_error(message: &str) {
+    push_logged(&mut log().hub_errors, message);
+}
+
+/// The window's uncaught error or rejection, one line.
+#[tauri::command]
+pub fn client_report_error(message: String) {
+    let line: String = message
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(500)
+        .collect();
+    push_logged(&mut log().window_errors, &line);
+}
+
+fn set_hub_state(state: &str, message: &str) {
+    let mut log = log();
+    log.state = state.to_string();
+    log.message = message.to_string();
+}
+
+/// What this client says about itself now: the last HUB_STATUS, the error rings,
+/// the settings with tokens hidden and the hook status.
+pub(crate) fn report(actions: &dyn AppActions, id: &str) -> ClientReport {
+    let (hub_state, hub_message, hub_errors, window_errors) = {
+        let log = log();
+        (
+            if log.state.is_empty() {
+                "connected".into()
+            } else {
+                log.state.clone()
+            },
+            log.message.clone(),
+            log.hub_errors.iter().cloned().collect(),
+            log.window_errors.iter().cloned().collect(),
+        )
+    };
+    ClientReport {
+        id: id.to_string(),
+        hub_state,
+        hub_message,
+        hub_errors,
+        window_errors,
+        settings: actions
+            .settings_get()
+            .map(|s| Value::Object(hide_tokens(s)))
+            .unwrap_or(Value::Null),
+        hook: actions.hook_status().unwrap_or(Value::Null),
+    }
+}
+
+/// A random id kept in `<dir>/client-id`: made on first use, then read back.
+fn client_id(dir: &std::path::Path) -> String {
+    let file = dir.join("client-id");
+    if let Some(id) = std::fs::read_to_string(&file)
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        return id;
+    }
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // RandomState is seeded from the OS, so two of them make 128 random bits.
+    let id: String = (0..2)
+        .map(|_| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(nanos);
+            h.write_u32(std::process::id());
+            format!("{:016x}", h.finish())
+        })
+        .collect();
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, &id)) {
+        eprintln!(
+            "tildone: cannot keep the client id in {}: {e}",
+            file.display()
+        );
+    }
+    id
+}
+
+#[cfg(unix)]
+fn host_name() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: buf is valid for buf.len() bytes; gethostname NUL-terminates on success.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..len]).to_string()
+}
+
+#[cfg(not(unix))]
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+/// When this process started (first call), unix seconds.
+fn started_at() -> i64 {
+    static START: OnceLock<i64> = OnceLock::new();
+    *START.get_or_init(now)
+}
+
+fn hello(id: String) -> ClientHello {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let source_dir = std::fs::canonicalize(clients::SOURCE_DIR)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| clients::SOURCE_DIR.to_string());
+    ClientHello {
+        id,
+        host: host_name(),
+        os: std::env::consts::OS.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: clients::BUILD_COMMIT.to_string(),
+        schema: crate::hub::SCHEMA_VERSION,
+        installed: crate::agent::is_installed_path(&exe, cfg!(target_os = "macos")),
+        exe,
+        source_dir,
+        started_at: started_at(),
     }
 }
 
@@ -113,6 +293,8 @@ struct Hub {
     url: String,
     token: String,
     client: reqwest::Client,
+    /// The percent-encoded ClientHello sent as CLIENT_HEADER on /events.
+    hello: Option<String>,
 }
 
 /// The reason text of a reqwest failure: the innermost causes ("tcp connect
@@ -157,6 +339,7 @@ impl Hub {
             url,
             token: token.trim().to_string(),
             client,
+            hello: None,
         }
     }
 
@@ -221,9 +404,18 @@ impl Hub {
 
     async fn json(&self, req: reqwest::RequestBuilder) -> Result<Value, String> {
         let resp = self.send(req).await?;
-        resp.json::<Value>()
-            .await
-            .map_err(|e| format!("hub {}: bad response: {}", self.url, cause(&e)))
+        resp.json::<Value>().await.map_err(|e| {
+            let message = format!("hub {}: bad response: {}", self.url, cause(&e));
+            record_hub_error(&message);
+            message
+        })
+    }
+
+    /// `POST route` with a JSON body; the reply is not read.
+    async fn post(&self, route: &str, body: &impl Serialize) -> Result<(), String> {
+        self.send(self.timed(reqwest::Method::POST, route).json(body))
+            .await?;
+        Ok(())
     }
 
     /// `POST /sql`; the hub's JSON comes back as is. `op` is the idempotency key of
@@ -277,9 +469,11 @@ impl Hub {
     /// Open `/events` and check its first event: `schema` with our version.
     async fn connect(&self) -> Result<(i64, EventStream), HubError> {
         let url = &self.url;
-        let resp = self
-            .send(self.request(reqwest::Method::GET, "/events"))
-            .await?;
+        let mut req = self.request(reqwest::Method::GET, "/events");
+        if let Some(hello) = &self.hello {
+            req = req.header(clients::CLIENT_HEADER, hello);
+        }
+        let resp = self.send(req).await?;
         let mut stream = EventStream::new(resp);
         let first = stream
             .next_event()
@@ -397,29 +591,61 @@ impl EventStream {
     }
 }
 
-/// Follow a connected stream: `on_change` for each `change` event. When the
-/// stream drops, report an error and reconnect after each wait in `backoff`
-/// (the last repeats); a reconnect reports `connected` and calls `on_change`
-/// once, so the window reloads anything it missed. A bad token or a different
-/// schema ends the loop with the matching state.
+/// The client side of the hub protocol, hooked into `follow`. Both hooks start a
+/// task and return, so a slow report or action never stalls the change stream.
+struct Link {
+    /// How often to report unasked.
+    every: Duration,
+    /// Post a ClientReport now.
+    report: Box<dyn Fn() + Send + Sync>,
+    /// Run a `command` event, given its data.
+    command: Box<dyn Fn(String) + Send + Sync>,
+}
+
+/// Follow a connected stream: `on_change` for each `change` event and
+/// `link.command` for each `command`. When the stream drops, report an error and
+/// reconnect after each wait in `backoff` (the last repeats); a reconnect reports
+/// `connected` and calls `on_change` once, so the window reloads anything it
+/// missed. A bad token or a different schema ends the loop with the matching
+/// state. `link.report` runs at the start, every `link.every`, and whenever the
+/// state changes.
 async fn follow(
     hub: Hub,
     mut stream: EventStream,
     backoff: &[Duration],
     on_status: impl Fn(HubStatus),
     on_change: impl Fn(),
+    link: Link,
 ) {
     let url = hub.url.clone();
+    let mut last_state = "connected";
+    let mut status = |s: HubStatus| {
+        set_hub_state(s.state, &s.message);
+        let changed = std::mem::replace(&mut last_state, s.state) != s.state;
+        on_status(s);
+        if changed {
+            (link.report)();
+        }
+    };
+    (link.report)();
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + link.every, link.every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let reason = loop {
-            match stream.next_event().await {
-                Ok(Some(ev)) if ev.event == "change" => on_change(),
-                Ok(Some(_)) => {}
-                Ok(None) => break "closed the event stream".to_string(),
-                Err(e) => break format!("connection lost: {e}"),
+            match select(pin!(stream.next_event()), pin!(tick.tick())).await {
+                Either::Left((Ok(Some(ev)), _)) => match ev.event.as_str() {
+                    "change" => on_change(),
+                    clients::COMMAND_EVENT => (link.command)(ev.data),
+                    _ => {}
+                },
+                Either::Left((Ok(None), _)) => break "closed the event stream".to_string(),
+                Either::Left((Err(e), _)) => break format!("connection lost: {e}"),
+                Either::Right(_) => (link.report)(),
             }
         };
-        on_status(HubStatus::new("error", format!("hub {url}: {reason}")));
+        let message = format!("hub {url}: {reason}");
+        record_hub_error(&message);
+        status(HubStatus::new("error", message));
         let mut attempt = 0;
         stream = loop {
             tokio::time::sleep(backoff[attempt.min(backoff.len() - 1)]).await;
@@ -428,15 +654,59 @@ async fn follow(
                 Ok((_, s)) => break s,
                 Err(e) => match e.fatal_state {
                     Some(state) => {
-                        on_status(HubStatus::new(state, e.message));
+                        status(HubStatus::new(state, e.message));
                         return;
                     }
-                    None => on_status(HubStatus::new("error", e.message)),
+                    None => status(HubStatus::new("error", e.message)),
                 },
             }
         };
-        on_status(HubStatus::new("connected", ""));
+        status(HubStatus::new("connected", ""));
         on_change();
+    }
+}
+
+/// The hooks a real follower uses: post a report, run a command through
+/// clientactions and post its result, then whatever it wants done after (a restart).
+fn link(
+    hub: &Hub,
+    actions: Arc<dyn AppActions>,
+    ctx: Arc<clientactions::Ctx>,
+    every: Duration,
+) -> Link {
+    let send_report = {
+        let (hub, actions, ctx) = (hub.clone(), actions.clone(), ctx.clone());
+        move || {
+            let (hub, actions, ctx) = (hub.clone(), actions.clone(), ctx.clone());
+            tauri::async_runtime::spawn(async move {
+                let body = report(&*actions, &ctx.id);
+                if let Err(e) = hub.post(clients::STATUS_ROUTE, &body).await {
+                    eprintln!("tildone: client report not sent: {e}");
+                }
+            });
+        }
+    };
+    let hub = hub.clone();
+    let command = move |data: String| {
+        let cmd = match serde_json::from_str::<Command>(&data) {
+            Ok(cmd) => cmd,
+            Err(e) => return eprintln!("tildone: ignoring a bad command event: {e}"),
+        };
+        let (hub, actions, ctx) = (hub.clone(), actions.clone(), ctx.clone());
+        tauri::async_runtime::spawn(async move {
+            let done = clientactions::run(&*actions, &ctx, cmd).await;
+            if let Err(e) = hub.post(clients::RESULT_ROUTE, &done.result).await {
+                eprintln!("tildone: command result not sent: {e}");
+            }
+            if let Some(after) = done.after {
+                after();
+            }
+        });
+    };
+    Link {
+        every,
+        report: Box::new(send_report),
+        command: Box::new(command),
     }
 }
 
@@ -470,8 +740,34 @@ pub fn hub_disconnect() {
 #[tauri::command]
 pub async fn hub_connect(app: tauri::AppHandle) -> Result<HubInfo, String> {
     swap_subscriber(&SUBSCRIBER, None);
-    let hub = Hub::from_settings(&app)?;
+    let mut hub = Hub::from_settings(&app)?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let id = client_id(&data_dir);
+    hub.hello = serde_json::to_string(&hello(id.clone()))
+        .ok()
+        .map(|h| enc(&h));
     let (version, stream) = hub.connect().await?;
+    set_hub_state("connected", "");
+    let ctx = Arc::new(clientactions::Ctx {
+        id,
+        data_dir,
+        source_dir: clients::SOURCE_DIR.into(),
+        relaunch: Arc::new({
+            let app = app.clone();
+            move || {
+                app.restart();
+            }
+        }),
+    });
+    let link = link(
+        &hub,
+        Arc::new(TauriActions(app.clone())),
+        ctx,
+        clients::STATUS_EVERY,
+    );
     let handle = tauri::async_runtime::spawn(async move {
         follow(
             hub,
@@ -483,6 +779,7 @@ pub async fn hub_connect(app: tauri::AppHandle) -> Result<HubInfo, String> {
             || {
                 let _ = app.emit("agent-db-changed", ());
             },
+            link,
         )
         .await
     });
@@ -628,6 +925,8 @@ mod tests {
         reject_events_from: Option<usize>,
         /// Streams send a `change` every 20 ms forever.
         ticking: bool,
+        /// Every stream sends this as a `command` event after its changes.
+        command: Option<String>,
     }
 
     impl Fake {
@@ -639,6 +938,7 @@ mod tests {
                 drop_first_stream: false,
                 reject_events_from: None,
                 ticking: false,
+                command: None,
             }
         }
 
@@ -719,6 +1019,7 @@ mod tests {
                 200,
                 serde_json::json!({"path": "/hub/attachments/3/a b.png"}),
             ),
+            "/client-status" | "/client-result" => json(200, serde_json::json!({"ok": true})),
             "/events" => {
                 let n = fake.event_conns.fetch_add(1, Ordering::SeqCst);
                 if fake.reject_events_from.is_some_and(|from| n >= from) {
@@ -729,12 +1030,15 @@ mod tests {
                     "event: schema\r\ndata: {{\"version\": {}}}\r\n\r\n",
                     fake.schema
                 );
-                let chunks: Vec<Vec<u8>> = vec![
+                let mut chunks: Vec<Vec<u8>> = vec![
                     schema.as_bytes()[..9].to_vec(),
                     schema.as_bytes()[9..].to_vec(),
                     b": keepalive\n\nevent: change\ndata: {}\n\n".to_vec(),
                     b"event: change\ndata: {}\n\n".to_vec(),
                 ];
+                if let Some(command) = &fake.command {
+                    chunks.push(format!("event: command\ndata: {command}\n\n").into_bytes());
+                }
                 let head = futures_util::stream::iter(
                     chunks.into_iter().map(Ok::<_, std::convert::Infallible>),
                 );
@@ -821,7 +1125,9 @@ mod tests {
             format!("hub {url}: refused (Origin/Host)")
         );
         assert_eq!(
-            hub.sql("select", "SELEC broken", &[], None).await.unwrap_err(),
+            hub.sql("select", "SELEC broken", &[], None)
+                .await
+                .unwrap_err(),
             format!("hub {url}: near \"SELEC\": syntax error")
         );
 
@@ -894,6 +1200,17 @@ mod tests {
         );
     }
 
+    impl Link {
+        /// Hooks that do nothing, reporting once an hour.
+        fn idle() -> Self {
+            Self {
+                every: Duration::from_secs(3600),
+                report: Box::new(|| {}),
+                command: Box::new(|_| {}),
+            }
+        }
+    }
+
     /// Run `follow` on a connected fake and collect what it reports.
     #[derive(Debug, PartialEq)]
     enum Note {
@@ -902,6 +1219,10 @@ mod tests {
     }
 
     async fn run_follow(hub: Hub) -> (mpsc::UnboundedReceiver<Note>, Subscriber) {
+        run_follow_with(hub, Link::idle()).await
+    }
+
+    async fn run_follow_with(hub: Hub, link: Link) -> (mpsc::UnboundedReceiver<Note>, Subscriber) {
         let (version, stream) = hub.connect().await.map_err(String::from).unwrap();
         assert_eq!(version, crate::hub::SCHEMA_VERSION);
         let (tx, rx) = mpsc::unbounded_channel();
@@ -917,6 +1238,7 @@ mod tests {
                 move || {
                     let _ = tx2.send(Note::Change);
                 },
+                link,
             )
             .await
         });
@@ -1043,6 +1365,277 @@ mod tests {
         swap_subscriber(&slot, None);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tildone-hubclient-{name}-{}-{}",
+            std::process::id(),
+            now() as u128 * 1_000_000 + std::time::Instant::now().elapsed().subsec_nanos() as u128
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An app with one token set and a hook that cannot be read.
+    struct Quiet;
+    impl AppActions for Quiet {
+        fn settings_get(&self) -> Result<crate::agent::JsonMap, String> {
+            Ok(
+                serde_json::json!({ "theme": "dark", "board_hub_token": "tok-clear" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        }
+        fn settings_set(
+            &self,
+            _: crate::agent::JsonMap,
+        ) -> Result<(crate::agent::JsonMap, Vec<String>), String> {
+            Err("no".into())
+        }
+        fn hook_status(&self) -> Result<Value, String> {
+            Err("no hook".into())
+        }
+        fn hook_install(&self) -> Result<String, String> {
+            Err("no".into())
+        }
+        fn hook_uninstall(&self) -> Result<String, String> {
+            Err("no".into())
+        }
+        fn engine(
+            &self,
+            _: crate::agent::EngineOp,
+        ) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+            Box::pin(async { Err("no".to_string()) })
+        }
+    }
+
+    fn posted(seen: &Arc<Mutex<Vec<Seen>>>, path: &str) -> Vec<Value> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.path == path)
+            .map(|s| serde_json::from_slice(&s.body).unwrap())
+            .collect()
+    }
+
+    async fn until(what: &str, mut ready: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if ready() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test]
+    async fn events_carry_the_hello_with_an_id_kept_across_runs() {
+        let dir = temp_dir("id");
+        let id = client_id(&dir);
+        assert_eq!(id.len(), 32);
+        assert_eq!(client_id(&dir), id, "the id changed on the second run");
+        assert_ne!(client_id(&temp_dir("id2")), id);
+
+        let (mut hub, seen) = Fake::new().serve().await;
+        hub.hello = serde_json::to_string(&hello(id.clone()))
+            .ok()
+            .map(|h| enc(&h));
+        hub.connect().await.map_err(String::from).unwrap();
+        let header = seen.lock().unwrap()[0].headers[clients::CLIENT_HEADER]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let sent: ClientHello = serde_json::from_str(&dec(&header).unwrap()).unwrap();
+        assert_eq!(sent, hello(id));
+        assert_eq!(sent.schema, crate::hub::SCHEMA_VERSION);
+        assert_eq!(sent.commit, clients::BUILD_COMMIT);
+        assert!(!sent.host.is_empty() && !sent.exe.is_empty() && sent.started_at > 0);
+    }
+
+    #[tokio::test]
+    async fn a_report_keeps_the_newest_errors_and_hides_tokens() {
+        let mut ring = VecDeque::new();
+        for i in 0..clients::ERRORS_KEPT + 5 {
+            push_logged(&mut ring, &format!("e{i}"));
+        }
+        assert_eq!(ring.len(), clients::ERRORS_KEPT);
+        assert_eq!(ring.front().unwrap().message, "e5");
+        assert_eq!(
+            ring.back().unwrap().message,
+            format!("e{}", clients::ERRORS_KEPT + 4)
+        );
+
+        // The window's command keeps the first line only; HubError keeps its message.
+        client_report_error("Uncaught TypeError: x is undefined\n    at app.js:1".into());
+        let _ = HubError::transient("hub h: unreachable: refused".into());
+        let r = report(&Quiet, "me");
+        assert_eq!(
+            r.window_errors.last().unwrap().message,
+            "Uncaught TypeError: x is undefined"
+        );
+        assert!(r
+            .hub_errors
+            .iter()
+            .any(|e| e.message == "hub h: unreachable: refused"));
+        assert!(r.window_errors.len() <= clients::ERRORS_KEPT);
+        assert_eq!(r.settings["board_hub_token"], "(set)");
+        assert!(!serde_json::to_string(&r).unwrap().contains("tok-clear"));
+        assert_eq!(r.hook, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn follow_reports_at_the_start_on_the_interval_and_on_a_state_change() {
+        // State changes: start, then the drop (error), then the reconnect (connected).
+        let mut fake = Fake::new();
+        fake.drop_first_stream = true;
+        let (hub, _) = fake.serve().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        let link = Link {
+            every: Duration::from_secs(3600),
+            report: Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+            command: Box::new(|_| {}),
+        };
+        let (_rx, _follower) = run_follow_with(hub, link).await;
+        until("three reports", || count.load(Ordering::SeqCst) >= 3).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            3,
+            "an extra report with no change"
+        );
+
+        // The interval alone.
+        let (hub, _) = Fake::new().serve().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        let link = Link {
+            every: Duration::from_millis(60),
+            report: Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+            command: Box::new(|_| {}),
+        };
+        let (_rx, _follower) = run_follow_with(hub, link).await;
+        until("interval reports", || count.load(Ordering::SeqCst) >= 4).await;
+    }
+
+    fn real_link(hub: &Hub, relaunch: Arc<dyn Fn() + Send + Sync>) -> Link {
+        let ctx = clientactions::Ctx {
+            id: "me".into(),
+            data_dir: temp_dir("data"),
+            source_dir: temp_dir("src"),
+            relaunch,
+        };
+        link(
+            hub,
+            Arc::new(Quiet),
+            Arc::new(ctx),
+            Duration::from_secs(3600),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_command_event_posts_its_result_and_an_unknown_action_says_so() {
+        let mut fake = Fake::new();
+        fake.command = Some(r#"{"id":"c9","action":"bogus","args":[]}"#.into());
+        let (hub, seen) = fake.serve().await;
+        let link = real_link(&hub, Arc::new(|| {}));
+        let (_rx, _follower) = run_follow_with(hub, link).await;
+        until("the result", || !posted(&seen, "/client-result").is_empty()).await;
+        let result = &posted(&seen, "/client-result")[0];
+        assert_eq!(result["id"], "c9");
+        assert_eq!(result["client"], "me");
+        assert_eq!(result["ok"], false);
+        assert!(
+            result["output"].as_str().unwrap().contains("`bogus`"),
+            "{result}"
+        );
+        // The report went out at the start, with the id and no clear token.
+        until("the report", || !posted(&seen, "/client-status").is_empty()).await;
+        let report = &posted(&seen, "/client-status")[0];
+        assert_eq!(report["id"], "me");
+        assert!(!report.to_string().contains("tok-clear"));
+    }
+
+    #[tokio::test]
+    async fn a_bad_command_payload_is_ignored_and_restart_relaunches_after_the_result() {
+        let (hub, seen) = Fake::new().serve().await;
+        let (tx, mut relaunched) = mpsc::unbounded_channel();
+        let seen2 = seen.clone();
+        let link = real_link(
+            &hub,
+            Arc::new(move || {
+                // What the hub had received by the time the app relaunched.
+                let _ = tx.send(posted(&seen2, "/client-result").len());
+            }),
+        );
+        (link.command)("not json".into());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(posted(&seen, "/client-result").is_empty());
+        (link.command)(r#"{"id":"r1","action":"restart"}"#.into());
+        let results_seen = tokio::time::timeout(Duration::from_secs(5), relaunched.recv())
+            .await
+            .expect("never relaunched")
+            .unwrap();
+        assert_eq!(results_seen, 1, "relaunched before the result was posted");
+    }
+
+    /// The real hub router and the real follower, end to end: the hub lists the
+    /// client from its hello, holds its report, and gets a command's result back.
+    #[tokio::test]
+    async fn the_real_hub_lists_this_client_and_runs_a_command_on_it() {
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let clients = crate::hub::Clients::default();
+        let cfg = crate::hub::HubConfig {
+            db: Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap())),
+            on_change: Arc::new(|| {}),
+            beats: Default::default(),
+            events,
+            token: TOKEN.into(),
+            allowed_hosts: vec!["127.0.0.1".into()],
+            data_dir: temp_dir("hub"),
+            evidence_home: None,
+            shutdown: shutdown.clone(),
+            clients: clients.clone(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, crate::hub::router(cfg))
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await;
+        });
+
+        let mut hub = Hub::new(&format!("http://{addr}"), TOKEN, client());
+        hub.hello = serde_json::to_string(&hello("me".into()))
+            .ok()
+            .map(|h| enc(&h));
+        let link = real_link(&hub, Arc::new(|| {}));
+        let (_rx, _follower) = run_follow_with(hub, link).await;
+
+        until("the report", || {
+            clients.list().first().is_some_and(|c| c.report.is_some())
+        })
+        .await;
+        let entry = &clients.list()[0];
+        assert!(entry.connected);
+        assert_eq!(entry.hello, hello("me".into()));
+        assert!(!serde_json::to_string(entry).unwrap().contains("tok-clear"));
+
+        let done = clients
+            .command("me", "settings", vec![], Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(done.ok, "{done:?}");
+        assert_eq!(done.client, "me");
+        assert_eq!(done.output["theme"], "dark");
+        assert_eq!(done.output["board_hub_token"], "(set)");
     }
 
     #[test]

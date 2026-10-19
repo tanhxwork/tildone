@@ -5580,7 +5580,7 @@ fn should_warn_port_squat(
 /// /usr (the .deb and .rpm), /opt, an AppImage's /tmp/.mount_*, Program Files (the
 /// MSI) or %LOCALAPPDATA%\Tildone (the per-user NSIS installer) elsewhere. A worktree
 /// target dir is none of these.
-fn is_installed_path(exe: &str, macos: bool) -> bool {
+pub(crate) fn is_installed_path(exe: &str, macos: bool) -> bool {
     if macos {
         exe.contains("/Applications/")
     } else {

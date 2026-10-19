@@ -2,6 +2,7 @@ mod agent;
 mod ai;
 mod appsettings;
 mod artifacts;
+mod clientactions;
 mod clilink;
 mod clients;
 mod drops;
@@ -363,6 +364,7 @@ pub fn run() {
             offlinestore::offline_write,
             hubclient::hub_connect,
             hubclient::hub_disconnect,
+            hubclient::client_report_error,
             hubclient::hub_sql,
             hubclient::hub_presence,
             hubclient::hub_claim_cwds,
