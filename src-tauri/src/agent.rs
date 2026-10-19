@@ -2501,6 +2501,10 @@ struct UpdateSettingsParams {
     default_project_id: Option<i64>,
     #[schemars(description = "Workstation hub URL; empty clears it")]
     ws_hub_url: Option<String>,
+    #[schemars(description = "Board hub URL; this app becomes its client. Empty clears it")]
+    board_hub_url: Option<String>,
+    #[schemars(description = "Board hub token; replies show it only as (set) or (empty)")]
+    board_hub_token: Option<String>,
     #[schemars(
         description = "Agent access: serve this MCP endpoint. false stops it after this reply"
     )]
@@ -4542,7 +4546,7 @@ impl TildoneAgent {
     }
 
     #[tool(
-        description = "Change Tildone settings; pass only the ones to change. Allowed: theme auto|light|dark; week_start monday|sunday; default_project_id project id (0 clears); ws_hub_url text; agent_server, agent_notify, ai_auto_start, ai_secretary true|false; ai_mode off|external|builtin; ai_base_url, ai_model text; ai_engine_model small|default|better. A bad value is an error and nothing changes. Returns {settings, changed}. The open window applies the effect (theme, starting or stopping the server, the secretary). agent_server=false stops this endpoint right after the reply."
+        description = "Change Tildone settings; pass only the ones to change. Allowed: theme auto|light|dark; week_start monday|sunday; default_project_id project id (0 clears); ws_hub_url text; board_hub_url, board_hub_token text (the token reads back only as (set) or (empty)); agent_server, agent_notify, ai_auto_start, ai_secretary true|false; ai_mode off|external|builtin; ai_base_url, ai_model text; ai_engine_model small|default|better. A bad value is an error and nothing changes. Returns {settings, changed}. The open window applies the effect (theme, starting or stopping the server, the secretary; a board_hub_* change reloads it). agent_server=false stops this endpoint right after the reply."
     )]
     fn update_settings(
         &self,
@@ -12287,21 +12291,22 @@ mod tests {
     #[test]
     fn settings_tools_never_return_the_board_hub_token() {
         let (agent, _) = app_agent();
-        agent
-            .actions
-            .settings_set(json!({"board_hub_token": "s3cret"}).as_object().unwrap().clone())
-            .unwrap();
-        let got = agent.get_settings().unwrap();
-        let (_, v) = extract(&got);
-        assert_eq!(v["board_hub_token"], json!("(set)"));
         let changed = agent
             .update_settings(Parameters(
-                serde_json::from_value(json!({"theme": "dark"})).unwrap(),
+                serde_json::from_value(
+                    json!({"board_hub_url": "http://ws:11502", "board_hub_token": "s3cret"}),
+                )
+                .unwrap(),
             ))
             .unwrap();
         let (is_err, v) = extract(&changed);
         assert!(!is_err, "{v}");
+        assert_eq!(v["changed"], json!(["board_hub_url", "board_hub_token"]));
+        assert_eq!(v["settings"]["board_hub_url"], json!("http://ws:11502"));
         assert_eq!(v["settings"]["board_hub_token"], json!("(set)"));
+        let got = agent.get_settings().unwrap();
+        let (_, v) = extract(&got);
+        assert_eq!(v["board_hub_token"], json!("(set)"));
         assert!(!format!("{got:?}{changed:?}").contains("s3cret"));
     }
 
