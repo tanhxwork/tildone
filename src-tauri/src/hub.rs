@@ -7,7 +7,7 @@
 //!
 //! Every route below requires all three guards, in this order:
 //! - Host in the agent server's allow-list (`server_config` in agent.rs) or one of
-//!   this machine's tailnet names (`agent::tailnet_hosts`), else 403;
+//!   this machine's tailnet names ([`TailnetHosts`]), else 403;
 //! - no `Origin` header (a browser page must never reach SQL), else 403;
 //! - `Authorization: Bearer <token>` matching `hub-token`, else 401.
 //!
@@ -118,8 +118,9 @@ pub struct HubConfig {
     /// One `()` per agent-db-changed app event; /events turns each into a `change`.
     pub events: tokio::sync::broadcast::Sender<()>,
     pub token: String,
-    /// Host names the hub answers to (`agent::allowed_hosts` plus `agent::tailnet_hosts`).
+    /// Host names the hub answers to (`agent::allowed_hosts`), besides `tailnet_hosts`.
     pub allowed_hosts: Vec<String>,
+    pub tailnet_hosts: TailnetHosts,
     /// The app data dir; attachments live in `<data_dir>/attachments/`.
     pub data_dir: PathBuf,
     /// The home dir that bounds evidence images (`read_evidence_image`).
@@ -249,6 +250,38 @@ fn host_name(host: &str) -> String {
     name.to_ascii_lowercase()
 }
 
+/// How long a miss waits before `TailnetHosts` asks tailscale again.
+const TAILNET_RETRY: Duration = Duration::from_secs(30);
+
+/// This machine's tailnet names (`agent::tailnet_hosts`), read at server start and
+/// again when a Host misses them, at most once per `TAILNET_RETRY`. At boot the app
+/// can start before tailscaled, and the first read then comes back empty.
+#[derive(Clone)]
+pub struct TailnetHosts {
+    read: fn() -> Vec<String>,
+    state: std::sync::Arc<std::sync::Mutex<(Vec<String>, std::time::Instant)>>,
+}
+
+impl TailnetHosts {
+    pub fn new(read: fn() -> Vec<String>) -> Self {
+        let state = (read(), std::time::Instant::now());
+        Self { read, state: std::sync::Arc::new(std::sync::Mutex::new(state)) }
+    }
+
+    fn allows(&self, host: &str) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let has = |hosts: &[String]| hosts.iter().any(|a| a.eq_ignore_ascii_case(host));
+        if has(&state.0) {
+            return true;
+        }
+        if state.1.elapsed() < TAILNET_RETRY {
+            return false;
+        }
+        *state = ((self.read)(), std::time::Instant::now());
+        has(&state.0)
+    }
+}
+
 /// Host, then Origin, then token. `Err` is the response to send.
 #[allow(clippy::result_large_err)]
 fn guard(cfg: &HubConfig, headers: &HeaderMap) -> Result<(), Response> {
@@ -256,7 +289,10 @@ fn guard(cfg: &HubConfig, headers: &HeaderMap) -> Result<(), Response> {
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .map(host_name);
-    if !host.is_some_and(|h| cfg.allowed_hosts.iter().any(|a| a.eq_ignore_ascii_case(&h))) {
+    let allowed = |h: &str| {
+        cfg.allowed_hosts.iter().any(|a| a.eq_ignore_ascii_case(h)) || cfg.tailnet_hosts.allows(h)
+    };
+    if !host.is_some_and(|h| allowed(&h)) {
         return Err(err(StatusCode::FORBIDDEN, "host not allowed"));
     }
     if headers.contains_key(header::ORIGIN) {
@@ -1179,6 +1215,7 @@ mod tests {
             events: events.clone(),
             token: TOKEN.into(),
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "myhost".into()],
+            tailnet_hosts: TailnetHosts::new(Vec::new),
             data_dir: dir.join("data"),
             evidence_home: Some(dir.join("home")),
             shutdown: shutdown.clone(),
@@ -1276,6 +1313,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok.status().as_u16(), 200);
+    }
+
+    #[test]
+    fn tailnet_hosts_read_again_after_a_boot_that_found_none() {
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        // The first read is the boot one: tailscaled not up yet.
+        fn read() -> Vec<String> {
+            match READS.fetch_add(1, Ordering::SeqCst) {
+                0 => Vec::new(),
+                _ => vec!["ws".into()],
+            }
+        }
+        let hosts = TailnetHosts::new(read);
+        assert!(!hosts.allows("ws"), "a miss inside the retry window does not re-read");
+        assert_eq!(READS.load(Ordering::SeqCst), 1);
+        hosts.state.lock().unwrap().1 = std::time::Instant::now() - TAILNET_RETRY;
+        assert!(hosts.allows("WS"));
+        assert!(hosts.allows("ws"), "a hit needs no read");
+        assert_eq!(READS.load(Ordering::SeqCst), 2);
     }
 
     #[test]

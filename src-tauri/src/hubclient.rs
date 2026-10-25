@@ -1611,6 +1611,7 @@ mod tests {
             events,
             token: TOKEN.into(),
             allowed_hosts: vec!["127.0.0.1".into()],
+            tailnet_hosts: crate::hub::TailnetHosts::new(Vec::new),
             data_dir: temp_dir("hub"),
             evidence_home: None,
             shutdown: shutdown.clone(),
