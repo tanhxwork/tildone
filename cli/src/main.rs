@@ -5,6 +5,7 @@ mod callargs;
 mod clients;
 mod cmd;
 mod git;
+mod heal;
 mod hub;
 mod settings;
 mod toon;
