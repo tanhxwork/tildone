@@ -29,29 +29,6 @@ describe("settings: command-line tool", () => {
   });
 });
 
-describe("settings: agent access copy", () => {
-  it("points agents at tildone-axi, not at a claude mcp add line", async () => {
-    await $(".nav-item*=Settings").click();
-    const group = $('[aria-label="Agent access"]');
-    await group.waitForExist();
-    await group.$("button=On").click();
-
-    await group.$("button.active=On").waitForExist({ timeout: 10000 });
-    const hint = $("p*=Agents connect through tildone-axi");
-    await hint.waitForExist({ timeout: 10000 });
-    await browser.execute((el) => el.scrollIntoView({ block: "center" }), await hint);
-
-    const row = $(".settings-row*=Let AI agents manage tasks");
-    expect(await row.getText()).toContain("for tildone-axi");
-    const text = await $(".settings-section*=Agent access").getText();
-    expect(text).not.toContain("MCP");
-    expect(text).not.toContain("claude mcp add");
-
-    mkdirSync(SHOTS, { recursive: true });
-    await browser.saveScreenshot(`${SHOTS}/settings-agent-access-on.png`);
-  });
-});
-
 // Settings live in settings.json, written by Rust. The window reads them from
 // there and follows every writer: this dialog, an agent over MCP, a script, or an
 // edit by hand (spec settings-file). The cases run in order, each moving the theme

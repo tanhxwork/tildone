@@ -67,7 +67,6 @@ pub struct Hub {
 
 impl Hub {
     pub async fn connect() -> Res<Hub> {
-        crate::heal::ensure_up()?;
         let mut config = StreamableHttpClientTransportConfig::with_uri(url());
         if let Some(t) = token() {
             // The transport adds the "Bearer " prefix itself.
@@ -151,7 +150,6 @@ pub async fn claimed_card() -> Res<Option<Value>> {
     let Some(id) = session_id() else {
         return Ok(None);
     };
-    crate::heal::ensure_up()?;
     let mut req = reqwest::Client::new()
         .get(format!("{}/session/{id}/task", base()))
         .timeout(Duration::from_secs(10));

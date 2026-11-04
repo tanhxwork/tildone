@@ -250,6 +250,7 @@ async fn run(cmd: Option<Cmd>) -> Res<()> {
             }
         };
     }
+    heal::ensure_up()?;
     let hub = Hub::connect().await?;
     let out = dispatch(&hub, cmd).await;
     hub.close().await;

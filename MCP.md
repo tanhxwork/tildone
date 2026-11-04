@@ -15,8 +15,10 @@ compact operating guide an agent can load on demand, install
 - **Settings → Agent access** must be **On** (off by default). Only the user can
   switch it on. With the app closed, `tildone-axi` restarts it by itself (as the
   systemd user unit `tildone`) when `TILDONE_URL` is unset.
-- Exit code 2 means the hub is unreachable and the CLI could not restart it.
-  `error:` and `help:` on stderr say why.
+- Exit code 2 means the hub is unreachable. The CLI restarts the app only when it
+  is closed and `TILDONE_URL` is unset. It does not restart it when the app is
+  running with Agent access Off (only the user can switch that on), or when
+  `TILDONE_URL` points at a hub. `error:` and `help:` on stderr say why.
 - For a hub on another machine, set `TILDONE_URL` and `TILDONE_TOKEN`.
 - The CLI talks to the app's `/mcp` endpoint (MCP Streamable HTTP) as its
   internal transport. `http://127.0.0.1:11502/mcp` is the **installed app**. A dev

@@ -428,7 +428,7 @@ export function SettingsDialog() {
         <section className="settings-section">
           <h3 className="settings-heading">Data & backup</h3>
           <p className="settings-sub">
-            Everything stays on this Mac in a local SQLite database (tildone.db in the app data
+            Everything stays on this computer in a local SQLite database (tildone.db in the app data
             folder).
           </p>
 

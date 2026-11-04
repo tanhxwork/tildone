@@ -202,6 +202,9 @@ fn render_card(task: &Value, full: bool, asked: &str) -> String {
 
 /// Bare `tildone-axi`: this session's card, its open subtasks, and a next step.
 pub async fn status() -> Res<()> {
+    if hub::session_id().is_some() {
+        crate::heal::ensure_up()?;
+    }
     let Some(claim) = hub::claimed_card().await? else {
         let why = if hub::session_id().is_none() {
             " (CLAUDE_CODE_SESSION_ID is not set)"

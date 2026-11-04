@@ -52,58 +52,123 @@ async fn doctor_unreachable_exits_2() {
     );
 }
 
-/// A PATH that starts with fake `pgrep` (finds no app), `systemctl` and `systemd-run`
-/// scripts. Each appends its name and arguments to the returned record file.
-fn fake_systemd(test: &str) -> (String, std::path::PathBuf) {
+/// Fake `pgrep` (exits `pgrep`), `systemctl` and `systemd-run` scripts, each appending
+/// its name and arguments to the returned record file. The PATH starts with them. The
+/// heal probes a refused port and gives up after 300 ms, so no run reaches the real
+/// app on 11502.
+fn fake_systemd(test: &str, pgrep: i32) -> (Vec<(&'static str, String)>, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(test);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let record = dir.join("record");
-    for (name, code) in [("pgrep", 1), ("systemctl", 0), ("systemd-run", 0)] {
+    for (name, code) in [("pgrep", pgrep), ("systemctl", 0), ("systemd-run", 0)] {
         let script = dir.join(name);
         std::fs::write(
             &script,
-            format!("#!/bin/sh\necho \"{name} $*\" >> '{}'\nexit {code}\n", record.display()),
+            format!(
+                "#!/bin/sh\necho \"{name} $*\" >> '{}'\nexit {code}\n",
+                record.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
-    (path, record)
+    let path = format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let env = vec![
+        ("PATH", path),
+        ("TILDONE_HEAL_ADDR", "127.0.0.1:1".to_string()),
+        ("TILDONE_HEAL_LIMIT_MS", "300".to_string()),
+    ];
+    (env, record)
+}
+
+fn with_env(mut run: common::Run, env: &[(&str, String)]) -> common::Run {
+    for (k, v) in env {
+        run = run.env(k, v);
+    }
+    run
+}
+
+fn recorded(record: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(record)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn unreachable_set_url_never_restarts_the_app() {
     let fake = Fake::start().await;
-    let (path, record) = fake_systemd("unreachable_set_url");
+    let (env, record) = fake_systemd("unreachable_set_url", 1);
     for args in [&["doctor"][..], &[][..], &["ls"][..]] {
-        let out = tildone(&fake, args)
+        let run = tildone(&fake, args)
             .url(Some("http://127.0.0.1:1/mcp"))
-            .session("sess-1")
-            .env("PATH", &path)
-            .run()
-            .await;
+            .session("sess-1");
+        let out = with_env(run, &env).run().await;
         assert_eq!(out.code, 2, "{args:?}: {}", out.stderr);
     }
-    let ran = std::fs::read_to_string(&record).unwrap_or_default();
-    assert!(ran.is_empty(), "{ran}");
+    assert_eq!(recorded(&record), Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closed_app_is_restarted_through_systemd_run() {
+    let fake = Fake::start().await;
+    let (env, record) = fake_systemd("closed_app_restart", 1);
+    let out = with_env(tildone(&fake, &["doctor"]).url(None), &env)
+        .run()
+        .await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("restarted Tildone, but it did not answer within 0.3 s"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(
+        recorded(&record),
+        [
+            "pgrep -x tildone",
+            "systemctl --user reset-failed tildone.service",
+            "systemd-run --user --unit=tildone --collect -p Restart=on-failure tildone",
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn running_app_with_a_closed_port_is_never_restarted() {
+    let fake = Fake::start().await;
+    let (env, record) = fake_systemd("running_app", 0);
+    let out = with_env(tildone(&fake, &["doctor"]).url(None), &env)
+        .run()
+        .await;
+    assert_eq!(out.code, 2, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("http://127.0.0.1:11502/mcp"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("Only the user can switch it on"),
+        "{}",
+        out.stderr
+    );
+    let ran = recorded(&record);
+    assert!(
+        ran.iter()
+            .all(|c| !c.starts_with("systemd-run") && !c.contains("reset-failed")),
+        "{ran:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn url_env_override() {
     let fake = Fake::start().await;
-    // No TILDONE_URL: the default hub address is the one tried (reached or not).
-    // The recording fakes keep a refused default port from restarting the real app.
-    let (path, _) = fake_systemd("url_env_override");
-    let out = tildone(&fake, &["doctor"])
-        .url(None)
-        .env("PATH", &path)
-        .run()
-        .await;
-    let all = format!("{}{}", out.stdout, out.stderr);
-    assert!(all.contains("http://127.0.0.1:11502/mcp"), "{all}");
-    // TILDONE_URL wins: the fake answered, so it was the one used.
     let out = tildone(&fake, &["doctor"]).run().await;
     assert_eq!(out.code, 0);
     assert!(out.stdout.contains(&fake.url));
