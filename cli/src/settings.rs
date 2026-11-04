@@ -317,7 +317,7 @@ async fn run_action(tool: &str, verb: &str, args: Value) -> Res<()> {
     let hub = Hub::connect().await.map_err(|e| match e {
         Fail::Conn { msg, .. } => Fail::Conn {
             msg: format!("settings {verb} needs the running Tildone app, with Agent access On: {msg}"),
-            help: "tildone-axi settings set agent_server true (works with the app closed or its server off)".into(),
+            help: "Agent access may be Off. Only the user can switch it on: Settings → Agent access.".into(),
         },
         other => other,
     })?;

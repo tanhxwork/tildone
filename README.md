@@ -9,29 +9,26 @@ A lightweight desktop app for project and task management, built with Tauri 2, R
 - **Inbox** — tasks without a project, grouped at the top of All Tasks
 - **Tags, filters & search** — tag tasks, filter by tag/priority, search across titles and notes
 - **Light & dark mode** — follows the system appearance
-- **Agent access (MCP)** — opt-in local MCP server so AI agents can manage your tasks
+- **Agent access** — opt-in local server so AI agents can manage your tasks through `tildone-axi`
 
-## Agent access (MCP)
+## Agent access
 
-Tildone can act as an [MCP](https://modelcontextprotocol.io) server so AI agents
-(Claude Code, Claude Desktop, or any MCP client) can create and manage tasks —
-under a specific project or in the Inbox.
+Agents (Claude Code or any shell-capable agent) manage tasks, under a specific
+project or in the Inbox, through the `tildone-axi` command-line tool. It is the
+only agent interface.
 
 1. In Tildone, open **Settings → Agent access** and switch it **On**.
-2. Connect your agent to `http://127.0.0.1:11502/mcp` (Streamable HTTP). With
-   Claude Code:
+2. Install the command-line tool from **Settings → Agent access → Command-line
+   tool**, then run `tildone-axi doctor` to check the link.
 
-   ```bash
-   claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
-   ```
-
-   11502 is the installed app's port. A dev build takes a free one so the two
-   never collide; Settings → Agent access shows the endpoint actually in use.
+On Linux with `TILDONE_URL` unset, `tildone-axi` starts a closed Tildone by itself. Exit code 2 means the
+app could not be reached or restarted. For a hub on another machine, set
+`TILDONE_URL` and `TILDONE_TOKEN`.
 
 Agents get tools to list/create/update/complete/delete tasks (title, notes,
 status, priority, due date, tags) and to manage projects, referring to projects
 and tags by name. Changes show up in the app instantly. See **[MCP.md](MCP.md)**
-for the full tool reference (safe to paste into an agent's context).
+for the full tool reference behind `tildone-axi call <tool>` (safe to paste into an agent's context).
 
 Notes: the server only runs while Tildone is open, listens on localhost only,
 and is off by default. Deleted tasks go to the app's trash; deleting a project

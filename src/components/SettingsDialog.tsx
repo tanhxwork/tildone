@@ -294,8 +294,8 @@ export function SettingsDialog() {
               Let AI agents manage tasks
               <span className="settings-sub">
                 {endpoint
-                  ? `Local MCP server on ${endpoint.replace(/^https?:\/\//, "").replace(/\/mcp$/, "")} — only while Tildone is running`
-                  : "Local MCP server — only while Tildone is running"}
+                  ? `Local server on ${endpoint.replace(/^https?:\/\//, "").replace(/\/mcp$/, "")} for tildone-axi — only while Tildone is running`
+                  : "Local server for tildone-axi — only while Tildone is running"}
               </span>
             </div>
             <div className="segmented" role="group" aria-label="Agent access">
@@ -413,8 +413,7 @@ export function SettingsDialog() {
 
           {endpoint && !clientMode && (
             <p className="settings-sub">
-              Connect an agent, e.g.:{" "}
-              <code>claude mcp add --transport http tildone {endpoint}</code>
+              Agents connect through tildone-axi. Run <code>tildone-axi doctor</code> to check.
             </p>
           )}
           {agentOn && !endpoint && (
@@ -429,7 +428,7 @@ export function SettingsDialog() {
         <section className="settings-section">
           <h3 className="settings-heading">Data & backup</h3>
           <p className="settings-sub">
-            Everything stays on this Mac in a local SQLite database (tildone.db in the app data
+            Everything stays on this computer in a local SQLite database (tildone.db in the app data
             folder).
           </p>
 

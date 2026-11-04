@@ -97,7 +97,7 @@ export function FirstRun({ onDone }: { onDone: () => void }) {
         <TildoneMark width={52} className="firstrun-mark" />
         <h2 className="firstrun-title">Welcome to Tildone</h2>
         <p className="firstrun-blurb">
-          Everything stays on this Mac — no account, no cloud. Start with a template or a blank
+          Everything stays on this computer — no account, no cloud. Start with a template or a blank
           slate.
         </p>
         <div className="firstrun-templates">

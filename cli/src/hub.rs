@@ -18,6 +18,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// What a `Fail::Conn` message ends with when a call ran past its limit, as opposed
 /// to a transport error.
 pub const TIMED_OUT: &str = "timed out";
+pub const UNREACHABLE_HELP: &str = "is Tildone running with Settings → Agent access On? Set TILDONE_URL (and TILDONE_TOKEN) for a hub on another machine.";
 
 /// How a run fails. `Tool` exits 1 (the hub answered, or the input was wrong);
 /// `Conn` exits 2 (the hub could not be reached).
@@ -56,7 +57,7 @@ fn unreachable(detail: impl std::fmt::Display) -> Fail {
     let detail = detail.rsplit("Client error: ").next().unwrap_or(&detail);
     Fail::Conn {
         msg: format!("cannot reach Tildone at {}: {detail}", url()),
-        help: "is Tildone running with Settings → Agent access On? Set TILDONE_URL (and TILDONE_TOKEN) for a hub on another machine.".into(),
+        help: UNREACHABLE_HELP.into(),
     }
 }
 

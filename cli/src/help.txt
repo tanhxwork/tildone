@@ -27,4 +27,5 @@ commands:
                                   run status|restart|settings|settings-set|hook|engine|update|log on it
   call <tool> [--flag v ...]      any server tool; flags come from its schema (create-task = create_task)
 env: TILDONE_URL (default http://127.0.0.1:11502/mcp), TILDONE_TOKEN, TILDONE_CONFIG_DIR (settings.json folder for an offline set), CLAUDE_CODE_SESSION_ID
+     with TILDONE_URL unset, a closed app is restarted as the systemd user unit `tildone`
 exit: 0 ok, 1 error (error: and help: on stderr), 2 hub unreachable

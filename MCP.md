@@ -1,22 +1,31 @@
-# Tildone MCP server — agent reference
+# Tildone tool reference for `tildone-axi call`
 
-Tildone embeds an [MCP](https://modelcontextprotocol.io) server so AI agents
-can create and manage the user's tasks. This document is the full tool
-reference; it is safe to paste into an agent's context. For a compact
-operating guide an agent can load on demand instead, install
+Agents reach Tildone through the `tildone-axi` command-line tool, and only
+through it. This document is the reference for the tools behind
+`tildone-axi call <tool>` (flags come from each tool's schema; `tildone-axi call
+<tool> --help` lists them). It is safe to paste into an agent's context. For a
+compact operating guide an agent can load on demand, install
 [`skills/tildone/SKILL.md`](skills/tildone/SKILL.md) (e.g. copy the
 `skills/tildone/` directory into `~/.claude/skills/`).
 
 ## Connecting
 
-- **Endpoint:** `http://127.0.0.1:11502/mcp` (MCP Streamable HTTP)
-- The Tildone app must be **running** and **Settings → Agent access** must be
-  **On** (off by default). If the connection is refused, ask the user to open
-  Tildone and enable it.
-- 11502 is the **installed app**. A dev build (`bun run tauri dev`) takes a free
-  port instead, so it never knocks the installed app off the air — Settings shows
-  the real endpoint. To point an agent at a dev build, pin it with
-  `TILDONE_AGENT_PORT=11599 bun run tauri dev`.
+- Install `tildone-axi` from **Settings → Agent access → Command-line tool**,
+  then run `tildone-axi doctor` to check the link.
+- **Settings → Agent access** must be **On** (off by default). Only the user can
+  switch it on. With the app closed, `tildone-axi` restarts it by itself (as the
+  systemd user unit `tildone`) when `TILDONE_URL` is unset.
+- Exit code 2 means the hub is unreachable. The CLI restarts the app only when it
+  is closed and `TILDONE_URL` is unset. It does not restart it when the app is
+  running with Agent access Off (only the user can switch that on), or when
+  `TILDONE_URL` points at a hub. `error:` and `help:` on stderr say why.
+- For a hub on another machine, set `TILDONE_URL` and `TILDONE_TOKEN`.
+- The CLI talks to the app's `/mcp` endpoint (MCP Streamable HTTP) as its
+  internal transport. `http://127.0.0.1:11502/mcp` is the **installed app**. A dev
+  build (`bun run tauri dev`) takes a free port instead, so it never knocks the
+  installed app off the air; Settings shows the real endpoint. To use a dev
+  build, pin it with `TILDONE_AGENT_PORT=11599 bun run tauri dev` and set
+  `TILDONE_URL=http://127.0.0.1:11599/mcp`.
 - /mcp is for this machine only. Other machines reach a hub through 11503, which
   serves only the hub routes, each needing the hub token. On the hub machine,
   forward the tailnet there once: `tailscale serve --bg --tcp 11502
@@ -26,38 +35,8 @@ operating guide an agent can load on demand instead, install
   `POST /client-status` (a client's report) and `POST /client-result` (the answer
   to a command), each needing the hub token. Commands go out on the client's own
   `GET /events` stream, never to a client directly.
-- Start Tildone **before** the agent session. Clients connect to MCP servers
-  once, at startup — a session that began while Tildone was closed (or Agent
-  access was Off) has no tildone tools, and calls fail with "No such tool
-  available" rather than a connection error. Reconnect the server (`/mcp` in
-  Claude Code) or restart the session; the app coming up later is not enough
-  on its own.
-- Beware: `claude mcp list` probes in a **separate process**, so it reports
-  `✔ Connected` even when your own session has no tildone tools. A real tool
-  call is the only reliable check.
-- Once a session is connected, restarting Tildone is safe — the client
-  reconnects on its own within a few seconds (verified across a 2-minute
-  outage). Unknown/expired session ids get a `404`, which is the client's cue
-  to re-initialize.
-- **New tools are the exception to that.** Clients cache the tool list from
-  when they connected, so a Tildone build that *adds* a tool stays invisible to
-  sessions already running — the existing tools keep working and the new one is
-  simply absent, even though the server serves it. Restart the client session
-  after upgrading Tildone if you expect a new tool.
 - Localhost only, no authentication. Requests carrying a browser `Origin`
   header are rejected (403).
-
-Client setup examples:
-
-```bash
-# Claude Code
-claude mcp add --transport http tildone http://127.0.0.1:11502/mcp
-```
-
-```json
-// Any client using a JSON config with streamable HTTP support
-{ "mcpServers": { "tildone": { "type": "http", "url": "http://127.0.0.1:11502/mcp" } } }
-```
 
 ## Data model
 
