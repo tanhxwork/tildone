@@ -12556,6 +12556,42 @@ mod tests {
         assert!(!format!("{got:?}{changed:?}").contains("s3cret"));
     }
 
+    /// Every secret-named key, today's and any added later, reads back masked from
+    /// get_settings and update_settings (TIL-252).
+    #[test]
+    fn no_secret_settings_key_reaches_tool_output() {
+        let secret = |k: &str| ["_token", "_secret", "_password"].iter().any(|s| k.ends_with(s));
+        let keys: Vec<_> = crate::appsettings::KEYS.iter().copied().filter(|k| secret(k)).collect();
+        assert!(keys.contains(&"board_hub_token"), "the suffix filter found {keys:?}");
+        for key in keys {
+            let (agent, fake) = app_agent();
+            let value = format!("s3cret-{key}");
+            fake.settings
+                .lock()
+                .unwrap()
+                .apply_patch(&serde_json::from_value(json!({ key: value })).unwrap())
+                .unwrap();
+            let got = agent.get_settings().unwrap();
+            let changed = agent
+                .update_settings(Parameters(
+                    serde_json::from_value(json!({ "theme": "dark", key: value })).unwrap(),
+                ))
+                .unwrap();
+            let out = format!("{got:?}{changed:?}");
+            assert!(!out.contains(&value), "{key} reached tool output: {out}");
+        }
+    }
+
+    /// A setting the app knows must be settable by an agent (TIL-253).
+    #[test]
+    fn every_settings_key_is_an_update_settings_param() {
+        let schema = serde_json::to_value(schemars::schema_for!(UpdateSettingsParams)).unwrap();
+        let fields = schema["properties"].as_object().expect("params have properties");
+        let missing: Vec<_> =
+            crate::appsettings::KEYS.iter().filter(|k| !fields.contains_key(**k)).collect();
+        assert!(missing.is_empty(), "update_settings has no param for {missing:?}");
+    }
+
     #[test]
     fn update_settings_reports_changed_keys_and_names_allowed_values_on_error() {
         let (agent, fake) = app_agent();
