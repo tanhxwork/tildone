@@ -452,4 +452,17 @@ mod tests {
         }
         assert_eq!(limit("claude_hook", "connect"), Duration::from_secs(30));
     }
+
+    /// `settings` prints every key through `show`; a secret-named key never prints
+    /// its value (TIL-252).
+    #[test]
+    fn no_secret_settings_key_reaches_the_terminal() {
+        let secret = |n: &str| ["_token", "_secret", "_password"].iter().any(|s| n.ends_with(s));
+        let keys: Vec<_> = KEYS.iter().map(|k| k.name).filter(|n| secret(n)).collect();
+        assert!(keys.contains(&"board_hub_token"), "the suffix filter found {keys:?}");
+        for name in keys {
+            let line = show(name, &json!("s3cret"));
+            assert!(!line.contains("s3cret"), "{name} printed its value: {line}");
+        }
+    }
 }
